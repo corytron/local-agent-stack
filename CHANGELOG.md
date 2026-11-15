@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.2 (2026-11-15)
+
 - Release updates download a release's new model files (the two vision projectors in 1.2) before `deploy.py apply`; guide chapter 10 (#33).
 
 - Internal DNS: a step-by-step procedure for a UniFi UDM-Pro SE (five local A records, content-filter, browser DNS-over-HTTPS and public-zone checks) (#32).
