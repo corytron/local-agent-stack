@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0 (2026-11-15)
+
 - Public under the Apache License 2.0.
 - The Caddy and MCP hub images this project builds are pinned by digest (#5).
 - `deploy.py`: `content_hashes = false` / `--no-hashes` for a TrueNAS that refuses the hash block; the guide keeps API keys out of every process argument list (#5).
