@@ -15,9 +15,9 @@ services:
   caddy:
     # Built from stack/edge/Dockerfile by .github/workflows/caddy-image.yml; the tag is the
     # Caddy version.
-    # UNVERIFIED: the image has not been pushed yet; pin it as :2.11.9@sha256:<digest> from the
-    # first workflow run (the run's summary and attestation name the digest).
-    image: ghcr.io/corytron/local-agent-stack-caddy:2.11.9
+    # Pinned by digest from the workflow run on main (2026-11-15); pin each new build the same
+    # way, from the run's summary (its attestation names the same digest).
+    image: ghcr.io/corytron/local-agent-stack-caddy:2.11.9@sha256:11ca55d9a603df579a63f79352b00e407e8c0de57639f0c0e41ee7615adb4130
     container_name: caddy
     restart: unless-stopped
     # TrueNAS "apps" user and group; /data and /config must be writable by it (Apps preset).
