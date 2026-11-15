@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.1 (2026-11-15)
+
 - MCP hub: the knowledge-base server's zod is lifted to 4.6.7, fixing a memory-exhaustion advisory (high) in zod 3.x (#25).
 - The MCP hub image is pinned to its rebuilt digest; the guide is revision A01 (#25).
 
