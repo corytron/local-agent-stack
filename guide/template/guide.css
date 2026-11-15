@@ -134,7 +134,7 @@ pre {
 /* Long listings (build.py marks them) may split across pages instead of leaving half-empty pages. */
 pre.long { break-inside: auto; }
 /* Keep a heading's one-line caption with the block that follows it. */
-h3 + p, h4 + p { break-after: avoid; }
+h3 + p { break-after: avoid; }
 pre code { font-size: inherit; }
 
 /* tables */
