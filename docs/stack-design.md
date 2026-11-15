@@ -178,8 +178,8 @@ secret (stdlib `secrets`), leaving the reader-provided ones as placeholders.
 2. `02-planning.md` — Planning the deployment: hardware and sizing, VRAM/RAM budget, network/DNS/ports, accounts and tokens, pre-deployment checklist
 3. `03-truenas.md` — Preparing TrueNAS SCALE: release check, NVIDIA driver, ARC cap, Post Init script, datasets, SMB share, UI ports, `ai-net`, clone the repo, secrets
 4. `04-inference.md` — Deploying the inference app: download models, configure and install `ai-inference`, keys, verification, first benchmark
-5. `05-rag-web.md` — Deploying the RAG and web apps: `ai-rag`, `ai-web`, Open WebUI first-run settings, SearXNG, MCP hub, knowledge sync
-6. `06-edge.md` — Deploying the edge app: DNS records, DNS-01 token, `ai-edge`, certificates, verification
+5. `05-edge.md` — Deploying the edge app: DNS records, Cloudflare DNS-01 token, `ai-edge`, certificates, verification (before the web app: Open WebUI has no published port)
+6. `06-rag-web.md` — Deploying the RAG and web apps: `ai-rag`, `ai-web`, Open WebUI first-run settings, service users and keys, SearXNG, MCP hub, knowledge sync
 7. `07-workstation.md` — Configuring the coding agent: OpenCode on c4dev and the Mac, agents/commands/plugins, MCP tools, SSH tool, Claude Code against the local gateway
 8. `08-workflow.md` — Running projects with agents: project memory, contracts, parallel agents, GitHub flow, CI and checks, releases
 9. `09-validation.md` — Validating the deployment: smoke tests, benchmarks, evals and the regression gate
