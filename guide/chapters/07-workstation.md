@@ -106,17 +106,26 @@ Mac.
 
 - The `ai-inference`, `ai-rag`, `ai-web` and `ai-edge` apps are running, and the host names
   resolve to `192.0.2.10` (Chapters 4 to 6).
-- You have the workstation's LiteLLM virtual key from Chapter 4.
+- The workstation's LiteLLM virtual key from Chapter 4 is stored on `c4dev`
+  ([Keep the workstation keys until Chapter 7](#keep-the-workstation-keys-until-chapter-7)).
 - The workstation holds the environment files generated in
   [Generate the environment files on the workstation](#generate-the-environment-files-on-the-workstation),
-  including `~/.config/local-agent-stack/secrets/web.env`.
+  including `~/.config/local-agent-stack/secrets/web.env` with your domain in `LAB_DOMAIN`
+  ([Complete web.env before the first start](#complete-webenv-before-the-first-start)).
+- `~/local-agent-stack` is a clone of this repository at `<release-tag>` (Chapter 3).
 
 #### About this task
 
 This task writes `client.env` before the installer runs. When the file exists, `install.sh` leaves
-it unchanged; otherwise the installer creates it with placeholders that you replace later. The
-commands below write the hub token straight from `web.env` and read the LiteLLM key from a prompt,
-so neither value is shown on screen or stored in the shell history.
+it unchanged; otherwise the installer creates it with placeholders that you replace later.
+
+`tools/secrets.py gen client` fills in the release's example file, `clients/client.env.example`,
+printed below. `--share` copies `LAB_DOMAIN` and `MCP_HUB_TOKEN` from the workstation's copy of
+`web.env`, and `--ask LOCAL_LLM_KEY` prompts for the LiteLLM key without echoing it, so the key
+never appears on a command line or in the shell history. `-o` writes a new file with mode 600; the
+tool never replaces an existing file.
+
+{{ include clients/client.env.example }}
 
 #### Steps
 
@@ -124,22 +133,33 @@ so neither value is shown on screen or stored in the shell history.
 
         install -d -m 0700 ~/.config/local-agent-stack
 
-2. Write the domain. Replace `lab.example.com` with your domain:
+2. Change to the clone:
 
-        (umask 077; printf 'LAB_DOMAIN=%s\n' lab.example.com > ~/.config/local-agent-stack/client.env)
+        cd ~/local-agent-stack
 
-3. Append the hub token from the workstation's copy of `web.env`:
+3. Display the workstation's LiteLLM key, stored in Chapter 4, and copy it:
 
-        grep '^MCP_HUB_TOKEN=' ~/.config/local-agent-stack/secrets/web.env >> ~/.config/local-agent-stack/client.env
+        cat ~/.config/local-agent-stack/secrets/litellm-c4dev.key
 
-    If this workstation has no copy of `web.env`, read the token on TrueNAS with
-    `sudo sed -n 's/^MCP_HUB_TOKEN=//p' /mnt/tank/ai/secrets/web.env`, then use the method of the
-    next step with the variable name `MCP_HUB_TOKEN`.
+4. Write `client.env`. At the prompt `LOCAL_LLM_KEY:`, paste the key and press Enter. The key is not
+   echoed:
 
-4. Append the LiteLLM key. Run the following command, paste the key at the prompt, and press
-   Enter. The key is not echoed:
+        python3 tools/secrets.py gen client --share ~/.config/local-agent-stack/secrets/web.env --ask LOCAL_LLM_KEY -o ~/.config/local-agent-stack/client.env
 
-        (umask 077; read -rsp 'LiteLLM key: ' key; echo; printf 'LOCAL_LLM_KEY=%s\n' "$key" >> ~/.config/local-agent-stack/client.env)
+    The command ends with `secrets.py: wrote`, the path of the file and `(mode 0600)`.
+
+    - If it reports that the file exists, `client.env` was written before. Check it with steps 5 to
+      7; to start again, rename the old file, for example to `client.env.old`, run the command
+      again, and delete the old file.
+    - If it prints `MCP_HUB_TOKEN is a placeholder: run gen client with --share <web.env>`, the
+      file named with `--share` has no hub token. Delete `client.env` and run the command again
+      with the right file.
+    - A value typed at a prompt may hold only letters, digits and the characters
+      `. _ ~ + / = : @ % , -`; the tool refuses any other value, because a shell reads the file.
+
+    If this workstation has no copy of `web.env`, let the tool prompt for all three values instead
+    of `--share`: `--ask LAB_DOMAIN --ask MCP_HUB_TOKEN --ask LOCAL_LLM_KEY`. Read the hub token on
+    TrueNAS with `sudo sed -n 's/^MCP_HUB_TOKEN=//p' /mnt/tank/ai/secrets/web.env`.
 
 5. Verify the mode of the file:
 
@@ -147,14 +167,20 @@ so neither value is shown on screen or stored in the shell history.
 
     The line starts with `-rw-------`.
 
-6. Verify that the file names the three variables and that none is empty, without printing the
-   values:
+6. Verify that the file sets the three variables and that no placeholder is left, without
+   printing the values:
 
-        cut -d= -f1 ~/.config/local-agent-stack/client.env
-        grep -c '=$' ~/.config/local-agent-stack/client.env
+        grep -E -c '^(LAB_DOMAIN|LOCAL_LLM_KEY|MCP_HUB_TOKEN)=' ~/.config/local-agent-stack/client.env
+        grep -c 'replace-with' ~/.config/local-agent-stack/client.env
+        grep -c '^LOCAL_LLM_KEY=sk-' ~/.config/local-agent-stack/client.env
 
-    The first command prints `LAB_DOMAIN`, `MCP_HUB_TOKEN` and `LOCAL_LLM_KEY`, one per line. The
-    second prints `0`.
+    The commands print `3`, `0` and `1`.
+
+7. Check that `client.env` and `web.env` hold the same domain and the same hub token:
+
+        for v in LAB_DOMAIN MCP_HUB_TOKEN; do grep -h "^$v=" ~/.config/local-agent-stack/secrets/web.env ~/.config/local-agent-stack/client.env | sort -u | wc -l; done
+
+    The output is `1` twice.
 
 #### Results
 
@@ -543,7 +569,7 @@ Table: Slash commands
 | Command | Agent | What it does |
 |---|---|---|
 | `/plan <change or issue number>` | `plan` (read-only) | Reads `AGENTS.md`, `docs/status.md` and the code involved, then writes a plan under seven fixed headings: Goal, Approach, Files, Contract, Split (at most three parts with disjoint files), Checks, Open questions. Marks unconfirmed facts `UNVERIFIED` and stops |
-| `/issue <number>` | `coordinator` | Runs `gh issue view <number>`, stops if the issue is closed or missing, creates the branch `<type>/<number>-<short-slug>` from an up-to-date `main`, plans, commits the contract when more than one agent works on it, opens the pull request with `/pr`, and starts at most two subagents |
+| `/issue <number>` | `coordinator` | Runs `gh issue view <number>`, stops if the issue is closed or missing, creates the branch `<type>/<short-slug>-<number>` (type `feat`, `fix`, `docs` or `chore`; the issue number last) from an up-to-date `main`, plans, commits the contract when more than one agent works on it, opens the pull request with `/pr`, and starts at most two subagents |
 | `/pr [issue number]` | `coordinator` | Shows the branch, the working tree and the commits not on `main`; stops on `main` or `master`; asks before committing uncommitted files; runs `tools/check.sh`; adds a `CHANGELOG.md` line under `## Unreleased` if one is missing; pushes the branch by name; creates the pull request with `Closes #<issue>`, or reports the existing one |
 | `/check [check names]` | The current agent | Runs `tools/check.sh` with the names you give, shows the last 120 lines, and summarises each failing check with its file, line and likely fix. Changes nothing unless you ask |
 
@@ -1142,7 +1168,9 @@ directory to resume the last session.
 
 #### Prerequisites
 
-- `git`, `curl`, `tar` and `openssl` on the Mac.
+- `git`, `curl`, `tar`, `openssl` and `python3` on the Mac.
+- SSH access from the Mac to `c4dev`, which holds the Mac's LiteLLM key and the shared values of
+  `client.env`.
 - A LiteLLM virtual key for the Mac from Chapter 4, allowing the same models as the `c4dev` key.
 - For the SSH tool: Node.js 20.6 or later and npm, installed by your usual method.
 
@@ -1166,13 +1194,22 @@ shell.
 
 2. Create `client.env` as in [Create client.env](#create-clientenv), with these differences:
 
-    - The commands of that task use bash's `read` options. If your shell is zsh, type `bash`
-      first, and `exit` when you are done.
-    - The Mac has no copy of `web.env`. Copy the hub token from `c4dev` instead of step 3:
+    - In step 3, display the Mac's own key, which is stored on `c4dev`:
 
-            ssh <user>@192.0.2.20 "grep '^MCP_HUB_TOKEN=' .config/local-agent-stack/client.env" >> ~/.config/local-agent-stack/client.env
+            ssh <user>@192.0.2.20 cat .config/local-agent-stack/secrets/litellm-mac.key
 
-    - In step 4, paste the Mac's own LiteLLM key.
+    - The Mac has no copy of `web.env`. In step 4, take `LAB_DOMAIN` and `MCP_HUB_TOKEN` from the
+      `client.env` of `c4dev` over SSH instead, and paste the Mac's key at the prompt:
+
+            python3 tools/secrets.py gen client --share <(ssh <user>@192.0.2.20 cat .config/local-agent-stack/client.env) --ask LOCAL_LLM_KEY -o ~/.config/local-agent-stack/client.env
+
+        The shell passes the output of `ssh` to the tool as a file; nothing is written to disk
+        except the new `client.env`. Without SSH access to `c4dev`, let the tool prompt for all
+        three values: `--ask LAB_DOMAIN --ask MCP_HUB_TOKEN --ask LOCAL_LLM_KEY` instead of
+        `--share`.
+
+    - Skip step 7, which compares the file with `web.env`. Step 5 of this task checks the values
+      against the server.
 
 3. Preview and run the installer:
 

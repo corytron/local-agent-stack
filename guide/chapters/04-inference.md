@@ -30,17 +30,22 @@ The stack serves four GGUF model files, 35.76 GB (33.3 GiB) in total, from publi
 repositories. No Hugging Face account is needed. The files go to `/mnt/tank/ai/models/gguf`, on the
 `tank/ai/models` dataset that Chapter 3 created with a 1M record size and `primarycache=metadata`.
 
-Each download URL names a fixed revision (commit) of its repository, checked on 15 November 2026,
-so the file sizes and SHA-256 checksums below stay valid even if a repository changes later.
+The release lists the files in `stack/inference/models.tsv`: for each llama-swap id, the Hugging
+Face repository, a fixed revision (commit) of that repository, checked on 15 November 2026, and the
+file name, separated by tabs. Because each download names its revision, the file sizes below and
+the SHA-256 checksums in `stack/inference/models.sha256` stay valid even if a repository changes
+later. The download commands in this topic read the file from the clone on TrueNAS:
+
+{{ include stack/inference/models.tsv }}
 
 Table: Model files to download
 
-| File | Hugging Face repository | Size in bytes | llama-swap id |
-|---|---|---|---|
-| `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 12120016960 (12.12 GB) | `coder` |
-| `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | `unsloth/Qwen3.6-35B-A3B-GGUF` | 22360456160 (22.36 GB) | `coder-moe` |
-| `Qwen3-Embedding-0.6B-Q8_0.gguf` | `Qwen/Qwen3-Embedding-0.6B-GGUF` | 639150592 (0.64 GB) | `embed` |
-| `qwen3-reranker-0.6b-q8_0.gguf` | `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF` | 639153184 (0.64 GB) | `rerank` |
+| File | Size in bytes | llama-swap id |
+|---|---|---|
+| `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` | 12120016960 (12.12 GB) | `coder` |
+| `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | 22360456160 (22.36 GB) | `coder-moe` |
+| `Qwen3-Embedding-0.6B-Q8_0.gguf` | 639150592 (0.64 GB) | `embed` |
+| `qwen3-reranker-0.6b-q8_0.gguf` | 639153184 (0.64 GB) | `rerank` |
 
 ### Check the free space for the models
 
@@ -63,6 +68,11 @@ Table: Model files to download
 
 ### Start the model downloads
 
+#### Prerequisites
+
+- The release is cloned in `/mnt/tank/ai/stacks/local-agent-stack`
+  ([Clone the release tag](#clone-the-release-tag)).
+
 #### About this task
 
 Each file is downloaded by `curl` in a throwaway container of the llama-swap image, the same image
@@ -72,76 +82,74 @@ shell. The four containers, `dl-coder`, `dl-coder-moe`, `dl-embed` and `dl-reran
 time; each one downloads one file and stops. `-C -` makes `curl` continue a partial file instead of
 starting again.
 
+The commands take the image from `stack/inference/compose.yaml` and the repository, revision and
+file name of each model from `stack/inference/models.tsv`, both in the clone, so they download
+exactly what the release names.
+
 #### Steps
 
-1. Store the image name in a shell variable for the commands that follow:
+1. Refresh the `sudo` credentials, so that the commands with pipes below do not prompt:
 
-        IMG=ghcr.io/mostlygeek/llama-swap:v273-cuda-b12407
-        IMG=$IMG@sha256:8fd9f1cfe9e96cddf53fbdc5cb2683b19633ab49b1a41a406e6239376ead65e6
+        sudo -v
 
-    The variable lasts until the shell closes. In a new shell, run this step again.
+2. Store the image and the path of the model list in shell variables:
 
-2. Start the download of the `coder` model:
+        IMG=$(sed -n 's/^ *image: *\(ghcr\.io\/mostlygeek\/llama-swap:.*\)$/\1/p' \
+          /mnt/tank/ai/stacks/local-agent-stack/stack/inference/compose.yaml)
+        MODELS=/mnt/tank/ai/stacks/local-agent-stack/stack/inference/models.tsv
+        echo "$IMG"
 
-        REPO=ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF
-        REV=d562806dbafae37109975e970aae91b43e73b440
-        FILE=Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
-        sudo docker run -d --name dl-coder -e NVIDIA_VISIBLE_DEVICES=void \
-          -v /mnt/tank/ai/models/gguf:/gguf --entrypoint curl "$IMG" \
-          -fsSL --retry 5 -C - -o "/gguf/$FILE" \
-          "https://huggingface.co/$REPO/resolve/$REV/$FILE"
+    The output is the image of the `llama-swap` container, pinned by tag and digest:
+    `ghcr.io/mostlygeek/llama-swap:v273-cuda-b12407@sha256:` followed by 64 hexadecimal digits.
 
-    Docker pulls the image the first time, then prints the ID of the new container.
+3. Define the shell function `dl`, which starts the download of one model:
 
-3. Start the download of the `coder-moe` model:
+        dl() {
+          awk -F '\t' -v id="$1" '$1 == id { print $2, $3, $4 }' "$MODELS" |
+            while read -r REPO REV FILE; do
+              sudo docker run -d --name "dl-$1" -e NVIDIA_VISIBLE_DEVICES=void \
+                -v /mnt/tank/ai/models/gguf:/gguf --entrypoint curl "$IMG" \
+                -fsSL --retry 5 -C - -o "/gguf/$FILE" \
+                "https://huggingface.co/$REPO/resolve/$REV/$FILE" < /dev/null
+            done
+        }
 
-        REPO=unsloth/Qwen3.6-35B-A3B-GGUF
-        REV=a483e9e6cbd595906af30beda3187c2663a1118c
-        FILE=Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
-        sudo docker run -d --name dl-coder-moe -e NVIDIA_VISIBLE_DEVICES=void \
-          -v /mnt/tank/ai/models/gguf:/gguf --entrypoint curl "$IMG" \
-          -fsSL --retry 5 -C - -o "/gguf/$FILE" \
-          "https://huggingface.co/$REPO/resolve/$REV/$FILE"
+    `dl <id>` reads the line of `<id>` in `models.tsv` and starts the container `dl-<id>`, which
+    downloads that file from that revision. The variables and the function last until the shell
+    closes. In a new shell, run steps 1 to 3 again.
 
-4. Start the download of the embedding model:
+4. Start the four downloads:
 
-        REPO=Qwen/Qwen3-Embedding-0.6B-GGUF
-        REV=370f27d7550e0def9b39c1f16d3fbaa13aa67728
-        FILE=Qwen3-Embedding-0.6B-Q8_0.gguf
-        sudo docker run -d --name dl-embed -e NVIDIA_VISIBLE_DEVICES=void \
-          -v /mnt/tank/ai/models/gguf:/gguf --entrypoint curl "$IMG" \
-          -fsSL --retry 5 -C - -o "/gguf/$FILE" \
-          "https://huggingface.co/$REPO/resolve/$REV/$FILE"
+        dl coder
+        dl coder-moe
+        dl embed
+        dl rerank
 
-5. Start the download of the reranking model:
+    Docker pulls the image at the first command, then each command prints the ID of a new
+    container. A command that prints nothing names an id that is not in `models.tsv`.
 
-        REPO=ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
-        REV=a02f48bb4f057028298c21fa033da2b30d7742d5
-        FILE=qwen3-reranker-0.6b-q8_0.gguf
-        sudo docker run -d --name dl-rerank -e NVIDIA_VISIBLE_DEVICES=void \
-          -v /mnt/tank/ai/models/gguf:/gguf --entrypoint curl "$IMG" \
-          -fsSL --retry 5 -C - -o "/gguf/$FILE" \
-          "https://huggingface.co/$REPO/resolve/$REV/$FILE"
-
-6. Follow the progress. Run the command again from time to time; the file sizes grow:
+5. Follow the progress. Run the command again from time to time; the file sizes grow:
 
         ls -l /mnt/tank/ai/models/gguf
 
-7. Wait until every download has stopped:
+6. Wait until every download has stopped:
 
         sudo docker wait dl-coder dl-coder-moe dl-embed dl-rerank
 
     The command returns when the last container stops, and prints one exit code per container.
     Four lines of `0` mean that every download completed.
 
-8. If a line is not `0`, display the error of that container, for example `dl-coder-moe`:
+7. If a line is not `0`, display the error of that container, for example `dl-coder-moe`:
 
         sudo docker logs dl-coder-moe
 
-    Remove the container with `sudo docker rm dl-coder-moe` and run its command from steps 2 to 5
-    again. `curl` continues from where the file stopped.
+    Remove the container and start its download again. `curl` continues from where the file
+    stopped:
 
-9. Remove the download containers:
+        sudo docker rm dl-coder-moe
+        dl coder-moe
+
+8. Remove the download containers:
 
         sudo docker rm dl-coder dl-coder-moe dl-embed dl-rerank
 
@@ -164,26 +172,22 @@ image store.
 
         cd /mnt/tank/ai/models/gguf
 
-3. Compare the SHA-256 checksum of each file with the value that Hugging Face publishes for that
-   revision. Paste the whole block; reading 35.8 GB takes a few minutes. Each entry is split over
-   two lines; the shell joins the lines that end with a backslash:
+3. Compare the SHA-256 checksum of each file with the value in `stack/inference/models.sha256`,
+   the checksum that Hugging Face publishes for that file at its revision. The file in the clone
+   holds these lines:
 
-        sha256sum -c <<EOF
-        58fd826723939933dc86f45b7fe04545cbc2de1c70f6fe2cdd3858c87a98c12f  \
-        Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
-        707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450  \
-        Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
-        06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439  \
-        Qwen3-Embedding-0.6B-Q8_0.gguf
-        22c9979ce4fbcdc5acdc310c6641c32797eff1aa980b8f7a2db8a8ea23429a48  \
-        qwen3-reranker-0.6b-q8_0.gguf
-        EOF
+    {{ include stack/inference/models.sha256 }}
 
-    The output has four lines, each a file name followed by `OK`.
+    Check the four files against it. Reading 35.8 GB takes a few minutes:
+
+        sha256sum -c /mnt/tank/ai/stacks/local-agent-stack/stack/inference/models.sha256
+
+    The output has four lines, each a file name followed by `: OK`.
 
 4. If a line reads `FAILED`, delete that file, for example
-   `sudo rm /mnt/tank/ai/models/gguf/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`, download it again as in
-   [Start the model downloads](#start-the-model-downloads), and repeat this task.
+   `sudo rm /mnt/tank/ai/models/gguf/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`, and download it again with
+   the function of [Start the model downloads](#start-the-model-downloads): `dl coder-moe`, then
+   `sudo docker wait dl-coder-moe` and `sudo docker rm dl-coder-moe`. Repeat this task.
 
 5. Return to your home directory:
 
@@ -236,7 +240,8 @@ Other properties of the compose file:
   container's log rotates at 10 MB, five files.
 
 The app reads its variables from `/mnt/tank/ai/secrets/inference.env`, which Chapter 3 generated
-from this example file:
+from this example file in
+[Generate the environment files on the workstation](#generate-the-environment-files-on-the-workstation):
 
 {{ include stack/inference/inference.env.example }}
 
@@ -370,7 +375,8 @@ Table: LiteLLM model names
 - **Rerank route** (`hosted_vllm/rerank`). LiteLLM posts the Cohere-style request to
   `http://llama-swap:8080/rerank` and returns `results` with `index` and `relevance_score`.
 - `max_input_tokens: 65536` is what `/v1/models` and `/model/info` report. Claude Code's own window
-  is set on the client (`CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536`, Chapter 7).
+  is set on the client (`CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536`, Chapter 7,
+  [Claude Code settings for the gateway](#claude-code-settings-for-the-gateway)).
 - `cost_per_second: 0.0001` is a notional price per second of request time on the GPU models. At
   that price, a key budget of 50 allows 500,000 seconds, so budgets act as GPU-time quotas. The CPU
   models carry no price. Usage logs record tokens and duration for every request either way.
@@ -467,12 +473,15 @@ app's **Edit** screen later shows only these lines, not the included files.
     App names use lower-case letters, digits and hyphens, start with a letter, and have at most 40
     characters.
 
-3. Enter the following YAML in **Custom Config**:
+3. Enter the following YAML in **Custom Config**. It is the file
+   `stack/inference/truenas-app.yaml` of the release:
 
-    {{ include stack/inference/README.md lines=24-27 }}
+    {{ include stack/inference/truenas-app.yaml }}
 
-    On the workstation, `python3 tools/deploy.py render --app ai-inference` in the clone prints the
-    same lines.
+    On the workstation, in the clone, `python3 tools/deploy.py render --app ai-inference` prints the
+    same four lines after a `# ai-inference` line. When the clone has the release tag, it adds an
+    `x-local-agent-stack` block with the content hashes that `deploy.py apply` records
+    ([Setting up deploy.py](#setting-up-deploypy)). Paste only the four lines.
 
 4. Click **Save**.
 
@@ -513,11 +522,13 @@ sudo docker logs --tail 100 litellm
 
 #### About this task
 
-A redeploy re-reads the included files and recreates every container of the app. Redeploy after
-the clone moves to a new release tag (Chapter 10) and after you change a file that the app includes
-or mounts, such as the override in
-[Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit). The GPU model
-loads again, so clients wait for a minute or more.
+A redeploy re-reads the included files and recreates every container of the app. After a release
+update, `deploy.py apply` does this by itself when the release changed the app's files
+([Apply the release](#apply-the-release)). Redeploy by hand after you change a file that only your
+server has, such as the copy and the override file in
+[Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit), and whenever
+you move the clone to another tag without `deploy.py`. The GPU model loads again, so clients wait
+for a minute or more.
 
 #### Steps
 
@@ -541,8 +552,9 @@ loads again, so clients wait for a minute or more.
 !!! note
     llama-swap runs with `-watch-config` and reloads its configuration when the file changes. The
     configuration file is mounted as a single file, and it is not verified that llama-swap notices a
-    file that `git` replaced, because a single-file mount keeps the old file. Always redeploy after
-    a `git checkout` or `git pull` in the clone, and check the result with step 2.
+    file that `git` replaced, because a single-file mount keeps the old file. When a `git checkout`
+    in the clone changes the file, let `deploy.py apply` recreate the app, which it does for a
+    changed file, or redeploy it by hand, and check the result with step 2.
 
 ## Verify the models load
 
@@ -638,7 +650,8 @@ standard input.
 
 The models loaded without errors. Keep the log in mind for later: a "Forcing full prompt
 re-processing" line means that a client changed earlier messages of a conversation, which makes
-the model process the whole prompt again (Chapter 9 checks for it).
+the model process the whole prompt again. Chapter 9 counts these lines in
+[Watch a real agent session for tool-call problems](#watch-a-real-agent-session-for-tool-call-problems).
 
 ### Send test requests through ai-net
 
@@ -756,8 +769,9 @@ open with `MK` set for the next topic.
 The master key is for administration only. Each client gets its own LiteLLM virtual key, limited
 to the model names it needs, so that the usage logs show which client sent each request and a key
 can be revoked without affecting the others. This topic creates the keys of the two workstations.
-Open WebUI gets its own key in Chapter 6, in
-[Create the virtual key that Open WebUI uses](#create-the-virtual-key-that-open-webui-uses).
+Open WebUI gets its own key, with the five names it uses, in Chapter 6:
+[Create the virtual key that Open WebUI uses](#create-the-virtual-key-that-open-webui-uses). Do not
+create it in this chapter.
 
 ### Workstation keys and where they go
 
@@ -875,12 +889,12 @@ server's environment files.
 1. On `c4dev`, store the `c4dev` key. Run the command, paste the key at the prompt, and press
    Enter. The key is not echoed and does not enter the shell history:
 
-        (umask 077; read -rsp 'LiteLLM key: ' key; echo; \
+        (umask 077; printf 'LiteLLM key: '; read -rs key; echo; \
           printf '%s\n' "$key" > ~/.config/local-agent-stack/secrets/litellm-c4dev.key)
 
 2. Store the `mac` key in the same way:
 
-        (umask 077; read -rsp 'LiteLLM key: ' key; echo; \
+        (umask 077; printf 'LiteLLM key: '; read -rs key; echo; \
           printf '%s\n' "$key" > ~/.config/local-agent-stack/secrets/litellm-mac.key)
 
 3. Verify the files:
@@ -947,7 +961,14 @@ The response lists the deleted key under `deleted_keys`.
 `tools/bench.sh` measures the llama.cpp build of the stack on the server: whether a model
 configuration fits in VRAM, how much GPU memory it holds, and its prompt and generation speed. Run
 it now, before any client depends on the stack, to confirm that the `coder` configuration fits.
-Chapter 9 uses the same tool to record a baseline and to tune the fast profile.
+Chapter 9 uses the same tool to record a baseline and to tune the fast profile
+([Record a benchmark baseline](#record-a-benchmark-baseline)).
+
+`bench.sh` measures speed and memory, not the quality of the answers. To measure whether a change
+to a model or its flags keeps the models good at tool calling, coding and retrieval, the repository
+has `tools/eval.py`, which runs evaluation suites from the workstation through the gateway and
+compares the results with a stored baseline; Chapter 9 describes it in
+[Evaluations and the regression gate](#evaluations-and-the-regression-gate).
 
 ### How bench.sh works
 
@@ -1119,12 +1140,14 @@ in place of the release's file, and the app's YAML lists both files.
 Fallback A costs speed: generation drops from the estimated 50 to 65 tokens per second to 40 to 45.
 Fallback B also shrinks the window that every client relies on.
 
-!!! caution
-    While the override is in place, `tools/deploy.py drift` reports `ai-inference` as different
-    from the desired state, and `tools/deploy.py apply` replaces the app's YAML with the plain
-    include, which removes the override. Repeat this task after every release update, so that the
-    copy follows the release's file. To make a fallback permanent, change
-    `stack/inference/llama-swap/config.yaml` in the repository through the workflow of Chapter 8.
+!!! note
+    The copy does not follow the release. After every release update, write it again with steps 2
+    and 3 and redeploy the app as in
+    [Redeploy ai-inference after a change](#redeploy-ai-inference-after-a-change). `deploy.py` does
+    not detect changes to the copy or to the override file: redeploy by hand after you change
+    either. To make a fallback permanent, change `stack/inference/llama-swap/config.yaml` in the
+    repository through the workflow of Chapter 8
+    ([Start work on an issue](#start-work-on-an-issue)).
 
 !!! warning
     Fallback B lowers the server's context below the 65,536 tokens that the clients are configured
@@ -1196,11 +1219,38 @@ Fallback B also shrinks the window that every client relies on.
 
 9. Check the GPU memory again as in [Check GPU memory and processes](#check-gpu-memory-and-processes).
 
+10. List the override in your desired-state file, the copy of `deploy/truenas.toml` that Chapter 10
+    creates in [Create your desired-state file](#create-your-desired-state-file). Add this line to
+    the `[apps.ai-inference]` table, below its `stack` line; if you create the file later, add the
+    line then:
+
+        overrides = ["/mnt/tank/ai/appdata/llama-swap/fallback.override.yaml"]
+
+    `deploy.py apply` then writes the same two-path YAML as step 6, followed by its content hashes,
+    and keeps it on every later apply. `deploy.py plan` shows
+    `override: /mnt/tank/ai/appdata/llama-swap/fallback.override.yaml` under the app. Without the
+    line, `apply` would replace the YAML with the four lines of `truenas-app.yaml` and drop the
+    fallback.
+
 #### Results
 
-`coder` loads with the fallback configuration. To return to the release's configuration, edit the
-app again, restore the single-path YAML of
-[Install ai-inference with Install via YAML](#install-ai-inference-with-install-via-yaml), and save.
+`coder` loads with the fallback configuration.
+
+To return to the release's configuration, remove the `overrides` line from the
+`[apps.ai-inference]` table of your desired-state file and apply it from the workstation clone:
+
+```
+cd ~/local-agent-stack
+~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py \
+  --file ~/.config/local-agent-stack/desired.toml apply --app ai-inference
+```
+
+Without a desired-state file, edit the app instead, replace **Custom Config** with the four lines of
+`stack/inference/truenas-app.yaml` from
+[Install ai-inference with Install via YAML](#install-ai-inference-with-install-via-yaml), and
+click **Save**. In both cases, the copy and the override file under
+`/mnt/tank/ai/appdata/llama-swap` are no longer used; delete them with
+`sudo rm /mnt/tank/ai/appdata/llama-swap/config.yaml /mnt/tank/ai/appdata/llama-swap/fallback.override.yaml`.
 
 ## Use the fast profile
 
@@ -1291,7 +1341,8 @@ This task switches from the TrueNAS shell, to see the swap and its cost. From Ch
 #### Results
 
 The fast profile is loaded. The `-t` and `--n-cpu-moe` values of `coder-moe` are starting points;
-Chapter 9 measures them on your system.
+Chapter 9 measures them on your system in
+[Tune and record the fast profile](#tune-and-record-the-fast-profile).
 
 ### Return to the default profile
 
@@ -1324,5 +1375,5 @@ request to a name based on `coder`, so that the next client does not wait for th
 
 #### Next steps
 
-Continue with Chapter 5 to install the edge app, which gives the gateway its address
-`https://llm.lab.example.com`.
+Continue with Chapter 5, [Overview of the edge app](#overview-of-the-edge-app), to install the
+edge app, which gives the gateway its address `https://llm.lab.example.com`.

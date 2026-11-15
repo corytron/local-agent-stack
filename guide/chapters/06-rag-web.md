@@ -132,8 +132,8 @@ restart. The stack keeps the default.
 
 Open WebUI uses one LiteLLM virtual key for chat, embeddings and reranking, and its model selector
 lists exactly the models that the key allows. The key must allow `local-coder`, `local-fast`,
-`local-coder-moe`, `local-embed` and `local-rerank`. If you already created this key in Chapter 4
-and have its value, skip this task.
+`local-coder-moe`, `local-embed` and `local-rerank`. This is the only task that creates it;
+Chapter 4 creates only the keys of the workstations.
 
 The command below runs inside the `litellm` container and calls LiteLLM's `/key/generate` endpoint
 with the master key from the container's own environment, so the master key never appears on the
@@ -327,12 +327,15 @@ The template of `rag.env`, for reference:
 
 4. In **Name**, enter `ai-rag`.
 
-5. In **Custom Config**, enter exactly the following YAML:
+5. In **Custom Config**, enter exactly the following YAML. It is the file
+   `stack/rag/truenas-app.yaml` of the release:
 
-        include:
-          - path: /mnt/tank/ai/stacks/local-agent-stack/stack/rag/compose.yaml
-            env_file: /mnt/tank/ai/secrets/rag.env
-        services: {}
+    {{ include stack/rag/truenas-app.yaml }}
+
+    On the workstation, in the clone, `python3 tools/deploy.py render --app ai-rag` prints the same
+    four lines after a `# ai-rag` line. When the clone has the release tag, it adds an
+    `x-local-agent-stack` block with the content hashes that `deploy.py apply` records
+    ([Setting up deploy.py](#setting-up-deploypy)). Paste only the four lines.
 
 6. Click **Save**.
 
@@ -501,8 +504,16 @@ repository, so the image must be on the server before Compose can start the app.
 
 The `mcp-hub` service names the image `ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0` and the
 build context `./mcp-hub`. Compose pulls the image if it is published, and otherwise builds it from
-`stack/web/mcp-hub` in the clone on the server. For release 1.0 no workflow publishes this image,
-so expect a build.
+`stack/web/mcp-hub` in the clone on the server.
+
+The GitHub Actions workflow **MCP hub image** (`.github/workflows/mcp-hub-image.yml`) builds the
+image from `stack/web/mcp-hub` on a push to `main` that changes that folder or the workflow, or on
+a manual run, and publishes it on the GitHub Container Registry with a signed build provenance
+attestation, in the same way as the Caddy image
+([How the image is built and published](#how-the-image-is-built-and-published)). When this guide
+was written, the image had not yet been published, and the compose file names it by tag only,
+without a digest. Until a release pins the digest, a later run of the workflow can publish a
+different image under the same tag. If the pull in step 1 fails, build the image on the server.
 
 The build starts from `ghcr.io/sparfenyuk/mcp-proxy:v0.15.0-debian-node`, pinned by digest, and adds
 two Node.js MCP servers, installed with `npm ci` from the lock file (127 packages, none with an
@@ -536,6 +547,14 @@ uses the image at once.
         sudo docker image ls ghcr.io/corytron/local-agent-stack-mcp-hub
 
     The list shows the tag `0.15.0` with a size of about 430 MB.
+
+4. Optional, if step 1 pulled the image: on the workstation, with the GitHub CLI (`gh`) installed
+   and logged in, verify the provenance of the image:
+
+        gh attestation verify oci://ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0 --repo corytron/local-agent-stack
+
+    The command reports a successful verification. The attestation was signed by the workflow
+    `.github/workflows/mcp-hub-image.yml` of the repository.
 
 #### Results
 
@@ -590,12 +609,15 @@ first start. The installation itself does not need `ai-edge`; signing in does.
 
 3. In **Name**, enter `ai-web`.
 
-4. In **Custom Config**, enter exactly the following YAML:
+4. In **Custom Config**, enter exactly the following YAML. It is the file
+   `stack/web/truenas-app.yaml` of the release:
 
-        include:
-          - path: /mnt/tank/ai/stacks/local-agent-stack/stack/web/compose.yaml
-            env_file: /mnt/tank/ai/secrets/web.env
-        services: {}
+    {{ include stack/web/truenas-app.yaml }}
+
+    On the workstation, in the clone, `python3 tools/deploy.py render --app ai-web` prints the same
+    four lines after a `# ai-web` line. When the clone has the release tag, it adds an
+    `x-local-agent-stack` block with the content hashes that `deploy.py apply` records
+    ([Setting up deploy.py](#setting-up-deploypy)). Paste only the four lines.
 
 5. Click **Save**.
 

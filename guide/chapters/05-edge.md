@@ -374,13 +374,13 @@ The token exists, limited to one zone with two permissions.
 
 These commands read the token from a prompt, so it is not echoed and does not enter the shell
 history, and pass it to `curl` on standard input, so it does not appear in the process list. Run
-them in `bash` on the workstation.
+them on the workstation.
 
 #### Steps
 
 1. Read the token into a shell variable. Paste the token at the prompt and press Enter:
 
-        read -rsp 'Cloudflare token: ' CF_TOKEN; echo
+        printf 'Cloudflare token: '; read -rs CF_TOKEN; echo
 
 2. Check that the token is valid:
 
@@ -597,7 +597,9 @@ with every capability dropped in the container, a binary that carries one cannot
     release pins the digest (`:2.11.9@sha256:<digest>`), a later run of the workflow can publish a
     different image under the same tag, and a pull replaces the image on the server. Check the
     image before you install, as described in the next task, and compare its digest with the
-    summary of the workflow run that built it.
+    summary of the workflow run that built it. The MCP hub image of the `ai-web` app, which the
+    workflow **MCP hub image** (`.github/workflows/mcp-hub-image.yml`) publishes, is in the same
+    state ([Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image)).
 
 ### Check the Caddy image on TrueNAS
 
@@ -655,7 +657,7 @@ The image is on the server, its digest is recorded, and the `Caddyfile` is valid
 This task applies only to the maintainer of the GitHub repository that publishes the image, for
 example after a fork. GitHub creates a new container package as private, and a package does not
 inherit the visibility of its repository. Do this once, after the first run of the **Caddy image**
-workflow.
+workflow, and once for the MCP hub image after the first run of its workflow.
 
 #### Steps
 
@@ -669,9 +671,13 @@ workflow.
 4. Pin the digest from the summary of the workflow run in `stack/edge/compose.yaml`, through a
    pull request.
 
+5. Repeat steps 1 to 4 for the package `local-agent-stack-mcp-hub`, which the workflow **MCP hub
+   image** (`.github/workflows/mcp-hub-image.yml`) publishes in the same way for the `ai-web` app
+   (Chapter 6). Its digest is pinned in `stack/web/compose.yaml`.
+
 #### Results
 
-The package is public; anyone can pull it without logging in, and TrueNAS needs no registry
+The packages are public; anyone can pull them without logging in, and TrueNAS needs no registry
 credentials.
 
 ### Build the Caddy image on TrueNAS
@@ -729,11 +735,35 @@ takes several minutes.
 
     If you also use the internal CA of Appendix D, list its override file as a third path.
 
+6. List the override in your desired-state file, the copy of `deploy/truenas.toml` that Chapter 10
+   creates in [Create your desired-state file](#create-your-desired-state-file). Add this line to
+   the `[apps.ai-edge]` table, below its `stack` line; if you create the file later, add the line
+   then:
+
+        overrides = ["/mnt/tank/ai/appdata/caddy/local-image.override.yaml"]
+
+    With the internal CA of Appendix D as well, the list names both files, in the order of the
+    paths in step 5. `deploy.py apply` then writes the same YAML as step 5, followed by its content
+    hashes, and keeps the override; without the line, `apply` would replace the YAML with the four
+    lines of `stack/edge/truenas-app.yaml` and return to the published image.
+
 #### Results
 
 The edge app runs the image built on the server. Repeat steps 1 to 3 after every release update
-that changes `stack/edge/Dockerfile`. To return to the published image, edit the app and use the
-standard YAML.
+that changes `stack/edge/Dockerfile`, then redeploy the app with
+`sudo midclt call -j app.redeploy ai-edge`: a redeploy does not rebuild the image, and `deploy.py`
+does not detect a rebuilt image or a changed override file.
+
+!!! note
+    `deploy.py` compares the images that an app runs with the images of the release's compose file,
+    not with an override. While the local image runs, `deploy.py plan` and `drift` report `ai-edge`
+    with `runs images other than <release-tag>'s`, and `deploy.py apply` redeploys the app, which
+    keeps the local image. To avoid that redeploy, name the other apps with `--app` when you apply.
+
+To return to the published image, remove the local-image file from the `overrides` line of your
+desired-state file (the whole line if it names no other file) and run `deploy.py apply --app ai-edge`
+as in Chapter 10, or, without a desired-state file, edit the app and use the YAML of
+[Create the ai-edge custom app](#create-the-ai-edge-custom-app).
 
 ## Install the ai-edge app
 
@@ -802,15 +832,18 @@ screen of a custom app shows only this YAML; the included files are changed thro
 
 2. Enter **Name** `ai-edge`.
 
-3. Enter the following YAML in **Custom Config**:
+3. Enter the following YAML in **Custom Config**. It is the file `stack/edge/truenas-app.yaml` of
+   the release:
 
-        include:
-          - path: /mnt/tank/ai/stacks/local-agent-stack/stack/edge/compose.yaml
-            env_file: /mnt/tank/ai/secrets/edge.env
-        services: {}
+    {{ include stack/edge/truenas-app.yaml }}
 
-    The line `services: {}` is required for a YAML that consists of an `include` only. If you built
-    the image on the server, use the YAML from
+    The line `services: {}` is required for a YAML that consists of an `include` only. On the
+    workstation, in the clone, `python3 tools/deploy.py render --app ai-edge` prints the same four
+    lines after a `# ai-edge` line. When the clone has the release tag, it adds an
+    `x-local-agent-stack` block with the content hashes that `deploy.py apply` records
+    ([Setting up deploy.py](#setting-up-deploypy)). Paste only the four lines.
+
+    If you built the image on the server, use the YAML from
     [Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas) instead.
 
 4. Click **Save**.

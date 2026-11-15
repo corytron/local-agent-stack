@@ -166,8 +166,9 @@ services:
   mcp-hub:
     # Built from mcp-hub/Dockerfile. Compose pulls this tag if it is published, and builds it
     # from mcp-hub/ on the NAS if it is not.
-    # UNVERIFIED: no workflow publishes this image yet, and building on TrueNAS 25.10 (the
-    # fallback) was not tried there; it was built and smoke-tested on c4dev (README.md).
+    # .github/workflows/mcp-hub-image.yml publishes it from main; pin its digest here from the
+    # first run's summary. UNVERIFIED: building on TrueNAS 25.10 (the fallback) was not tried
+    # there; the image was built and smoke-tested on c4dev (README.md).
     image: ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0
     build:
       context: ./mcp-hub
