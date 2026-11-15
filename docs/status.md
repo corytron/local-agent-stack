@@ -1,5 +1,7 @@
 # Status
 
+- 2026-11-15: **v1.1 released** (https://github.com/corytron/local-agent-stack/releases/tag/v1.1):
+  the MCP hub image rebuilt with zod 4.6.7 (#25, high advisory); guide revision A01.
 - 2026-11-15: **v1.0 released** (https://github.com/corytron/local-agent-stack/releases/tag/v1.0):
   the deployment guide PDF (385 pages), `stack-v1.0.tar.gz`, `SHA256SUMS.txt`, with build
   attestations. Both project-built images (Caddy, MCP hub) are public and pinned by digest.
