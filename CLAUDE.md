@@ -4,7 +4,8 @@ A self-hosted, local-model equivalent of Claude Code for one home lab: open-weig
 from containers on a TrueNAS SCALE server with one NVIDIA RTX 4080 (16 GB), a terminal coding
 agent on the workstations, a web GUI, retrieval over the owner's documents (RAG), web search,
 and tools that reach remote hosts over SSH. The deliverable is a vendor-style **deployment guide**
-(`guide/` → `build/guide/*.pdf`) plus the files it installs (`stack/`). Private repository.
+(`guide/` → `build/guide/*.pdf`) plus the files it installs (`stack/`). **Public on GitHub under
+the Apache License 2.0 since 2026-11-15** (`LICENSE`, `NOTICE`).
 
 ## How I want you to work
 
@@ -31,9 +32,16 @@ and tools that reach remote hosts over SSH. The deliverable is a vendor-style **
 - **A changelog for every release.** `CHANGELOG.md` `## Unreleased` gets a line per PR that
   changes the stack or the guide. Releases are tags `vX.Y` with the guide PDF attached.
 - Commit in small, working steps with clear messages.
-- Never commit secrets: API keys, SSH keys, tokens, LAN addresses, hostnames. Placeholders only:
-  `192.0.2.10` TrueNAS (`truenas.lan`), `192.0.2.20` workstation (`c4dev.lan`), pool `tank`,
-  keys `sk-local-...`. `.env` files are gitignored; `stack/*.env.example` documents them.
+- **The repository is public.** Never commit secrets or private data: API keys, SSH keys, DNS
+  provider tokens, LAN addresses, the owner's domain, names. Placeholders only: `192.0.2.10`
+  TrueNAS, `192.0.2.20` workstation, domain `lab.example.com`, pool `tank`, keys `sk-local-...`.
+  The workstation's name `c4dev` is fine. `.env` files are gitignored; `stack/*.env.example`
+  documents them. Never copy passages of login-walled or restrictively licensed docs.
+- **Code scanning after every merge:** read the open code-scanning and secret-scanning alerts
+  (`gh api "repos/corytron/local-agent-stack/code-scanning/alerts?state=open"`); an issue and a
+  PR per real finding, dismiss false positives with a reason.
+- **GitHub Discussions is the archive of every report:** each research note, agent hand-back,
+  review and release is posted there as it arrives, with private data replaced by placeholders.
 
 ## Working with agents
 

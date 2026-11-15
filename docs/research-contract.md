@@ -18,9 +18,11 @@ by hand, plus the files it installs (compose files, configs, scripts) kept in th
 
 - GPU: NVIDIA GeForce RTX 4080 (ASUS ProArt edition), **16 GB GDDR6X**, Ada Lovelace, compute
   capability 8.9. One GPU only. Assume it may be a 4080 or 4080 SUPER: same 16 GB.
-- Host: TrueNAS SCALE (release not yet confirmed; assume a current Docker-based release,
-  24.10 "Electric Eel" or later, and say what differs per release). System RAM and CPU are not
-  yet confirmed: give recommendations for **32 GB, 64 GB and 128 GB** system RAM tiers.
+- Host (owner, 2026-11-15, #7): TrueNAS SCALE **25.10.8 "Goldeye"**, **62.3 GiB usable RAM**
+  (64 GB ECC, shared with ZFS ARC), CPU **Intel Xeon w5-3435X** (Sapphire Rapids, 16 cores /
+  32 threads, AVX-512 and AMX). Memory is **two 32 GB DIMMs: 2 of 8 channels populated**
+  (~77 GB/s theoretical), so CPU offload is bandwidth-bound. Size for this box; keep other
+  RAM tiers as a short table.
 - Clients: an Ubuntu VM ("c4dev", 32 cores) where the owner runs coding work, a Mac (Claude
   Desktop app over SSH today), a Windows VM. All on one home LAN.
 - Local only where possible: the owner's rule is **no reliance on cloud services** for the core

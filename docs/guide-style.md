@@ -45,8 +45,8 @@ chapter's H2 headings under this introduction by itself; do not write one.
 - Verification after every major step: what to run and the exact expected output (or the shape
   of it).
 - No marketing, no first person, no "simply", "just", "easy".
-- Private data never appears: the server is `192.0.2.10` (`truenas.lan`), the workstation
-  `192.0.2.20` (`c4dev.lan`), the pool `tank`, keys `sk-local-...`.
+- Private data never appears: the server is `192.0.2.10` (`truenas.lab.example.com`), the workstation
+  `192.0.2.20` (`c4dev`), the domain `lab.example.com`, the pool `tank`, keys `sk-local-...`.
 
 ## Elements
 
