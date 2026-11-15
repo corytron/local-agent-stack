@@ -26,6 +26,8 @@ The stack provides:
 - **Local models.** Qwen3.8-27B, fully resident on an RTX 4080 16 GB, is the main agent model. A
   faster mixture-of-experts profile (Qwen3.6-35B-A3B) can replace it on demand. llama.cpp serves the
   models; llama-swap starts and stops them.
+- **Images.** Both agent models read images, such as screenshots and photos, through a vision
+  projector that runs on the server's CPU. The projectors use no VRAM, so the 64K context stays.
 - **One API endpoint.** LiteLLM serves the OpenAI format (`/v1/...`) and the Anthropic format
   (`/v1/messages`) at `https://llm.lab.example.com`, with one key per client.
 - **A terminal coding agent.** OpenCode 2.3.0 runs on the workstation `c4dev` with sub-agents,
@@ -33,14 +35,15 @@ The stack provides:
   the stack runs on a workstation. Claude Code itself can use the same endpoint as a second,
   unsupported path.
 - **A web GUI.** Open WebUI at `https://chat.lab.example.com` for chat, retrieval over your
-  documents and web search.
+  documents, web search, images in a chat and a long-term memory per user.
 - **Retrieval over your documents (RAG).** Files you copy to an SMB share are parsed, embedded and
   indexed. The web GUI and the coding agent query the same index.
 - **Web search.** A self-hosted SearXNG instance.
 - **Tools.** An MCP hub serves search, page fetch and knowledge-base tools to every client. A
   separate SSH tool on the workstation reaches remote hosts under a deny-by-default policy.
 - **TLS.** Caddy terminates HTTPS for every host name with certificates obtained through the
-  DNS-01 challenge for your own domain.
+  DNS-01 challenge for your own domain. The host names resolve only on the LAN, through local DNS
+  records, for example on a UniFi gateway; the public DNS zone holds none of them.
 
 ### Intended audience
 
@@ -66,7 +69,9 @@ This guide is for the administrator of a home lab or small lab who:
 
 The stack runs as four TrueNAS custom apps. Each app is a compose file in the repository, installed
 through **Install via YAML**. All apps join one external Docker network, `ai-net`, and reach each
-other by container name. Only `caddy` publishes ports on the server.
+other by container name. Only `caddy` publishes ports on the server: 80 and 443 (TCP), and 443
+(UDP) for HTTP/3. The TrueNAS web interface keeps ports of its own, such as 444 for HTTPS in this
+guide's examples, and `tools/deploy.py` reaches the TrueNAS API on that port.
 
 <figure markdown><img src="../figures/architecture.svg" alt="Stack architecture: LAN clients, the TrueNAS server with four apps on ai-net, and outbound connections"><figcaption>Figure: Stack architecture</figcaption></figure>
 
@@ -136,8 +141,15 @@ Table: Models served by the stack
 |---|---|---|---|
 | Qwen3.8-27B, dense, 3.5 bits per weight | `coder` | GPU, 64K context | `local-coder`; `local-fast` (thinking off); `local-opus`, `local-sonnet`, `local-haiku` (Claude Code) |
 | Qwen3.6-35B-A3B, mixture of experts | `coder-moe` | GPU, experts of 16 layers in system RAM | `local-coder-moe` |
+| Vision projector of Qwen3.8-27B, `mmproj-Qwen3.8-27B-Q8_0.gguf` | Loaded by `coder` | CPU, system RAM | The names of `coder` |
+| Vision projector of Qwen3.6-35B-A3B, `mmproj-Qwen3.6-35B-A3B-Q8_0.gguf` | Loaded by `coder-moe` | CPU, system RAM | `local-coder-moe` |
 | Qwen3-Embedding-0.6B | `embed` | CPU | `local-embed` |
 | Qwen3-Reranker-0.6B | `rerank` | CPU | `local-rerank` |
+
+Each chat model loads its own vision projector, a separate GGUF file of about 0.6 GB that turns an
+image into tokens the model reads. The projector files are ggml-org's Q8_0 conversions, pinned by
+revision and checksum like the model files. A projector takes about 1 to 1.5 GiB of system RAM
+(estimate) while its model is loaded, and only one of the two chat models is loaded at a time.
 
 ### Component licences
 
@@ -170,7 +182,7 @@ Table: Component licences
 | ssh-mcp | MIT | The SSH tool |
 | Qwen Code | Apache-2.0 | Optional harness (Appendix B) |
 | Claude Code | Proprietary | Use is subject to Anthropic's Commercial Terms of Service; optional second path |
-| Qwen3.8-27B, Qwen3.6-35B-A3B, Qwen3-Embedding-0.6B, Qwen3-Reranker-0.6B, and the four GGUF files of this guide | Apache-2.0 | Qwen3.8-Flash-Next, an option after a memory upgrade (Appendix B), uses the Qwen Community License 1.0 instead |
+| Qwen3.8-27B, Qwen3.6-35B-A3B, Qwen3-Embedding-0.6B, Qwen3-Reranker-0.6B, and the six GGUF files of this guide (four models, two vision projectors) | Apache-2.0 | Qwen3.8-Flash-Next, an option after a memory upgrade (Appendix B), uses the Qwen Community License 1.0 instead |
 | This project: `stack/`, `clients/`, `tools/`, `evals/`, the guide | Apache-2.0 | The repository's `LICENSE` and `NOTICE` |
 
 Running the stack on your own LAN for yourself and your household needs no permission beyond these
@@ -208,8 +220,8 @@ Table: Repository layout
 |---|---|
 | `stack/` | One directory per app (`inference`, `rag`, `web`, `edge`): the compose file, its configuration files, `truenas-app.yaml` (the four-line YAML that installs the app in TrueNAS) and an example environment file, such as `inference.env.example`, that documents every variable |
 | `clients/` | OpenCode configuration, agents, commands and the guard plugin; Claude Code settings; the ssh-mcp policy example; memory-file templates; `client.env.example`; `install.sh` |
-| `tools/` | `secrets.py` (generates the secrets files), `deploy.py` (plan, apply and drift checks against TrueNAS), `smoke.py` and `bench.sh` (validation), `eval.py` (evaluation suites and the regression gate), `check.sh` (repository checks) |
-| `evals/` | The evaluation suites, their sample documents, the run sets and the thresholds of the regression gate |
+| `tools/` | `secrets.py` (generates the secrets files), `port-inventory.sh` (the read-only port check on TrueNAS), `deploy.py` (plan, apply and drift checks against TrueNAS), `smoke.py` and `bench.sh` (validation), `eval.py` (evaluation suites and the regression gate), `check.sh` (repository checks) |
+| `evals/` | The evaluation suites, their sample documents and image, the run sets and the thresholds of the regression gate |
 | `deploy/` | `truenas.toml`, the desired state that `deploy.py` compares with the server |
 | `guide/` | The source of this guide |
 | `docs/` | The design contract and the research notes, with their sources |
@@ -223,9 +235,9 @@ Table: Deployment sequence
 | Step | Task | Chapter |
 |---|---|---|
 | 1 | Check the hardware and the workstation software, choose names and collect accounts and tokens | 2, Planning the deployment |
-| 2 | Enable the GPU, cap the ZFS ARC, create datasets and the document share, move the TrueNAS UI ports, create `ai-net`, clone the repository, create the secrets and the API keys of `deploy.py` | 3, Preparing TrueNAS SCALE |
-| 3 | Download the models, install `ai-inference` and create the LiteLLM keys of the workstations | 4, Deploying the inference app |
-| 4 | Add DNS records, install `ai-edge` and obtain certificates | 5, Deploying the edge app |
+| 2 | Enable the GPU, cap the ZFS ARC, create datasets and the document share, create `ai-net`, clone the repository, check that ports 80 and 443 are free, create the secrets and the API keys of `deploy.py` | 3, Preparing TrueNAS SCALE |
+| 3 | Download the models and their vision projectors, install `ai-inference` and create the LiteLLM keys of the workstations | 4, Deploying the inference app |
+| 4 | Add the local DNS records, install `ai-edge` and obtain certificates | 5, Deploying the edge app |
 | 5 | Install `ai-rag` and `ai-web`, then complete the Open WebUI first-run settings | 6, Deploying the RAG and web apps |
 | 6 | Install and configure OpenCode and the MCP tools on the workstation | 7, Configuring the coding agent |
 | 7 | Set up project memory, agents and the GitHub workflow | 8, Running projects with agents |
@@ -252,6 +264,7 @@ Table: Claude Code and its local counterparts
 | Slash commands | `/plan`, `/issue`, `/pr` and `/check` |
 | Hooks | The OpenCode plugin `guard.ts` |
 | WebSearch and WebFetch | SearXNG and fetch tools on the MCP hub; OpenCode's `webfetch` |
+| Images pasted or dropped into a prompt | The same, read by the vision projector on the server's CPU, in OpenCode, Claude Code and Open WebUI |
 | MCP servers | The MCP hub at `https://mcp.lab.example.com`, and `ssh-mcp` on the workstation |
 | No equivalent | Retrieval over your documents, in Open WebUI and through the `kb` tool |
 
@@ -277,7 +290,9 @@ Table: Tests made for this release
 | The MCP hub image | `c4dev`, 15 November 2026: `docker build`, then a run with the flags of the compose file next to a SearXNG container on a test network, both removed afterwards | The health check reported `fetch`, `kb` and `searxng`; each server listed its tools; a web search returned live results; `fetch` read a public page and refused a private address; a missing or wrong token got HTTP 401 and an unknown Host header HTTP 421. The `kb` server was not called against a real Open WebUI |
 | The YAML of each app with the `x-local-agent-stack` block that `deploy.py` writes | `docker compose config`, Compose v5.6.0 on `c4dev` | Accepted. The Compose version that TrueNAS bundles was not tried; if it refuses the block, `content_hashes = false` turns it off ([Update the apps without content hashes](#update-the-apps-without-content-hashes)) |
 | `tools/bench.sh` | `c4dev`: `--dry-run`, ShellCheck, unit tests of its request and of its timing parser | Pass; never run on a GPU |
-| `tools/eval.py` and `tools/smoke.py` | `c4dev`: unit tests, `eval.py` against a fake gateway on the loopback address | Pass; never run against the stack |
+| `tools/eval.py` and `tools/smoke.py` | `c4dev`: unit tests, `eval.py` against a fake gateway on the loopback address, including the `vision` set, which sends `evals/images/maple-74.png` | Pass; never run against the stack |
+| `tools/port-inventory.sh` | `c4dev`: ShellCheck, and unit tests that run it under `dash` and BusyBox `sh` with recorded `ss`, `docker ps` and `midclt` output in the formats of TrueNAS 25.10.8 | Pass; never run on TrueNAS |
+| The vision projector files | Revision, size and SHA-256 from the Hugging Face API; the header of each file read at its revision (projector type and projection size, which must match the model) | Recorded in `stack/inference/models.tsv` and `models.sha256` |
 | Image names, tags, digests, environment variables, endpoints and user IDs | Read from each image's metadata and from the projects' sources at the pinned versions | Recorded in `stack/` |
 | First-request prompt sizes of the coding agents | Headless first requests, measured for the research behind this release | The figures in Chapter 8 and Appendix B |
 
@@ -295,7 +310,9 @@ Table: Not verified in this release
 | Inference app | That llama.cpp b12407 loads the MTP head as configured; that the CPU-only models create no CUDA context; that llama-swap notices a changed configuration file | [The coder model entry](#the-coder-model-entry), [The embedding and reranking model entries](#the-embedding-and-reranking-model-entries), [Redeploy ai-inference after a change](#redeploy-ai-inference-after-a-change) |
 | Containers on TrueNAS | The first start of PostgreSQL (`litellm-db` in Chapter 4, `pgvector` in Chapter 6) on a dataset with the **Apps** preset; `oikb` as UID 568; `no-new-privileges` with the PostgreSQL entrypoints and Open WebUI's start script; `gpu-exporter` with every capability dropped. None of the six `ai-rag` and `ai-web` containers was started on TrueNAS | [Recreate the pgvector dataset with the Generic preset](#recreate-the-pgvector-dataset-with-the-generic-preset), [Verify pgvector, docling and oikb](#verify-pgvector-docling-and-oikb), [Install ai-web from a YAML wrapper](#install-ai-web-from-a-yaml-wrapper), [Read the GPU metrics](#read-the-gpu-metrics) |
 | Images this project builds | Building the Caddy image or the MCP hub image on TrueNAS, the fallback when a pull fails | [Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas), [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image) |
-| Open WebUI | The menu and field labels of Open WebUI 0.13.3; the embedding and reranking chain Open WebUI, LiteLLM, llama-swap; the retrieval request of the evaluations | [Configure Open WebUI](#configure-open-webui), [Check the Open WebUI connections and document settings](#check-the-open-webui-connections-and-document-settings), [Evaluate retrieval through Open WebUI](#evaluate-retrieval-through-open-webui) |
+| Open WebUI | The menu and field labels of Open WebUI 0.13.3, including the Memory and image labels (**Memories**, **Memory System Context**, **Personalization** > **Memory**, **Capabilities** > **Vision**), which were read from its source and translations, not in a running instance; the embedding and reranking chain Open WebUI, LiteLLM, llama-swap; the retrieval request of the evaluations | [Configure Open WebUI](#configure-open-webui), [Check the Open WebUI connections and document settings](#check-the-open-webui-connections-and-document-settings), [Evaluate retrieval through Open WebUI](#evaluate-retrieval-through-open-webui), [Image and memory issues](#image-and-memory-issues) |
+| Images | The vision projectors' RAM (about 1 to 1.5 GiB, estimate) and speed (about 11 seconds per image, measured on another machine); images together with MTP drafting and the 64K context; the effect of `-t 16` on `coder`'s decode speed and on the CPU left for the RAG models; whether `coder` reads the text of the evaluation image back exactly | [The coder model entry](#the-coder-model-entry), [Run the vision evaluation](#run-the-vision-evaluation), [Image and memory issues](#image-and-memory-issues) |
+| Ports and DNS | `tools/port-inventory.sh` on TrueNAS: its commands and their output formats were checked in the sources of TrueNAS 25.10.8 and Docker 28.3.1, not on the server; the UniFi Network path **Settings** > **Policy Table** > **Create New Policy** > **DNS**, verified for Network 9.4 and assumed for 10.6 and 11.0; that UniFi accepts no wildcard record; that a Content Filter or Ad Blocking policy that covers the server answers Caddy's DNS queries | [Run the port inventory](#run-the-port-inventory), [Add the host names to local DNS](#add-the-host-names-to-local-dns), [Port inventory issues](#port-inventory-issues), [Edge app issues](#edge-app-issues) |
 | Validation and operation tools | `eval.py` against the stack, including whether LiteLLM forwards `seed` and `parallel_tool_calls`; the `x-local-agent-stack` block with TrueNAS's Compose; the certificate check of the TrueNAS web interface; `deploy.py --local` on TrueNAS and the mail of its cron job; the metrics of the model server in a browser | [Evaluation suites](#evaluation-suites), [How deploy.py works](#how-deploypy-works), [Create the connection settings](#create-the-connection-settings), [Check that deploy.py runs on TrueNAS](#check-that-deploypy-runs-on-truenas), [Create the drift cron job](#create-the-drift-cron-job), [Monitor the model server](#monitor-the-model-server) |
 | Workstations | The macOS path of `clients/install.sh`; the Windows VM path; whether OpenCode reads the system trust store or `NODE_EXTRA_CA_CERTS`; the hub tools in Claude Code; that command-line MCP clients send no `Origin` header | [Install OpenCode on the Mac](#install-opencode-on-the-mac), [What the Windows VM supports](#what-the-windows-vm-supports), [Certificates from the internal CA](#certificates-from-the-internal-ca), [Add the hub tools to Claude Code](#add-the-hub-tools-to-claude-code), [Settings that other apps must match](#settings-that-other-apps-must-match) |
 | Screens of other products | Some TrueNAS 25.10.8 labels used to remove the stack; the Cloudflare dashboard labels; the activation of an older boot environment | [Delete the apps](#delete-the-apps), [Destroy the datasets](#destroy-the-datasets), [Revoke the DNS provider token and records](#revoke-the-dns-provider-token-and-records), [Update TrueNAS within 25.10](#update-truenas-within-2510) |
@@ -369,6 +386,7 @@ Table: Terminology
 | MCP | Model Context Protocol: an open protocol that connects agents to tool servers, over stdio or Streamable HTTP. |
 | MCP hub | The `mcp-hub` container (`mcp-proxy`), which serves several stdio MCP servers over HTTP at `/servers/<name>/mcp` behind one bearer token. |
 | MoE | Mixture of experts: a model architecture that activates only a few expert sub-networks per token. Qwen3.6-35B-A3B has 35 billion parameters, of which about 3 billion are active per token. |
+| mmproj | See vision projector. |
 | MTP | Multi-token prediction: a model head that drafts several tokens ahead, which llama.cpp uses for speculative decoding to raise decode speed. |
 | OpenCode | An open-source (MIT) terminal coding agent, used as the main harness of the stack. |
 | Open WebUI | A self-hosted web interface for chat, retrieval over documents, web search and MCP tools. |
@@ -378,6 +396,8 @@ Table: Terminology
 | RAG | Retrieval-augmented generation: searching your documents and passing the best passages to the model with the question. |
 | Reranker | A model that scores each retrieved passage against the query, so that only the most relevant passages reach the context. |
 | SearXNG | A self-hosted metasearch engine that queries public search engines and returns the results as HTML or JSON. |
+| Split-horizon DNS | Answering a name differently inside the LAN than on the internet. The lab host names resolve to the server only through the local DNS server; the public zone holds none of them. |
+| Vision projector | The part of a vision-language model that turns an image into tokens the model reads. llama.cpp loads it from a separate GGUF file (`--mmproj`, hence "mmproj"); the stack keeps it in system RAM and runs it on the CPU (`--no-mmproj-offload`). |
 | VRAM | Memory on the GPU. The RTX 4080 has 16 GB, which decides which models and context lengths fit. |
 
 ## Revision history
@@ -388,3 +408,4 @@ Table: Revision history
 |---|---|---|
 | A00 | November 2026 | Initial release, for Local Agent Stack v1.0: planning, the four TrueNAS apps, the workstation clients, the project workflow with agents, validation, evaluation, operation, troubleshooting and removal, with six appendices. Written before the first run on the reference server ([Validation status and known issues](#validation-status-and-known-issues)). |
 | A01 | November 2026 | Local Agent Stack v1.1: the MCP hub image is rebuilt with zod 4.6.7 for its knowledge-base server (security advisory, high); no procedure changes. |
+| A02 | November 2026 | Local Agent Stack v1.2: the TrueNAS web interface keeps its own ports (444 for HTTPS in the examples), and the read-only `tools/port-inventory.sh` checks that ports 80 and 443 are free for Caddy; the local DNS records on a UniFi gateway, with the browser, content-filter and public-wildcard pitfalls; the agent models read images through vision projectors on the CPU; Open WebUI's per-user Memory; an optional vision evaluation (`eval.py run --suite vision`). Release updates download new model files before `apply`. |

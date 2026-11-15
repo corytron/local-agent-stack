@@ -3,7 +3,7 @@ kind: appendix
 
 # Configuration file reference
 
-This appendix prints every file that the deployment installs or that you copy and edit, exactly as it ships in release 1.0 of the repository. The chapters quote the parts they need; this appendix is the complete text, for review and for recovery without network access. Files that contain only lock data (package hashes) are not printed; they are in the repository next to the files below: `stack/web/mcp-hub/package-lock.json` and `stack/web/mcp-hub/requirements-fetch.txt`, which pin every package of the MCP hub image, and `tools/requirements-checks.txt`, which pins the check tools of Chapter 8.
+This appendix prints every file that the deployment installs or that you copy and edit, exactly as it ships in release 1.2 of the repository. The chapters quote the parts they need; this appendix is the complete text, for review and for recovery without network access. Files that contain only lock data (package hashes) are not printed; they are in the repository next to the files below: `stack/web/mcp-hub/package-lock.json` and `stack/web/mcp-hub/requirements-fetch.txt`, which pin every package of the MCP hub image, and `tools/requirements-checks.txt`, which pins the check tools of Chapter 8.
 
 ## Inference app files
 
@@ -230,6 +230,25 @@ The YAML of the ai-edge custom app in TrueNAS (the include wrapper).
 
 {{ include stack/edge/truenas-app.yaml }}
 
+## TrueNAS port check
+
+You run this script on TrueNAS from the clone, before you install the edge app and after updates
+(Chapters 3, 5 and 10). It only reads: it runs `ss`, `docker ps` and
+`midclt call system.general.config`, through `sudo` when you are not root, and writes no file.
+
+Table: TrueNAS port check
+
+| File | Purpose |
+|---|---|
+| `tools/port-inventory.sh` | Lists the server's listening ports, the ports that containers publish and the web interface's ports, and says whether 80/tcp, 443/tcp and 443/udp are free for Caddy. |
+
+### tools/port-inventory.sh
+
+Lists the server's listening ports, the ports that containers publish and the web interface's
+ports, and says whether 80/tcp, 443/tcp and 443/udp are free for Caddy.
+
+{{ include tools/port-inventory.sh }}
+
 ## Workstation files
 
 Table: Workstation files
@@ -382,13 +401,16 @@ The desired state tools/deploy.py applies and checks.
 These files decide which evaluation cases `tools/eval.py` runs and when its regression gate fails
 (Chapter 9). They stay in the workstation's clone; nothing installs them on the server. The four
 sample documents of the `rag` suite are fictional; you copy them to the `rag-docs` share only for
-the optional retrieval evaluation of Chapter 9.
+the optional retrieval evaluation of Chapter 9. The image of the optional vision case,
+`evals/images/maple-74.png`, is a PNG file of 640 by 160 pixels that shows the text `MAPLE 74`; it
+is binary and not printed here. `evals/images/make_images.py` draws it with the Python standard
+library; it is a tool for changing the evaluation images, and no procedure of this guide runs it.
 
 Table: Evaluation files
 
 | File | Purpose |
 |---|---|
-| `evals/sets.toml` | The suite order and the run sets `smoke` and `full`. |
+| `evals/sets.toml` | The suite order, the optional cases and the run sets `smoke`, `full` and `vision`. |
 | `evals/gate.toml` | The thresholds of the regression gate of tools/eval.py compare. |
 | `evals/rag-docs/eval-greenhouse-log.md` | Sample document of the rag suite: a greenhouse log. |
 | `evals/rag-docs/eval-heronsgate-backups.md` | Sample document of the rag suite: a backup plan. |
@@ -397,7 +419,7 @@ Table: Evaluation files
 
 ### evals/sets.toml
 
-The suite order and the run sets `smoke` and `full`.
+The suite order, the optional cases and the run sets `smoke`, `full` and `vision`.
 
 {{ include evals/sets.toml }}
 

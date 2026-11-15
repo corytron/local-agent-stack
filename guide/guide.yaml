@@ -1,9 +1,9 @@
 product: Local Agent Stack
-version: "1.1"
+version: "1.2"
 doc: Deployment Guide
 date: November 2026
-rev: A01
-filename: local-agent-stack-1.1-deployment-guide
+rev: A02
+filename: local-agent-stack-1.2-deployment-guide
 author: Local Agent Stack project
 wordmark: "<b>LOCAL</b>AgentStack"
 legal: "Local Agent Stack is a personal project. Product names mentioned in this guide are trademarks of their respective owners and are used for identification only; no affiliation or endorsement is implied."
