@@ -649,7 +649,10 @@ class TestRun(GatewayTest):
         self.assertIn("tests failed", statuses["coding-004"]["reason"])
         gate = self.root / "lenient.toml"
         gate.write_text(
-            "[gate]\npass_rate_drop_points = 5\n[gate.suites.format]\npass_rate_drop_points = 10\n"
+            # The fake gateway's speeds are wall-clock timings that vary on a busy runner, so this
+            # gate checks the pass-rate rules only (test_speed_drop_fails_the_gate covers speed).
+            "[gate]\npass_rate_drop_points = 5\ntokens_per_second_drop_percent = 100\n"
+            "[gate.suites.format]\npass_rate_drop_points = 10\n"
             "[gate.suites.coding]\npass_rate_drop_points = 12.5\n",
             encoding="utf-8",
         )
