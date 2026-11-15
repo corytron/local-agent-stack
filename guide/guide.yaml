@@ -11,10 +11,12 @@ chapters:
   - chapters/01-introduction.md
   - chapters/02-planning.md
   - chapters/03-truenas.md
+  - chapters/04-inference.md
   - chapters/05-edge.md
   - chapters/06-rag-web.md
   - chapters/07-workstation.md
   - chapters/08-workflow.md
+  - chapters/09-validation.md
   - chapters/10-operations.md
   - chapters/11-troubleshooting.md
   - chapters/12-uninstall.md
