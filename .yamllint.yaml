@@ -1,0 +1,30 @@
+# yamllint (pinned in tools/requirements-checks.txt), run by tools/check.sh's "yaml" check with
+# --strict (a warning fails too) over every YAML file git tracks or would track: compose files,
+# llama-swap and LiteLLM configs, workflows, the guide's guide.yaml.
+extends: default
+
+ignore: |
+  build/
+  .venv/
+
+rules:
+  # Compose and config files start without "---"; GitHub's templates and workflows too.
+  document-start: disable
+  # GitHub Actions' "on:" key is a YAML 1.1 boolean to yamllint; values are still checked.
+  truthy:
+    check-keys: false
+  # Image references with digests, model commands, URLs and prose values (guide.yaml's legal
+  # line) do not wrap well in YAML.
+  line-length: disable
+  comments:
+    min-spaces-from-content: 1
+  # Flow mappings and sequences may be written { a: 1 } or {a: 1}, [a] or [ a ].
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+  brackets:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+  indentation:
+    spaces: consistent
+    indent-sequences: consistent

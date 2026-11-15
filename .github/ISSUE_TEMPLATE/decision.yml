@@ -1,0 +1,23 @@
+name: Decision for the owner
+description: A design choice that needs the owner's answer before work goes on
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: One decision, stated so it can be answered in a line.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options
+      description: Each option with what it costs and what it gives; the recommendation first.
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Sources
+      description: The research notes or primary sources the options rest on.

@@ -1,0 +1,175 @@
+# Cut a release (docs/stack-design.md, section 8) when a tag is pushed: v1.0, v1.1, ... for a
+# release, v1.1-beta.1, ... for a prerelease. The tag must point at a commit on main.
+#
+# Two jobs, so that the write token never meets the third-party check tools:
+# - build (contents: read): check the tag, run every check (tools/check.sh --strict, the guide
+#   included), then write the release files into build/release/: the guide PDF,
+#   stack-<tag>.tar.gz (git archive of stack/, clients/ and deploy/ at the tag), SHA256SUMS.txt,
+#   and the release notes from CHANGELOG.md's "## Unreleased" entry (an empty entry fails the
+#   run), and hand them on as a workflow artifact;
+# - publish (contents: write, id-token: write, attestations: write; only actions/* pinned by SHA,
+#   gh and the runner's own tools): check the files against SHA256SUMS.txt, sign a SLSA build
+#   provenance attestation for the PDF and the bundle, and create the GitHub release (or update
+#   it when the run is repeated) with the files attached.
+# After a release, a pull request moves the Unreleased lines under a "## <version>" heading.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+# One release run at a time: the uploads of two tags must not interleave.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Check and build the release files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read  # check out the repository; this job can change nothing on GitHub
+    env:
+      TAG: ${{ github.ref_name }}
+      CHROME: google-chrome
+    steps:
+      - name: Check out the repository with its full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The secrets check reads the history; the tag check needs origin/main.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag and that it is on main
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+(-beta\.[1-9][0-9]*)?$ ]]; then
+            echo "::error::Release tags look like v1.0, or v1.1-beta.1 for a prerelease, not '$TAG'"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG points at $GITHUB_SHA, which is not on main: releases are built from main only"
+            exit 1
+          fi
+          echo "Building $TAG from $GITHUB_SHA"
+
+      - name: Install poppler-utils, the fonts, python3-markdown and python3-yaml
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils fonts-lato fonts-liberation \
+            python3-markdown python3-yaml
+
+      - name: Install the check tools
+        run: tools/setup-checks.sh
+
+      # The guide must carry this release's version on its cover (guide/guide.yaml).
+      - name: Check that guide/guide.yaml names this version
+        run: |
+          python3 -I - "$TAG" <<'PY'
+          import re, sys, yaml
+          tag = sys.argv[1]
+          want = re.match(r"^v([0-9]+\.[0-9]+)", tag).group(1)
+          with open("guide/guide.yaml", encoding="utf-8") as handle:
+              have = str(yaml.safe_load(handle).get("version"))
+          if have != want:
+              sys.exit(f"guide/guide.yaml says version {have!r}; the tag {tag} needs {want!r}")
+          print(f"guide/guide.yaml: version {have}")
+          PY
+
+      - name: Run every check (the guide build included)
+        run: tools/check.sh --strict
+
+      - name: Write the guide, the stack bundle, SHA256SUMS.txt and the notes
+        run: |
+          mkdir -p build/release
+          cp build/guide/*.pdf build/release/
+          git archive --format=tar.gz --prefix="local-agent-stack-$TAG/" \
+            --output="build/release/stack-$TAG.tar.gz" "$GITHUB_SHA" stack clients deploy
+          python3 -I - "$TAG" <<'PY'
+          import re, sys
+          tag = sys.argv[1]
+          with open("CHANGELOG.md", encoding="utf-8") as handle:
+              text = handle.read()
+          match = re.search(r"^## Unreleased[ \t]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+          entry = match.group(1).strip() if match else ""
+          if not re.search(r"^\s*[-*] \S", entry, re.M):
+              sys.exit("CHANGELOG.md: the '## Unreleased' entry is empty; a release needs its changes listed there")
+          version = tag[1:]
+          title = "Local Agent Stack " + version.replace("-beta.", " beta ")
+          with open("build/release-title.txt", "w", encoding="utf-8") as handle:
+              handle.write(title + "\n")
+          with open("build/release-notes.md", "w", encoding="utf-8") as handle:
+              handle.write(f"## {title}\n\n{entry}\n\n")
+              handle.write("Attached: the deployment guide (PDF), the stack bundle (stack/, clients/ and deploy/ ")
+              handle.write("at this tag) and SHA256SUMS.txt; each file has a signed build provenance attestation ")
+              handle.write("(`gh attestation verify <file> --repo corytron/local-agent-stack`).\n")
+          print(title)
+          PY
+          cd build/release
+          sha256sum -- *.pdf "stack-$TAG.tar.gz" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cat ../release-notes.md
+
+      - name: Hand the release files to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-${{ github.ref_name }}
+          path: |
+            build/release/
+            build/release-notes.md
+            build/release-title.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attest and publish the release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write  # create the release and upload its files
+      id-token: write  # Sigstore signing certificate for the attestation
+      attestations: write  # store the attestation on GitHub
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download the release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-${{ github.ref_name }}
+          path: build
+
+      - name: Check the files against SHA256SUMS.txt
+        run: |
+          cd build/release
+          sha256sum --check --strict SHA256SUMS.txt
+          ls -l
+
+      - name: Attest the build provenance of the guide and the bundle
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: |
+            build/release/*.pdf
+            build/release/*.tar.gz
+
+      - name: Create or update the release and attach the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="$(head -n 1 build/release-title.txt)"
+          prerelease=()
+          if [[ "$TAG" == *-beta.* ]]; then
+            prerelease=(--prerelease --latest=false)
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" "${prerelease[@]}" \
+              --title "$title" --notes-file build/release-notes.md
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag "${prerelease[@]}" \
+              --title "$title" --notes-file build/release-notes.md
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber build/release/*
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json name,url,assets \
+            --jq '"\(.name) \(.url): " + ([.assets[].name] | join(", "))'

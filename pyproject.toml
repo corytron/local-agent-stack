@@ -1,0 +1,27 @@
+# Ruff only (docs/stack-design.md, section 8): tools/check.sh's "python" check runs
+# `ruff check .` and `ruff format --check .` with this configuration. The tools are Python 3.11+
+# standard library (tools/deploy.py also imports truenas_api_client, at run time only).
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["build"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, warnings, import order, bugbear, and S: flake8-bandit's security rules,
+# standing in for a security linter on the tools that handle keys and talk to the NAS.
+select = ["E", "F", "W", "I", "B", "S"]
+# S603 (any subprocess call) and S607 (a command found on PATH): the tools run git, docker, gh,
+# pdfinfo and Chromium by name, with argument lists and never a shell (S602/S605 stay on).
+ignore = ["S603", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+# Unit tests assert, and use made-up keys and passwords as fixtures.
+"tools/tests/*" = ["S101", "S105", "S106", "S107", "S108"]
+# tools/guide/build.py is indented with tabs and runs Chromium and pdfinfo by name; it is left
+# out of `ruff format` below until it is converted to spaces.
+"tools/guide/build.py" = ["W191", "E101", "E501", "E741"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+exclude = ["tools/guide/build.py"]

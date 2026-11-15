@@ -1,0 +1,40 @@
+# Desired state of the TrueNAS SCALE server (docs/stack-design.md, sections 2, 4 and 8): which
+# release of this repository runs there, and as which custom apps. tools/deploy.py reads it:
+#   validate (offline), render, plan, apply, drift, status.
+# A change here is a reviewed pull request; tools/deploy.py apply then makes the NAS match it.
+# Placeholders only: the pool is `tank`; the NAS address and the API keys live outside the
+# repository, in ~/.config/local-agent-stack/truenas.toml on the workstation.
+
+schema = 1
+
+# The release tag whose stack/ the NAS runs. The git clone at stacks_dir must be checked out at
+# this tag (guide chapter 10); deploy.py compares the images the apps run with this tag's
+# compose files.
+release = "v1.0"
+
+# The TrueNAS version deploy.py was written and checked against (API v25.10, client tag
+# TS-25.10.8). deploy.py refuses to talk to a NAS that reports another version: an upgrade of the
+# NAS is a reviewed change to this file and, where the API changed, to the tool.
+truenas_version = "25.10.8"
+
+# Where the release clone and the secrets live on the NAS (docs/stack-design.md, section 4).
+stacks_dir = "/mnt/tank/ai/stacks/local-agent-stack"
+secrets_dir = "/mnt/tank/ai/secrets"
+
+# One table per TrueNAS custom app, in the order apply installs them (inference first: the web
+# app talks to LiteLLM; edge last: it proxies the others). Each app's YAML in TrueNAS is exactly
+#   include:
+#     - path: <stacks_dir>/stack/<stack>/compose.yaml
+#       env_file: <secrets_dir>/<stack>.env
+#   services: {}
+[apps.ai-inference]
+stack = "inference"
+
+[apps.ai-rag]
+stack = "rag"
+
+[apps.ai-web]
+stack = "web"
+
+[apps.ai-edge]
+stack = "edge"

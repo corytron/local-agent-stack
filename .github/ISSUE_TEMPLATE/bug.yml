@@ -1,0 +1,39 @@
+name: Bug
+description: Something in the stack, the guide or the tools does not work as written
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Placeholders only: write 192.0.2.10 for the TrueNAS server, 192.0.2.20 for the workstation,
+        lab.example.com for the domain, sk-local-... for keys. Never paste a real key, address or name.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command or click, and what it printed or showed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What the guide or the contract says should happen
+      description: The chapter and section, or the docs/ file.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Release or commit
+      placeholder: v1.0
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - stack (compose files and configs)
+        - guide
+        - tools and CI
+        - workstation clients
+    validations:
+      required: true

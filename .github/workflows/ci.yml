@@ -1,0 +1,112 @@
+# Continuous integration (docs/stack-design.md, section 8): every pull request, every push to
+# main, a manual run, and once a week (Monday 06:00 UTC) so a broken tool install shows up
+# without a pull request. Every job runs tools/check.sh --strict, the script a developer runs on
+# the workstation, so CI and the workstation agree on what "passing" means; --strict turns a
+# missing tool into a failure. The four job names are the required status checks of main's
+# branch protection: renaming one means changing the protection too. The jobs do not depend on
+# each other, so one failure never hides another.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 06:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned and hash-checked: the Python tools from tools/requirements-checks.txt into their
+      # own virtual environment, actionlint from its release with a sha256; the tool directory
+      # is added to PATH for the next steps.
+      - name: Install the check tools (ruff, zizmor, shellcheck, yamllint, pymarkdown, actionlint)
+        run: tools/setup-checks.sh ruff zizmor shellcheck yamllint pymarkdown actionlint
+
+      - name: YAML, shell, Python (lint and unit tests), Markdown, workflows and links
+        run: tools/check.sh --strict --only yaml shell python markdown workflows links
+
+  compose:
+    name: Compose stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner's Docker CLI and compose plugin; `docker compose config` needs no daemon.
+      - name: Show the Docker Compose version
+        run: docker compose version
+
+      - name: Render every stack/<app>/compose.yaml with its .env.example
+        run: tools/check.sh --strict --only compose
+
+  secrets:
+    name: Secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository with its full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # gitleaks reads every commit of HEAD's history, not only the tree.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks (pinned release, sha256 checked)
+        run: tools/setup-checks.sh gitleaks
+
+      - name: Scan the tree and the history for keys, LAN addresses and e-mail addresses
+        run: tools/check.sh --strict --only secrets
+
+  guide:
+    name: Guide
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # The runner image's Google Chrome prints the PDF (tools/guide/build.py reads CHROME).
+      CHROME: google-chrome
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pdfinfo reads the page of every heading from the first print; the fonts are the ones
+      # guide/template/guide.css names; markdown and yaml are the renderer's imports.
+      - name: Install poppler-utils, the fonts, python3-markdown and python3-yaml
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils fonts-lato fonts-liberation \
+            python3-markdown python3-yaml
+          "$CHROME" --version
+          pdfinfo -v
+
+      - name: Render the guide (HTML, then the PDF printed twice)
+        run: tools/check.sh --strict --only guide
+
+      - name: Keep the PDF for review
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: deployment-guide-${{ github.run_number }}
+          path: build/guide/*.pdf
+          if-no-files-found: error
+          retention-days: 7
