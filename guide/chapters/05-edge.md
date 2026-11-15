@@ -337,6 +337,14 @@ hands out the gateway by default. This task checks that no network was changed.
 
 Every network that has clients of the stack hands out the gateway as its DNS server.
 
+!!! note
+    A record answers on every network, but resolving a name does not mean reaching the server. A
+    client on another network (VLAN) than the server also needs the gateway's firewall to let it
+    reach `192.0.2.10` on port 443, TCP and UDP (in UniFi Network, the Zone-Based Firewall
+    decides traffic between networks), and its addresses must be inside Caddy's
+    `EDGE_ALLOWED_CIDRS`, which by default admits every private range
+    ([LAN-only access guard](#lan-only-access-guard)).
+
 ### Add the host names to local DNS
 
 #### Prerequisites

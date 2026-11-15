@@ -58,10 +58,11 @@ output size differs from the model's, and the two models differ (5,120 for `code
 `coder-moe`). They are the Q8_0 conversions published by ggml-org, together 1.24 GB (1.16 GiB).
 
 !!! note
-    On an installation of an earlier release, which has only the four model files, download the
-    two projectors before the release's configuration is redeployed:
-    [Add the vision projectors to an existing installation](#add-the-vision-projectors-to-an-existing-installation).
-    `llama-server` does not start a model whose projector file is missing.
+    This topic is for a new installation. An installation of release 1.0 or 1.1 has only the four
+    model files; it gets the two projectors during the release update, before the new
+    configuration is applied
+    ([Download the new model files of a release](#download-the-new-model-files-of-a-release),
+    Chapter 10). `llama-server` does not start a model whose projector file is missing.
 
 ### Check the free space for the models
 
@@ -224,69 +225,6 @@ The model files are complete and match the published checksums. The `llama-swap`
 !!! note
     The model files are not backed up (Appendix A). After a loss of the `tank/ai/models` dataset,
     repeat this topic to restore them.
-
-### Add the vision projectors to an existing installation
-
-#### Prerequisites
-
-- `ai-inference` was installed from an earlier release, and `/mnt/tank/ai/models/gguf` holds its
-  four model files.
-- The clone on TrueNAS is at the new release tag, and the release is not yet applied: Chapter 10,
-  after [Update the clones](#update-the-clones) and before [Apply the release](#apply-the-release).
-
-#### About this task
-
-From this release on, `coder` and `coder-moe` start with a vision projector (`--mmproj`), and
-`llama-server` refuses to start a model whose projector file is missing: the model never becomes
-ready, and the `llama-swap` log shows `failed to load multimodal model` followed by the file's path.
-Download the two projectors before the redeploy that brings in the new configuration. The model
-files of the earlier release stay as they are.
-
-#### Steps
-
-1. Run steps 1 to 3 of [Start the model downloads](#start-the-model-downloads), which define the
-   `dl` function with the clone's `models.tsv`.
-
-2. Check the free space:
-
-        df -h /mnt/tank/ai/models
-
-    The **Avail** column shows at least `2G`; the two projectors need 1.16 GiB.
-
-3. Start the two downloads:
-
-        dl coder-mmproj
-        dl coder-moe-mmproj
-
-    Each command prints the ID of a new container. A command that prints nothing means that the
-    clone is not yet at the new tag.
-
-4. Wait until both downloads have stopped:
-
-        sudo docker wait dl-coder-mmproj dl-coder-moe-mmproj
-
-    The output is two lines of `0`. For a line that is not `0`, follow step 7 of
-    [Start the model downloads](#start-the-model-downloads) with that container's name.
-
-5. Remove the download containers:
-
-        sudo docker rm dl-coder-mmproj dl-coder-moe-mmproj
-
-6. Check every model file against the release's checksums:
-
-        cd /mnt/tank/ai/models/gguf && sha256sum -c /mnt/tank/ai/stacks/local-agent-stack/stack/inference/models.sha256
-        cd
-
-    The output has six lines, each a file name followed by `: OK`.
-
-#### Results
-
-The six files of the release are in `/mnt/tank/ai/models/gguf`. Continue with the release update;
-after the redeploy of `ai-inference`, check the projector with
-[Check the vision projector](#check-the-vision-projector).
-
-If `coder` was redeployed before the download and does not load, finish this task, then redeploy
-the app as in [Redeploy ai-inference after a change](#redeploy-ai-inference-after-a-change).
 
 ## Review the inference configuration
 
@@ -501,7 +439,8 @@ models do not.
 - **Where it runs.** The projector encodes each image on the CPU, then the model on the GPU reads
   the resulting tokens with the rest of the prompt. Expect about 11 seconds per image on `coder`
   (measured on another machine; an estimate here), more for a large image, against about 0.3
-  seconds on a GPU.
+  seconds on a GPU. The projector is read from disk with its model, so a swap back to `coder`
+  reads 0.63 GB more than the model file alone.
 - **What it costs in context.** One image token covers 32 x 32 pixels, and an image takes at most
   4,096 tokens by default. A 1920 x 1080 screenshot is about 2,000 tokens of the 64K window.
 - **No size limit in the gateway.** LiteLLM sets no request size limit, and llama-swap accepts
@@ -1112,7 +1051,8 @@ loaded.
 
 If the answer in step 4 or 5 is close to `MAPLE 74` but not exact, for example with one letter
 wrong, the projector loaded but reads poorly with this model. Report it to the project as an
-issue, with the answer and the time of step 4. If the request fails with `image input is not
+issue, with the answer and the time of step 4; the project's fallback is the model maker's own
+BF16 projector ([Image and memory issues](#image-and-memory-issues)). If the request fails with `image input is not
 supported`, the model was started without `--mmproj`.
 
 ## Create the LiteLLM keys for the workstations

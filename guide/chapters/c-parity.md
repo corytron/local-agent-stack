@@ -42,7 +42,7 @@ Table: Parity of project memory files
 | Claude Code | This stack (component) | Parity | Notes |
 |---|---|---|---|
 | `CLAUDE.md` files at user, project and folder level | `AGENTS.md` at global (`~/.config/opencode/AGENTS.md`), project and folder level; templates in `clients/templates/` | Partial | OpenCode reads `CLAUDE.md` only when it is listed under `instructions`. No `@import` syntax. Edits are picked up during a session |
-| Auto memory across sessions | None | None | Keep a maintained instructions file, or add a memory MCP server |
+| Auto memory across sessions | None in the coding agents; Open WebUI's Memory in the web GUI | None | Keep a maintained instructions file, or add a memory MCP server. Open WebUI keeps each user's memories across its chats ([Memory levels in Open WebUI](#memory-levels-in-open-webui)), but OpenCode and Claude Code do not see them |
 
 ### Sub-agents and parallel agents
 
@@ -124,8 +124,8 @@ Table: Parity of image and PDF reading
 
 | Claude Code | This stack (component) | Parity | Notes |
 |---|---|---|---|
-| Reading images and screenshots | Not in the default profile | None | Qwen3.8-27B is a vision-language model, but its projector adds 0.6 to 0.9 GiB of VRAM, which forces the context down to about 32,000 to 48,000 tokens. On the CPU instead, an image takes about 11 seconds |
-| Reading PDF files, including their pages as images | Text and tables extracted by docling into the knowledge bases; `web_url_read` for remote PDFs | Partial | No visual reading of figures; scanned pages depend on OCR quality |
+| Reading images and screenshots | The vision projectors of `coder` and `coder-moe`, on the CPU; images attached in OpenCode, pasted or dragged into Claude Code, or dropped into an Open WebUI chat ([Images on the chat models](#images-on-the-chat-models)) | Partial | The 64K context stays, because the projector uses no VRAM, but each image takes about 11 seconds to encode on the CPU (estimate), more for a large one, and up to 4,096 tokens of the window (a 1920 x 1080 screenshot about 2,000). Not verified on the reference server: how well the model reads text in images with the Q8_0 projector ([Run the vision evaluation](#run-the-vision-evaluation)) |
+| Reading PDF files, including their pages as images | Text and tables extracted by docling into the knowledge bases, or into a chat's own collection when you drop the PDF into an Open WebUI chat; `web_url_read` for remote PDFs | Partial | No visual reading of figures; scanned pages depend on OCR quality. A PDF sent to the model directly does not reach it: `llama-server` rejects a PDF part on the OpenAI route and drops a PDF block on the Anthropic route without an error, so a PDF that Claude Code reads is lost, and OpenCode tells the model that it cannot read the file |
 
 ### SSH and remote sessions
 
@@ -191,6 +191,7 @@ Table: Claude Code with the local gateway
 | Prompt cache | Set `CLAUDE_CODE_ATTRIBUTION_HEADER=0` so that the system prompt starts identically in every request |
 | WebSearch | Not available: it is an Anthropic server tool. Use the SearXNG MCP server |
 | WebFetch | Works with `"skipWebFetchPreflight": true` in `settings.json`; otherwise its domain check calls `api.anthropic.com` |
+| Images and PDFs | A pasted, dragged or named image reaches the model as an image block (assumed; Claude Code's source is not public). A PDF block is dropped by `llama-server` without an error |
 | Remote Control, fast mode, Advisor | Not available with a non-Anthropic base URL |
 | `/cost` | Meaningless; use the LiteLLM usage logs |
 | Prompt overhead | 11,375 tokens in the first request of `claude -p`, against 5,340 for `opencode run` (measured in November 2026) |

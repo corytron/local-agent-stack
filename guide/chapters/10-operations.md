@@ -886,10 +886,10 @@ the new release. The apps still run the old release until
 
 #### Next steps
 
-Add the new variables, then download the new model files. From release 1.0 or 1.1 to 1.2, these are
-the two vision projectors of
-[Add the vision projectors to an existing installation](#add-the-vision-projectors-to-an-existing-installation).
-Download them before [Apply the release](#apply-the-release), or `coder` does not start.
+Add the new variables, then download the new model files
+([Download the new model files of a release](#download-the-new-model-files-of-a-release)). From
+release 1.0 or 1.1 to 1.2, these are the two vision projectors. Download them before
+[Apply the release](#apply-the-release), or `coder` does not start.
 
 ### Add new variables to the secrets files
 
@@ -959,9 +959,9 @@ before `apply` restarts `ai-inference`: `llama-server` does not start a model wh
 and for a missing vision projector its log reports `failed to load multimodal model`. The download
 uses the `dl` function of Chapter 4, which reads `models.tsv` from the TrueNAS clone, now at the new
 tag. Release 1.2 adds the two vision projectors, `coder-mmproj` and `coder-moe-mmproj`, 1.24 GB
-together; for that update, this task and
-[Add the vision projectors to an existing installation](#add-the-vision-projectors-to-an-existing-installation)
-in Chapter 4 are the same. Skip this task when the release does not change `models.tsv`.
+(1.16 GiB) together, which `coder` and `coder-moe` load with `--mmproj` from that release on. The
+model files that the server already holds stay as they are. Skip this task when the release does
+not change `models.tsv`.
 
 #### Steps
 
@@ -1012,7 +1012,13 @@ in Chapter 4 are the same. Skip this task when the release does not change `mode
 
 Every model file that the new release names is in `/mnt/tank/ai/models/gguf/` with its published
 checksum, so `ai-inference` starts with the new configuration in
-[Apply the release](#apply-the-release).
+[Apply the release](#apply-the-release). After that apply, check the projectors of release 1.2 with
+[Check the vision projector](#check-the-vision-projector) (Chapter 4).
+
+If `ai-inference` was redeployed with the new configuration before the download finished, `coder`
+does not become ready and the `llama-swap` log shows `failed to load multimodal model`. Finish this
+task, then redeploy the app as in
+[Redeploy ai-inference after a change](#redeploy-ai-inference-after-a-change).
 
 ### Apply the release
 
@@ -1020,10 +1026,9 @@ checksum, so `ai-inference` starts with the new configuration in
 
 - The model files of the new release are on the server
   ([Download the new model files of a release](#download-the-new-model-files-of-a-release)). For an
-  update from release 1.0 or 1.1 to 1.2, download the two vision projectors first, as in
-  [Add the vision projectors to an existing installation](#add-the-vision-projectors-to-an-existing-installation):
-  release 1.2 starts `coder` and `coder-moe` with `--mmproj`, and without the files `llama-server`
-  stops with `failed to load multimodal model`, so the models never become ready.
+  update from release 1.0 or 1.1 to 1.2, these are the two vision projectors: release 1.2 starts
+  `coder` and `coder-moe` with `--mmproj`, and without the files `llama-server` stops with
+  `failed to load multimodal model`, so the models never become ready.
 
 #### About this task
 
@@ -1169,8 +1174,9 @@ policy carries the release's new settings.
     `ssh -t truenas_admin@192.0.2.10 sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh`.
     For any `used by` line, see [Port inventory issues](#port-inventory-issues).
 
-4. If the release added model files or changed `stack/inference/llama-swap/config.yaml`, run the
-   vision evaluation as well ([Run the vision evaluation](#run-the-vision-evaluation)).
+4. If the release added model files or changed `stack/inference/llama-swap/config.yaml`, check
+   the projector on the server ([Check the vision projector](#check-the-vision-projector)) and run
+   the vision evaluation ([Run the vision evaluation](#run-the-vision-evaluation)).
 
 5. Do any Admin Panel change that the release notes ask for.
 

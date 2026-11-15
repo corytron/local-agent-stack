@@ -38,7 +38,7 @@ Table: Minimum requirements
 | Display on the GPU | None | The VRAM budget assumes that the card drives no display. Chapter 3 checks it ([Verify the GPU on the host and in a container](#verify-the-gpu-on-the-host-and-in-a-container)) |
 | System memory | 64 GB | The memory budget in this chapter assumes 62.3 GiB usable. Less memory is not supported: the ZFS ARC cap, the document parser's limits and the fast profile are sized for 64 GB. More memory is supported ([Memory upgrade to four channels](#memory-upgrade-to-four-channels)) |
 | Host Secure Boot | Off | Forum reports say that the TrueNAS 25.10 host does not boot with Secure Boot on (reported, not verified). Turn it off in the firmware setup before you install or reinstall TrueNAS |
-| Free space on the apps pool | About 36 GB for the models, plus the container images | See the model files table below |
+| Free space on the apps pool | About 37 GB (34.5 GiB) for the model files, plus the container images | See the model files table below |
 
 !!! warning
     Do not move the system to TrueNAS 27 release candidates while you follow this guide. A change of
@@ -110,17 +110,21 @@ marked as measured; Chapter 9 measures them on your system
 
 ### Model files and disk space
 
-All four model files come from public Hugging Face repositories.
+The stack serves six files from public Hugging Face repositories: the four models, and the vision
+projectors (`mmproj-*`) with which the two chat models read images. Chapter 4 downloads them
+([Download the model files](#download-the-model-files)).
 
 Table: Model files
 
 | File | Hugging Face repository | Size |
 |---|---|---|
 | `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 12.12 GB |
+| `mmproj-Qwen3.8-27B-Q8_0.gguf` (projector of `coder`) | `ggml-org/Qwen3.8-27B-GGUF` | 0.63 GB |
 | `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | `unsloth/Qwen3.6-35B-A3B-GGUF` | 22.36 GB |
+| `mmproj-Qwen3.6-35B-A3B-Q8_0.gguf` (projector of `coder-moe`) | `ggml-org/Qwen3.6-35B-A3B-GGUF` | 0.61 GB |
 | `Qwen3-Embedding-0.6B-Q8_0.gguf` | `Qwen/Qwen3-Embedding-0.6B-GGUF` | 0.64 GB |
 | `qwen3-reranker-0.6b-q8_0.gguf` | `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF` | 0.64 GB |
-| Total | | 35.76 GB |
+| Total | | 37.00 GB (34.5 GiB) |
 
 The container images need additional space in the apps pool. The document parser image alone
 (`docling-serve-cpu`) is about 4.4 GB.
@@ -135,8 +139,8 @@ Table: VRAM budget per model
 
 | llama-swap id | Placement | Context and KV cache | VRAM (GiB) | System RAM |
 |---|---|---|---|---|
-| `coder` | All layers on the GPU | 65,536 tokens, `q8_0` | About 14.3 (estimate of the model's allocations; the CUDA context comes on top) | Prompt cache only |
-| `coder-moe` | GPU, with the experts of 16 layers in system RAM (`--n-cpu-moe 16`) | 65,536 tokens, `q8_0` | About 15.7 (measured by others on an RTX 4080 SUPER; the whole process, CUDA context included) | About 8 GB of experts |
+| `coder` | All layers on the GPU; the vision projector on the CPU | 65,536 tokens, `q8_0` | About 14.3 (estimate of the model's allocations; the CUDA context comes on top) | Prompt cache, and the vision projector, about 1 to 1.5 GiB |
+| `coder-moe` | GPU, with the experts of 16 layers in system RAM (`--n-cpu-moe 16`); the vision projector on the CPU | 65,536 tokens, `q8_0` | About 15.7 (measured by others on an RTX 4080 SUPER; the whole process, CUDA context included) | About 8 GB of experts, and the vision projector, about 1 to 1.5 GiB |
 | `embed` | CPU only (`--device none`) | Not applicable | 0 | About 1.3 GiB |
 | `rerank` | CPU only (`--device none`) | Not applicable | 0 | About 1.3 GiB |
 
@@ -182,8 +186,10 @@ Table: VRAM of the coder model by context length
     The estimates carry about ±0.5 GiB of uncertainty, and they include the weights of the MTP
     head but not any working memory that speculative decoding adds; Unsloth's documentation puts
     MTP's extra need at 1 to 2 GB. Chapter 4 checks the real usage with `nvidia-smi` after the model
-    loads ([Check GPU memory and processes](#check-gpu-memory-and-processes)). Loading the model's vision projector would add 0.59 GiB (`Q8_0`) or 0.87 GiB (`F16`), so
-    the default profile does not load it.
+    loads ([Check GPU memory and processes](#check-gpu-memory-and-processes)). The vision
+    projector is not in these figures: the stack loads it into system RAM and runs it on the CPU
+    (`--no-mmproj-offload`). On the GPU it would take 0.59 GiB (`Q8_0`) or 0.87 GiB (`BF16` or
+    `F16`) of the VRAM that the 64K context needs.
 
 !!! note
     Keep the KV cache at `q8_0`. llama.cpp's documentation warns that `q4_0` can substantially
@@ -202,12 +208,13 @@ Table: System RAM budget (GiB, estimates)
 | TrueNAS operating system, middleware and Docker | About 4 | About 4 | |
 | ZFS ARC | 12 | 12 | Capped in Chapter 3 |
 | llama-swap: prompt cache and host buffers | About 8 | About 8 | Keeps idle conversations ready for reuse |
+| Vision projector of the loaded chat model | About 1 to 1.5 | About 1 to 1.5 | Weights (0.6 GiB) and compute buffer; only one of the two projectors is loaded at a time, never both |
 | `embed` and `rerank` on the CPU | About 2.6 | About 2.6 | |
 | `coder-moe` experts in system RAM | 0 | About 8 | `--n-cpu-moe 16` |
 | LiteLLM and its PostgreSQL | About 2 | About 2 | |
 | `ai-rag` and `ai-web` services | About 14 | About 14 | Includes the document parser at up to 8 GB |
-| Total | About 43 | About 51 | |
-| Free of 62.3 GiB | About 20 | About 12 | Page cache and load spikes |
+| Total | About 44 | About 52 | |
+| Free of 62.3 GiB | About 18 | About 10 | Page cache and load spikes |
 
 ### Memory channels and bandwidth
 
@@ -413,6 +420,7 @@ Table: Outbound connections
 | Your DNS provider's API and the ACME certificate authority | `caddy` | 443/tcp | Issuing and renewing certificates (DNS-01) |
 | Public DNS resolvers `1.1.1.1` and `1.0.0.1`, or the ones you set in `ACME_RESOLVERS` | `caddy` | 53/udp and 53/tcp | Checking the challenge record during DNS-01. A firewall that blocks or redirects outbound DNS to these addresses breaks certificate issuance, and so does a UniFi Content Filter or Ad Blocking policy that covers the server |
 | Public search engines | `searxng` | 443/tcp | Web search |
+| Any public web server whose image a request names by its web address | `llama-swap` (`llama-server`) | 443/tcp, and 80/tcp for `http://` addresses | Only for an image sent as an `http(s)://` address instead of the image data, for example by a script: `llama-server` downloads it (at most 10 MB, within 10 seconds) and refuses addresses that are not public. Open WebUI, OpenCode and Claude Code send the image data itself |
 | Any public web server whose page a tool is asked to read | `mcp-hub` (its `fetch` and `web_url_read` tools) and `open-webui` on TrueNAS; OpenCode's `webfetch` on the workstation | 443/tcp, and 80/tcp for `http://` addresses | Reading web pages and remote documents for the models |
 | npm registry (`registry.npmjs.org`) | The workstation | 443/tcp | Installing OpenCode, `ssh-mcp` and, optionally, Qwen Code |
 | PyPI and GitHub release downloads | The workstation | 443/tcp | The check tools of `tools/setup-checks.sh`, and the TrueNAS API client that `deploy.py` uses |
@@ -436,7 +444,7 @@ Table: Accounts and credentials you provide
 | Two TrueNAS API keys, roles READONLY_ADMIN and FULL_ADMIN | `tools/deploy.py`: the read-only key for plan, drift and status; the full key only for apply | Created in Chapter 3 ([Create TrueNAS API keys for deploy.py](#create-truenas-api-keys-for-deploypy)) and stored in `~/.config/local-agent-stack/` on the workstation; Chapter 10 configures `deploy.py` with them |
 | A GitHub account | The project workflow in Chapter 8: issues, pull requests and CI | Not needed to clone the public repository |
 
-A Hugging Face account is not needed. The four model repositories are public and not gated
+A Hugging Face account is not needed. The six model repositories are public and not gated
 (checked on 15 November 2026), so the files download without signing in.
 
 Table: Secrets created during deployment
@@ -541,7 +549,7 @@ Table: Pre-deployment checklist
 | Secure Boot is off, if you install or reinstall TrueNAS | The server's firmware setup ([Minimum requirements](#minimum-requirements)) | ☐ |
 | The server has at least 64 GB of memory, in two channels at 4800 MT/s | [Check the memory configuration](#check-the-memory-configuration) | ☐ |
 | The apps pool is on SSD or NVMe | **Apps** > **Configuration** > **Choose Pool** | ☐ |
-| The apps pool has at least 36 GB free for models, plus room for images | **Storage** | ☐ |
+| The apps pool has at least 37 GB (34.5 GiB) free for the model files, plus room for the container images | **Storage** | ☐ |
 | SSH from the workstation to `truenas_admin` works with a key | `ssh truenas_admin@192.0.2.10` from `c4dev`, or set it up in Chapter 3 ([Enable SSH access to TrueNAS](#enable-ssh-access-to-truenas)) | ☐ |
 | Ports 80/tcp, 443/tcp and 443/udp on the server are free for Caddy | Chapter 3 runs the port inventory ([Run the port inventory](#run-the-port-inventory)); the TrueNAS web interface keeps its own ports and moves only if it holds 80 or 443 | ☐ |
 | The Docker address pool does not overlap your LAN | **Apps** > **Installed** > **Configuration** > **Settings** | ☐ |
