@@ -25,6 +25,27 @@
 # with this file in the pinned image against a stub upstream: spend rows were charged for
 # /v1/messages (call type anthropic_messages) and chat completions; rerank rows carry no cost.
 # Spend logs record tokens and duration for every call either way.
+#
+# Images (docs/v1.2-design.md §3). The names backed by coder and coder-moe carry
+# model_info.supports_vision: true, the key LiteLLM documents for a custom vision model (docs:
+# completion/vision, "Define vision models on config.yaml", read 2026-11-15) and a field of its
+# model info (ProviderSpecificModelInfo and ModelGroupInfo in litellm/types/ at v1.108.8) that
+# /model/info and /model_group/info report (router.py get_model_group_info). It is a declaration only: for openai/ and anthropic/ models
+# LiteLLM 1.108.8 neither checks it nor strips images when it is false (the code that reads it is
+# limited to the gemini, fireworks_ai and deepseek providers and the complexity router). What
+# reaches llama-server, checked in the source at v1.108.8:
+#   - /v1/chat/completions (openai/): image_url parts of user messages go through unchanged
+#     except that a bare string becomes {"url": ...} and LiteLLM's own "format" key is dropped
+#     (llms/openai/chat/gpt_transformation.py _apply_common_transform_content_item); images in
+#     role "tool" messages are moved into a user message right after the tool results
+#     (litellm_core_utils/prompt_templates/common_utils.py hoist_images_from_tool_messages).
+#   - /v1/messages (anthropic/): the messages are forwarded as sent, including image blocks; only
+#     advisor and encrypted-reasoning blocks are removed
+#     (llms/anthropic/pass_through/messages/transformation.py transform_anthropic_messages_request).
+#     llama-server turns image blocks (base64 or url, also inside tool_result) into image_url
+#     parts (tools/server/server-chat.cpp at b12407).
+# No request size limit applies: general_settings.max_request_size_mb is unset (default: none);
+# llama-swap accepts bodies up to 250 MB (maxRequestBodyMB default, v273).
 
 model_list:
   # ---- Claude Code (Anthropic Messages API) ----
@@ -38,6 +59,7 @@ model_list:
       # with CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536 (b-inference §4.2).
       max_input_tokens: 65536
       cost_per_second: 0.0001
+      supports_vision: true
   - model_name: local-sonnet
     litellm_params:
       model: anthropic/coder
@@ -46,6 +68,7 @@ model_list:
     model_info:
       max_input_tokens: 65536
       cost_per_second: 0.0001
+      supports_vision: true
   # Small/fast role: the same coder process with thinking off, so background calls never swap
   # the GPU model (docs/stack-design.md §1).
   - model_name: local-haiku
@@ -56,6 +79,7 @@ model_list:
     model_info:
       max_input_tokens: 65536
       cost_per_second: 0.0001
+      supports_vision: true
 
   # ---- OpenAI-format clients: OpenCode, Open WebUI, scripts ----
   - model_name: local-coder
@@ -66,6 +90,7 @@ model_list:
     model_info:
       max_input_tokens: 65536
       cost_per_second: 0.0001
+      supports_vision: true
   # Thinking off (chat_template_kwargs.enable_thinking=false, set by llama-swap for coder-fast):
   # titles, scouts, summaries.
   - model_name: local-fast
@@ -76,6 +101,7 @@ model_list:
     model_info:
       max_input_tokens: 65536
       cost_per_second: 0.0001
+      supports_vision: true
   # Fast profile: the first request swaps coder out of the GPU (tens of seconds), and the next
   # request for any coder-based name swaps it back.
   - model_name: local-coder-moe
@@ -86,6 +112,7 @@ model_list:
     model_info:
       max_input_tokens: 65536
       cost_per_second: 0.0001
+      supports_vision: true
 
   # ---- RAG (Open WebUI); CPU-only models that stay loaded, so no GPU-time price ----
   - model_name: local-embed

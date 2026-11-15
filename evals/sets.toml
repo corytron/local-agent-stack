@@ -6,6 +6,12 @@
 # The suite files evals/suites/<name>.jsonl, in run and report order.
 suites = ["tools", "format", "coding", "rag"]
 
+# Optional cases: `cases = "all"` leaves them out, so they run only in a set that pins them by ID.
+# format-011 sends a PNG (evals/images/maple-74.png) on the OpenAI route and needs the vision
+# projector (docs/v1.2-design.md §3). It stays optional, outside smoke and full, until it has
+# passed on the server; then remove it from this list (that changes the configuration hash).
+optional = ["format-011"]
+
 [sets.smoke]
 description = "A fixed 15-case subset of every suite, a few minutes on the GPU: run after every change."
 cases = [
@@ -27,5 +33,9 @@ cases = [
 ]
 
 [sets.full]
-description = "Every case of every suite: run before a release and to decide on a change."
+description = "Every case of every suite except the optional ones: run before a release and to decide on a change."
 cases = "all"
+
+[sets.vision]
+description = "Optional: the image case on the OpenAI route (CPU vision projector), until it is verified on the server."
+cases = ["format-011"]

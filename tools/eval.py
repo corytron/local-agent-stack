@@ -2,7 +2,7 @@
 """Evaluation suites of the stack, run from the workstation against the gateway, with results tied
 to a configuration hash and a regression gate (docs/research/f-project-tooling.md, section 3).
 
-  eval.py run --suite smoke|full [--model local-coder] [--out FILE] [--baseline FILE] [options]
+  eval.py run --suite smoke|full|vision [--model local-coder] [--out FILE] [--baseline FILE] [options]
   eval.py compare BASELINE RESULT [--gate evals/gate.toml]
   eval.py verify [--current] [RESULT ...]
   eval.py config-hash [--files]
@@ -12,11 +12,13 @@ Suites (evals/suites/<name>.jsonl: a header line, then one case per line, each w
   tools    tool calling: single, parallel, no call needed, nested arguments, multi-turn, on the
            OpenAI route (/v1/chat/completions) and the Anthropic route (/v1/messages); the calls
            are matched by name and by a JSON-Schema subset over their arguments
-  format   instruction following with deterministic checks: exact JSON, exact text, regex, lines
+  format   instruction following with deterministic checks: exact JSON, exact text, regex, lines;
+           one optional case sends an image (evals/images/) and asks for the text in it
   coding   small Python functions, checked by hidden unit tests in a sandboxed subprocess
   rag      questions over evals/rag-docs/, with the documents in context; with --rag-source
            openwebui the context is what Open WebUI's knowledge base retrieves instead
-The sets of evals/sets.toml pin which cases a run covers: smoke (15 cases) and full (every case).
+The sets of evals/sets.toml pin which cases a run covers: smoke (15 cases), full (every case but
+the optional ones) and vision (the optional image case, until it is verified on the server).
 
 run sends one request at a time (one GPU: parallel requests only queue and distort latency); the
 offline work, the coding tests and verify, runs on every core (--jobs, default JOBS or nproc).
@@ -28,8 +30,8 @@ no answer: only IDs, outcomes, short reasons and numbers.
 config-hash is the sha256 of a sha256sum-style manifest (one "<sha256>  <path>" line per file,
 sorted by path) of the files a result depends on: stack/inference/llama-swap/config.yaml,
 stack/inference/litellm/config.yaml, stack/inference/compose.yaml (the image builds),
-stack/inference/models.sha256 (the model files), evals/sets.toml, evals/suites/*.jsonl and
-evals/rag-docs/*.md.
+stack/inference/models.sha256 (the model files), evals/sets.toml, evals/suites/*.jsonl,
+evals/rag-docs/*.md and evals/images/*.png.
 
 compare fails (exit 1) when a suite's pass rate drops by more than the gate's points or the median
 tokens per second drops by more than its percentage (evals/gate.toml). verify checks a results
@@ -52,6 +54,7 @@ verification or an aborted run; 2 usage or unreadable input.
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import copy
 import dataclasses
@@ -80,14 +83,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = "local-agent-stack/eval-result/1"
-HARNESS_VERSION = "1.0"
+HARNESS_VERSION = "1.1"
 CONFIG_FILES = (
     "stack/inference/llama-swap/config.yaml",
     "stack/inference/litellm/config.yaml",
     "stack/inference/compose.yaml",
     "stack/inference/models.sha256",
 )
-CONFIG_GLOBS = ("evals/sets.toml", "evals/suites/*.jsonl", "evals/rag-docs/*.md")
+CONFIG_GLOBS = ("evals/sets.toml", "evals/suites/*.jsonl", "evals/rag-docs/*.md", "evals/images/*.png")
 KINDS = ("tools", "format", "coding", "rag")
 APIS = ("openai", "anthropic")
 STATUSES = ("pass", "fail", "error")
@@ -101,6 +104,11 @@ LOOPBACK = ("127.0.0.1", "localhost", "::1")
 WARMUP_PROMPT = "Reply with the single word OK."
 SECRET_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
+# A content part of a case's messages that names a bundled image; build_request replaces it with
+# the API's own image part (OpenAI image_url with a data URL, Anthropic image with base64 source).
+IMAGE_PART = "image_file"
+IMAGE_DIR = "images"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 class UsageError(Exception):
@@ -159,6 +167,8 @@ class Evals:
     order: list
     suites: dict
     sets: dict
+    # Cases that "all" leaves out: they run only in a set that pins them by ID.
+    optional: list = dataclasses.field(default_factory=list)
 
     def all_cases(self):
         return [(self.suites[name], case) for name in self.order for case in self.suites[name].cases]
@@ -166,7 +176,7 @@ class Evals:
     def case_ids(self, set_name):
         pinned = self.sets[set_name]["cases"]
         if pinned == "all":
-            return [case["id"] for _, case in self.all_cases()]
+            return [case["id"] for _, case in self.all_cases() if case["id"] not in self.optional]
         return list(pinned)
 
     def select(self, set_name, only=None):
@@ -236,6 +246,14 @@ def load_evals(root):
                 raise UsageError(f"duplicate case id {case['id']} in {seen[case['id']]} and {name}")
             seen[case["id"]] = name
         suites[name] = suite
+    optional = data.get("optional", [])
+    if not isinstance(optional, list) or not all(isinstance(case_id, str) for case_id in optional):
+        raise UsageError(f"{sets_path}: optional must be a list of case ids")
+    unknown = [case_id for case_id in optional if case_id not in seen]
+    if unknown:
+        raise UsageError(f"{sets_path}: optional names unknown cases: {', '.join(unknown)}")
+    if len(set(optional)) != len(optional):
+        raise UsageError(f"{sets_path}: optional lists a case twice")
     sets = {}
     for set_name, entry in (data.get("sets") or {}).items():
         cases = entry.get("cases") if isinstance(entry, dict) else None
@@ -250,7 +268,7 @@ def load_evals(root):
         sets[set_name] = {"description": str(entry.get("description", "")), "cases": cases}
     if not sets:
         raise UsageError(f"{sets_path}: no [sets.<name>] defined")
-    return Evals(root=root, order=list(order), suites=suites, sets=sets)
+    return Evals(root=root, order=list(order), suites=suites, sets=sets, optional=list(optional))
 
 
 def bundled_documents(root):
@@ -588,6 +606,11 @@ def case_problems(suite, case, rag_names):
     kind = suite.kind
     if kind in ("tools", "format") and not (isinstance(case.get("messages"), list) and case["messages"]):
         problems.append(f"{where}: messages must be a non-empty list")
+    if kind in ("tools", "format"):
+        for index, part in enumerate(image_parts(case.get("messages"))):
+            problem = image_problem(suite, part)
+            if problem:
+                problems.append(f"{where}/images[{index}]: {problem}")
     if kind == "tools":
         tools = case.get("tools")
         names = set()
@@ -658,6 +681,67 @@ def suite_problems(evals):
 
 
 # ---------------------------------------------------------------------------
+# Images: {"type": "image_file", "path": "images/<name>.png"} parts in a case's messages
+# ---------------------------------------------------------------------------
+
+
+def image_parts(messages):
+    """The image_file parts of a list of messages, in order."""
+    for message in messages if isinstance(messages, list) else []:
+        content = message.get("content") if isinstance(message, dict) else None
+        for part in content if isinstance(content, list) else []:
+            if isinstance(part, dict) and part.get("type") == IMAGE_PART:
+                yield part
+
+
+def image_path(suite, part):
+    """The file an image_file part names: a PNG directly in evals/images/ (path relative to evals/)."""
+    name = part.get("path")
+    if not isinstance(name, str) or not re.fullmatch(rf"{IMAGE_DIR}/[A-Za-z0-9][A-Za-z0-9._-]*\.png", name):
+        raise ValueError(f"path must be {IMAGE_DIR}/<name>.png, not {name!r}")
+    return suite.path.parent.parent / name
+
+
+def image_problem(suite, part):
+    try:
+        path = image_path(suite, part)
+        with path.open("rb") as handle:
+            head = handle.read(len(PNG_SIGNATURE))
+    except ValueError as error:
+        return str(error)
+    except OSError:
+        return f"{part.get('path')} is missing in evals/"
+    if head != PNG_SIGNATURE:
+        return f"{part.get('path')} is not a PNG file"
+    if set(part) - {"type", "path"}:
+        return f"unknown keys: {', '.join(sorted(set(part) - {'type', 'path'}))}"
+    return None
+
+
+def expand_images(suite, messages, api):
+    """messages with every image_file part replaced by the API's own image part (in place)."""
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for index, part in enumerate(content):
+            if not (isinstance(part, dict) and part.get("type") == IMAGE_PART):
+                continue
+            problem = image_problem(suite, part)
+            if problem:
+                raise UsageError(f"{suite.name}: {problem}")
+            data = base64.b64encode(image_path(suite, part).read_bytes()).decode("ascii")
+            if api == "openai":
+                content[index] = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}}
+            else:
+                content[index] = {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": data},
+                }
+    return messages
+
+
+# ---------------------------------------------------------------------------
 # Requests and answers
 # ---------------------------------------------------------------------------
 
@@ -716,7 +800,7 @@ def build_request(suite, case, model, options, documents=()):
     elif kind == "rag":
         messages = [{"role": "user", "content": rag_prompt(documents, case["question"])}]
     else:
-        messages = copy.deepcopy(case["messages"])
+        messages = expand_images(suite, copy.deepcopy(case["messages"]), api)
     max_tokens = options.max_tokens or case.get("max_tokens") or DEFAULT_MAX_TOKENS[kind]
     tools = case.get("tools") if kind == "tools" else None
     if api == "openai":
@@ -1906,7 +1990,7 @@ def parser():
     commands = top.add_subparsers(dest="command", required=True)
 
     run = commands.add_parser("run", parents=[common], help="run a set of cases against the gateway")
-    run.add_argument("--suite", required=True, help="the set of evals/sets.toml to run: smoke or full")
+    run.add_argument("--suite", required=True, help="the set of evals/sets.toml to run: smoke, full or vision")
     run.add_argument("--model", default="local-coder", help="model name for OpenAI-route cases (default local-coder)")
     run.add_argument(
         "--anthropic-model",

@@ -1,6 +1,7 @@
 """Unit tests of tools/eval.py: matching, checks, the coding sandbox, config-hash, and run, compare
 and verify against a fake gateway (http.server on the loopback address, in a thread). No model."""
 
+import base64
 import contextlib
 import hashlib
 import http.server
@@ -32,6 +33,15 @@ def load(name):
 
 
 ev = load("eval")
+
+
+def load_images_module():
+    """evals/images/make_images.py, which draws the bundled PNG files."""
+    spec = importlib.util.spec_from_file_location("las_make_images", REPO / "evals" / "images" / "make_images.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def make_root():
@@ -506,11 +516,16 @@ class TestSuites(unittest.TestCase):
         evals = ev.load_evals(REPO)
         self.assertEqual(evals.order, ["tools", "format", "coding", "rag"])
         sizes = {name: len(suite.cases) for name, suite in evals.suites.items()}
-        self.assertEqual(sizes, {"tools": 20, "format": 10, "coding": 8, "rag": 6})
+        self.assertEqual(sizes, {"tools": 20, "format": 11, "coding": 8, "rag": 6})
         smoke = evals.case_ids("smoke")
         self.assertEqual(len(smoke), 15)
         self.assertEqual({case_id.split("-")[0] for case_id in smoke}, set(evals.order))
+        # The image case is optional: in neither smoke nor full, only in the vision set.
+        self.assertEqual(evals.optional, ["format-011"])
         self.assertEqual(len(evals.case_ids("full")), 44)
+        self.assertNotIn("format-011", evals.case_ids("full") + smoke)
+        self.assertEqual(evals.case_ids("vision"), ["format-011"])
+        self.assertEqual([case["id"] for _, case in evals.select("vision")], ["format-011"])
         tools = evals.suites["tools"].cases
         self.assertGreaterEqual(sum(case.get("api") == "anthropic" for case in tools), 5)
         self.assertGreaterEqual(sum(len(case["expect"]["calls"]) > 1 for case in tools), 3)
@@ -551,6 +566,8 @@ class TestSuites(unittest.TestCase):
         for relative in ev.CONFIG_FILES + ("evals/sets.toml", "evals/suites/tools.jsonl"):
             self.assertIn(relative, files)
         self.assertTrue(any(path.startswith("evals/rag-docs/") for path in files))
+        self.assertIn("evals/images/maple-74.png", files)
+        self.assertNotIn("evals/images/make_images.py", files)
         self.assertNotIn("evals/gate.toml", files)
         manifest = "".join(f"{hashlib.sha256((root / p).read_bytes()).hexdigest()}  {p}\n" for p in sorted(files))
         self.assertEqual(hashlib.sha256(manifest.encode()).hexdigest(), digest)
@@ -567,6 +584,91 @@ class TestSuites(unittest.TestCase):
         code, output = run_main("config-hash", "--root", root)
         self.assertEqual(code, 2)
         self.assertIn("llama-swap/config.yaml is missing", output)
+
+
+class TestImages(unittest.TestCase):
+    """The bundled PNG, image_file parts and optional cases (format-011, the vision set)."""
+
+    def setUp(self):
+        self.root = make_root()
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def image_case(self, evals):
+        [(suite, case)] = [(suite, case) for suite, case in evals.all_cases() if case["id"] == "format-011"]
+        return suite, case
+
+    def test_committed_images_match_their_drawing(self):
+        images = load_images_module()
+        self.assertEqual(set(images.IMAGES), {path.name for path in (REPO / "evals" / "images").glob("*.png")})
+        for name, text in images.IMAGES.items():
+            rows = images.decode_png((REPO / "evals" / "images" / name).read_bytes())
+            self.assertEqual((len(rows[0]) // 3, len(rows)), (images.WIDTH, images.HEIGHT))
+            self.assertEqual(rows, images.render(text), name)
+        self.assertEqual(images.decode_png(images.png_bytes(images.render("74"))), images.render("74"))
+        with self.assertRaises(ValueError):
+            images.decode_png(b"GIF89a")
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual(images.main(["--check"]), 0)
+        self.assertIn("ok maple-74.png", printed.getvalue())
+
+    def test_image_parts_become_api_image_parts(self):
+        evals = ev.load_evals(self.root)
+        suite, case = self.image_case(evals)
+        data = base64.b64encode((self.root / "evals" / "images" / "maple-74.png").read_bytes()).decode()
+        api, path, body = ev.build_request(suite, case, "local-coder", ev.Options())
+        self.assertEqual((api, path), ("openai", "/v1/chat/completions"))
+        image, text = body["messages"][0]["content"]
+        self.assertEqual(image, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}})
+        self.assertEqual(text["type"], "text")
+        self.assertEqual(case["messages"][0]["content"][0]["type"], "image_file")  # the case is not changed
+        anthropic = {**case, "api": "anthropic"}
+        _, path, body = ev.build_request(suite, anthropic, "local-sonnet", ev.Options())
+        self.assertEqual(path, "/v1/messages")
+        self.assertEqual(
+            body["messages"][0]["content"][0],
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
+        )
+
+    def test_image_problems(self):
+        (self.root / "evals" / "images" / "fake.png").write_text("not a png", encoding="utf-8")
+        path = self.root / "evals" / "suites" / "format.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        cases = [json.loads(line) for line in lines[1:]]
+        bad = {
+            "../sets.toml": "path must be images/<name>.png",
+            "images/../sets.toml": "path must be images/<name>.png",
+            "images/missing.png": "images/missing.png is missing",
+            "images/fake.png": "images/fake.png is not a PNG file",
+        }
+        for index, name in enumerate(bad):
+            cases[index]["messages"][0]["content"] = [{"type": "image_file", "path": name}]
+        cases[len(bad)]["messages"][0]["content"] = [{"type": "image_file", "path": "images/maple-74.png", "x": 1}]
+        path.write_text("\n".join([lines[0]] + [json.dumps(case) for case in cases]) + "\n", encoding="utf-8")
+        problems = ev.suite_problems(ev.load_evals(self.root))
+        for index, expected in enumerate(list(bad.values()) + ["unknown keys: x"]):
+            prefix = f"format/{cases[index]['id']}/images[0]: "
+            self.assertTrue(any(p.startswith(prefix) and expected in p for p in problems), (expected, problems))
+        evals = ev.load_evals(self.root)
+        suite, case = next((s, c) for s, c in evals.all_cases() if c["id"] == cases[2]["id"])
+        with self.assertRaises(ev.UsageError):
+            ev.build_request(suite, case, "local-coder", ev.Options())
+
+    def test_optional_must_name_known_cases_once(self):
+        sets = self.root / "evals" / "sets.toml"
+        original = sets.read_text(encoding="utf-8")
+        for replacement, message in (
+            ('optional = ["format-099"]', "optional names unknown cases: format-099"),
+            ('optional = ["format-011", "format-011"]', "optional lists a case twice"),
+            ('optional = "format-011"', "optional must be a list of case ids"),
+        ):
+            sets.write_text(original.replace('optional = ["format-011"]', replacement), encoding="utf-8")
+            with self.assertRaises(ev.UsageError) as caught:
+                ev.load_evals(self.root)
+            self.assertIn(message, str(caught.exception))
+        sets.write_text(original.replace('optional = ["format-011"]\n', ""), encoding="utf-8")
+        evals = ev.load_evals(self.root)
+        self.assertEqual(evals.optional, [])
+        self.assertIn("format-011", evals.case_ids("full"))
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +723,8 @@ class TestRun(GatewayTest):
         self.assertEqual(result["anthropic_model"], "local-haiku")
         self.assertEqual((result["overall"]["cases"], result["overall"]["passed"]), (44, 44))
         self.assertEqual(result["suites"]["coding"]["passed"], 8)
+        self.assertNotIn("format-011", [case["id"] for case in result["cases"]])
+        self.assertFalse(any("image_url" in json.dumps(body) for _, _, body in self.gateway.requests))
         self.assertEqual(run_main("verify", "--root", self.root, out)[0], 0)
         code, output = run_main("verify", "--root", self.root, "--current")
         self.assertEqual(code, 0, output)
@@ -671,6 +775,20 @@ class TestRun(GatewayTest):
             self.assertEqual(code, expected, output)
             speed_row = next(line for line in output.splitlines() if line.startswith("tok/s"))
             self.assertTrue(speed_row.endswith("FAIL" if expected else "ok"), speed_row)
+
+    def test_vision_set_sends_the_image(self):
+        out = self.root / "evals" / "results" / "vision.json"
+        code, output = self.run_eval(suite="vision", out=out)
+        self.assertEqual(code, 0, output)
+        result = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual([case["id"] for case in result["cases"]], ["format-011"])
+        self.assertEqual((result["overall"]["cases"], result["overall"]["passed"]), (1, 1))
+        [(path, _, body)] = [request for request in self.gateway.requests if "image_url" in json.dumps(request[2])]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertTrue(body["messages"][0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,iVBOR"))
+        self.assertNotIn("base64", out.read_text(encoding="utf-8"))  # no prompt or image in the results
+        self.assertEqual(run_main("verify", "--root", self.root, out)[0], 0)
+        self.assertEqual(self.run_eval("--case", "format-011", suite="full")[0], 2)  # optional: not in full
 
     def test_partial_run(self):
         code, output = self.run_eval("--case", "tools-001", "--case", "rag-001")

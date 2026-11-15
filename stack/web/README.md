@@ -73,7 +73,7 @@ then on the database wins and the Admin Panel is where they change. Editing thos
 
 | Read at every start (environment wins) | Seeded on the first start (database wins afterwards) |
 |---|---|
-| `WEBUI_SECRET_KEY`, `DATABASE_URL`, `VECTOR_DB`, `PGVECTOR_INDEX_METHOD`, `ENABLE_PERSISTENT_CONFIG`, `CORS_ALLOW_ORIGIN`, `WEBUI_SESSION_COOKIE_SECURE`, `OFFLINE_MODE`, `ENABLE_VERSION_UPDATE_CHECK`, `SCARF_NO_ANALYTICS`, `DO_NOT_TRACK`, `ANONYMIZED_TELEMETRY`, `ENABLE_LOCAL_WEB_FETCH` | `WEBUI_URL`, `ENABLE_SIGNUP`, `DEFAULT_USER_ROLE`, `ENABLE_COMMUNITY_SHARING`, `ENABLE_API_KEYS`, `ENABLE_OLLAMA_API`, `ENABLE_OPENAI_API`, `OPENAI_API_BASE_URLS`, `OPENAI_API_KEYS`, `DEFAULT_MODELS`, `TASK_MODEL_EXTERNAL`, every `RAG_*` and `CHUNK_*` variable in the file, `ENABLE_RAG_HYBRID_SEARCH`, `ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER`, `CONTENT_EXTRACTION_ENGINE`, `DOCLING_SERVER_URL`, `DOCLING_API_KEY`, `ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE`, `SEARXNG_QUERY_URL`, `WEB_SEARCH_RESULT_COUNT` |
+| `WEBUI_SECRET_KEY`, `DATABASE_URL`, `VECTOR_DB`, `PGVECTOR_INDEX_METHOD`, `ENABLE_PERSISTENT_CONFIG`, `CORS_ALLOW_ORIGIN`, `WEBUI_SESSION_COOKIE_SECURE`, `OFFLINE_MODE`, `ENABLE_VERSION_UPDATE_CHECK`, `SCARF_NO_ANALYTICS`, `DO_NOT_TRACK`, `ANONYMIZED_TELEMETRY`, `ENABLE_LOCAL_WEB_FETCH` | `WEBUI_URL`, `ENABLE_SIGNUP`, `DEFAULT_USER_ROLE`, `ENABLE_COMMUNITY_SHARING`, `ENABLE_API_KEYS`, `ENABLE_OLLAMA_API`, `ENABLE_OPENAI_API`, `OPENAI_API_BASE_URLS`, `OPENAI_API_KEYS`, `DEFAULT_MODELS`, `TASK_MODEL_EXTERNAL`, every `RAG_*` and `CHUNK_*` variable in the file, `ENABLE_RAG_HYBRID_SEARCH`, `ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER`, `CONTENT_EXTRACTION_ENGINE`, `DOCLING_SERVER_URL`, `DOCLING_API_KEY`, `ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE`, `SEARXNG_QUERY_URL`, `WEB_SEARCH_RESULT_COUNT`, `ENABLE_MEMORIES`, `ENABLE_MEMORY_SYSTEM_CONTEXT`, `ENABLE_MEMORY_BACKGROUND_REVIEW` |
 
 Consequences for the guide:
 
@@ -86,12 +86,83 @@ Consequences for the guide:
   but then Admin Panel changes (MCP connections included) last only until the next restart.
 - **Changing the embedding model** needs **Reindex Embedding Data** (Admin Panel > Settings >
   Documents); files attached directly to chats keep their old vectors (d-gui D2).
+- **`ENABLE_MEMORY_BACKGROUND_REVIEW` has no Admin Panel switch** in 0.13.3 (the Admin Panel
+  shows only **Memories** and **Memory System Context**), so its first-start value, `false`,
+  stays.
 
 Other choices in the file: `OFFLINE_MODE=true` stops the update check, Hugging Face downloads
 (the slim image needs none) and pip installs of plugin requirements; Scarf, `DO_NOT_TRACK` and
 anonymized telemetry are off (the image sets the same values; the file states them).
 `CORS_ALLOW_ORIGIN` and the secure session cookie assume the browser address
 `https://chat.<LAB_DOMAIN>` and nothing else.
+
+## Memory
+
+Open WebUI's Memory feature is on (`docs/v1.2-design.md` §3). The three variables in
+`compose.yaml` are Open WebUI 0.13.3's defaults, stated so the choice is visible; they are
+PersistentConfig seeds (`backend/open_webui/config.py` `DEFAULT_CONFIG`: `memories.enable`,
+`memories.system_context.enable`, `memories.background_review.enable`). Checked in the source at
+`v0.13.3` (`utils/middleware.py`, `utils/tools.py`, `utils/memory.py`, `routers/memories.py` and
+the Svelte components named below).
+
+| Level | Where | Default | What it does |
+|---|---|---|---|
+| Server | **Admin Panel** > **Settings** > **General** > **Memories** (`ENABLE_MEMORIES`) | on | Memory exists at all; with it off, the memory API refuses every call and the user switch is hidden |
+| Server | **Admin Panel** > **Settings** > **General** > **Memory System Context** (`ENABLE_MEMORY_SYSTEM_CONTEXT`) | on | The user's matching memories go to the model at each turn |
+| Server | `ENABLE_MEMORY_BACKGROUND_REVIEW` (no Admin Panel switch) | off | Every 10th user turn, one more completion on the chat's model decides what to save; off here because that model is `local-coder` (GPU time with thinking) |
+| Group | **Admin Panel** > **Users** > **Groups** > a group's permissions > **Memories** (`USER_PERMISSIONS_FEATURES_MEMORIES`) | on | Whether that group's users may use memory (admins always may) |
+| Model | **Admin Panel** > **Settings** > **Models**, the model, **Capabilities** > **Memory** | on (a model without saved settings) | Whether that model gets the memory tools (`utils/tools.py`, `get_model_capability('memory')`) |
+| User | **Settings** > **Personalization** > **Memory** (marked experimental) | follows **Memories** until the user changes it | The user's own switch; **Add Memory** and **Manage** list, add, edit and delete that user's memories |
+
+So Memory is both: the server and group levels are persisted configuration (the database wins
+after the first start; the variables only seed it), and each user has a switch of their own in
+their settings. Nothing needs a click for memory to work: every level defaults to on except the
+background review.
+
+Memories belong to one user and are kept in the database (PostgreSQL in `pgvector`). They are
+written in two ways: by the user (**Add Memory**), and by the model, which gets eight memory
+tools (search, list paths, read a path, list, update, add, replace content, delete) while the
+model's Function Calling is Native, Open WebUI 0.13.3's default; the matching memories reach the
+model as a recalled tool result at the start of each turn. A model set to Legacy gets no memory
+tools, and the matching memories are appended to the user's message instead. So "remember that I
+prefer tabs" in a chat lets `local-coder` save a memory, if it calls the tool. Caveat: the eight
+tool definitions are part of every chat's request while memory is on, which costs context and
+makes tool choice harder for a local model; a user who does not want that turns their own switch
+off.
+
+## Images and files in chats
+
+**Images.** Open WebUI 0.13.3 offers image upload for a model when that model's capability
+**Vision** is on, and a model with no saved settings counts as vision-capable
+(`src/lib/components/chat/MessageInput.svelte`: `capabilities[...] ?? true`;
+`src/lib/constants.ts` `DEFAULT_CAPABILITIES.vision = true`). The `local-*` models arrive from the
+LiteLLM connection without saved settings, so images work without a click. To check or change
+it:
+
+- One model: **Admin Panel** > **Settings** > **Models**, click the model (for example
+  `local-coder`), section **Capabilities**, checkbox **Vision** ("Model accepts image inputs"),
+  then save. Keep it on for `local-coder`, `local-fast` and `local-coder-moe`.
+- Every model at once: the same page, **Model Defaults** at the top, **Model Capabilities**
+  (stored as `models.default_metadata`, seeded from `DEFAULT_MODEL_METADATA`, which this stack
+  does not set). A model's own setting wins.
+
+In a chat, the reader adds an image by dragging it onto the chat, pasting it into the message box,
+or with the message box's **More** button > **Upload Files** (labels from
+`src/lib/components/chat/MessageInput/InputMenu.svelte`), then sends a question about it. With
+Vision off, attaching an image fails at once with "Selected model(s) do not support image
+inputs". With it on, the browser uploads the image as a file of the chat, and before calling the
+model Open WebUI replaces its address with a base64 data URL (`utils/middleware.py`
+`convert_url_images_to_base64`), so llama-server receives the picture itself and never has to fetch
+a URL. The model reads it with its CPU projector, about 11 s per image (estimate;
+`stack/inference/README.md`, "Images"). To cut that time for large photos, **Admin Panel** >
+**Settings** > **Documents** > **Image Compression Width** and **Image Compression Height**
+(`FILE_IMAGE_COMPRESSION_WIDTH`/`HEIGHT`, not set here) shrink images in the browser before upload.
+
+**Other files.** A file dropped into a chat stays with that chat: it is extracted (docling) and
+indexed in its own vector collection `file-<id>`, used for that chat only. It is never added to a
+knowledge base: `routers/files.py` links an upload to a knowledge base only when the upload names
+one (`knowledge_id`), which only **Workspace** > **Knowledge** does. Documents meant for every chat
+go into the knowledge base through the `rag-docs` share (oikb) or **Workspace** > **Knowledge**.
 
 ## Reranker: LiteLLM's /v1/rerank fits Open WebUI
 
@@ -245,3 +316,9 @@ It answers `results` with `index` and `relevance_score`, the first document scor
   **Integrations**) and the knowledge base's access dialog were not.
 - `RAG_EMBEDDING_BATCH_SIZE=16`, `RAG_TOP_K=20` and `RAG_TOP_K_RERANKER=8` are starting points
   for CPU embeddings and reranking, not measured.
+- The Memory and Images sections were read from the `v0.13.3` source and its en-US translations
+  (labels **Memories**, **Memory System Context**, **Personalization**, **Memory**, **Add Memory**,
+  **Manage**, **Capabilities**, **Vision**, **Model Defaults**, **Model Capabilities**, **Image
+  Compression Width**/**Height**, **More**, **Upload Files**), not in a running Open WebUI; that
+  clicking a model's row on **Admin Panel** > **Settings** > **Models** opens its editor, and
+  where the **More** button sits in the message box, are read from the components, not tried.

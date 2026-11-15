@@ -29,23 +29,36 @@
         "apiKey": "{env:LOCAL_LLM_KEY}"
       },
       "models": {
+        // Image input ("image" in capabilities.input, docs: models, "Aliases"; without the list
+        // OpenCode would assume text and image for a model it does not know): the server models
+        // read images through their vision projector, on the server's CPU (about 11 s per image,
+        // an estimate). Images reach the model as attachments (TUI: type @ and pick the file;
+        // desktop and web: Attach file, paste or drag) and as the result of the read tool, for
+        // PNG, JPEG, GIF and WebP (docs: attachments). OpenCode scales an image down to fit
+        // 2000x2000 pixels and 5 MiB of base64 first (the media.image defaults, kept here) and
+        // sends it as an image_url part with a data URL (packages/ai/src/protocols/openai-chat.ts
+        // at v2.3.0). For a model whose input list lacks "image" it puts an error text in place of
+        // each image telling the model it cannot read it (packages/core/src/session/
+        // model-request.ts). No "pdf": llama-server takes no PDF (file) parts, so OpenCode
+        // answers a PDF the same way instead of failing the request.
+
         // Qwen3.8-27B on llama-swap, 64K context (docs/stack-design.md §5). OpenCode reads the
         // reasoning stream field it sees (reasoning_content) without extra settings.
         "local-coder": {
           "name": "Local coder (Qwen3.8-27B)",
-          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "capabilities": { "tools": true, "input": ["text", "image"], "output": ["text"] },
           "limit": { "context": 65536, "output": 16384 }
         },
         // The same model with thinking off: titles, quick lookups.
         "local-fast": {
           "name": "Local fast (thinking off)",
-          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "capabilities": { "tools": true, "input": ["text", "image"], "output": ["text"] },
           "limit": { "context": 65536, "output": 8192 }
         },
         // Swaps the GPU model: use for a whole session, not next to other agents.
         "local-coder-moe": {
           "name": "Local coder MoE (Qwen3.6-35B-A3B, swaps the GPU model)",
-          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "capabilities": { "tools": true, "input": ["text", "image"], "output": ["text"] },
           "limit": { "context": 65536, "output": 16384 }
         }
       }
