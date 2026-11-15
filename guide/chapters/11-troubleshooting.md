@@ -97,10 +97,15 @@ can contain request details: review them before you share them, as described in
 
         { opencode --version; opencode mcp list; } > ~/diag-opencode.txt 2>&1
 
+5. If the problem concerns the answers of a model, copy the newest evaluation results file
+   (Chapter 9):
+
+        cp "$(ls -t ~/local-agent-stack/evals/results/*.json | head -n 1)" ~/diag-eval.json
+
 #### Results
 
-The four `~/diag-*.txt` files hold the workstation's view of the stack. `smoke.py` and `deploy.py`
-never print keys.
+The `~/diag-*` files hold the workstation's view of the stack. `smoke.py` and `deploy.py` never
+print keys, and an evaluation results file holds no prompt, answer, key or domain.
 
 ### Remove secrets before you share diagnostics
 
@@ -111,7 +116,7 @@ key.
 
 ```
 tar -xzf diag-<date>.tar.gz
-grep -rIl -e 'sk-' -e 'Bearer ' -e 'api_key' diag-<date> ~/diag-*.txt
+grep -rIl -e 'sk-' -e 'Bearer ' -e 'api_key' diag-<date> ~/diag-*
 ```
 
 Open every file that the second command lists and remove the values. Also replace your domain
@@ -121,6 +126,13 @@ and LAN addresses throughout.
 
 Each table lists a symptom, its cause and the resolution. Where a resolution needs several steps,
 it points to [Common problems and solutions](#common-problems-and-solutions).
+
+Where a resolution changes an environment file and redeploys the app, change your copy on the
+workstation, install it on the server as in
+[Copy the environment files to TrueNAS](#copy-the-environment-files-to-truenas), and run
+`deploy.py apply` ([Apply the release](#apply-the-release)), which recreates the app and records the
+file's new checksum. A redeploy by hand works as well; the next `deploy.py plan` then reports
+`update` for the app until you run `apply`.
 
 ### GPU and driver issues
 
@@ -339,7 +351,6 @@ Table: deploy.py problems
 
 | Symptom | Cause | Resolution |
 |---|---|---|
-| `error: unrecognized arguments: --local` (or `--file`, `--config`) | The option follows the command | Put it before the command: `deploy.py --local drift` |
 | `truenas_api_client is not installed in this Python` | `deploy.py` runs with another Python than the virtual environment | Run it with `~/.local/share/local-agent-stack/deploy-venv/bin/python` |
 | `... truenas.toml does not exist: write it as tools/deploy.py's docstring shows (mode 0600)` | The connection settings are missing | Create them as in [Create the connection settings](#create-the-connection-settings) |
 | `uri must start with wss://` | The address uses `ws://` or `https://` | Use `wss://192.0.2.10:8443/api/current`; TrueNAS revokes a key sent over plain HTTP or `ws://` |
@@ -347,13 +358,37 @@ Table: deploy.py problems
 | `login as deploy-read failed` | The key is wrong or was revoked; TrueNAS revokes a key that was sent unencrypted | Create a new key, as in [Create the API keys and store them on the workstation](#create-the-api-keys-and-store-them-on-the-workstation) |
 | `cannot connect to the NAS:` followed by a certificate error | `truenas-ca.pem` is not the certificate the web interface presents, or the certificate does not name the address in `uri` | Repeat [Create the connection settings](#create-the-connection-settings). If the certificate names only a host name, set `uri` to that name and make it resolve to `192.0.2.10`; or run `deploy.py --local` on TrueNAS, which needs no certificate |
 | `the NAS reports TrueNAS '...', deploy/truenas.toml says '...'` | TrueNAS was updated | Read the release notes for API changes, then set `truenas_version` in your desired-state file |
-| `images not compared: tag ... is not in this clone (git fetch --tags)` | The clone lacks the release tag | Run `git -C ~/local-agent-stack fetch --tags` |
-| `images not compared: cannot run git or docker` or `docker compose config failed` | The Docker CLI with the Compose plugin is missing on the machine that runs `deploy.py` | Install it, or accept that only the YAML and the app states are compared |
-| `plan` reports `update` for `ai-edge` or `ai-inference` | The app runs with an override file: the internal CA of Appendix D, or the `coder` fallback of Chapter 4 | Remove the app's table from your desired-state file, as in [Create your desired-state file](#create-your-desired-state-file); never run `apply` for it |
+| `note: files not compared: tag ... is not in this clone (git fetch --tags)`, and the same for the images | The clone lacks the release tag | Run `git -C ~/local-agent-stack fetch --tags` |
+| `note: images not compared: cannot run docker: ...` or `docker compose config failed` | The Docker CLI with the Compose plugin is missing on the machine that runs `deploy.py` | Install it, or accept that the images are not compared; the YAML, the hashes and the app states still are |
+| `note: env file not compared: cannot read ~/.config/local-agent-stack/secrets/<stack>.env` | Your copy of the environment file is missing, or `env_dir` names another folder | Restore the copy from the server's file, or correct `env_dir` in your desired-state file |
+| `note: env file not compared: env_dir is not set in the desired state` | Your desired-state file has no `env_dir` line | Add `env_dir = "~/.config/local-agent-stack/secrets"`, as in [Create your desired-state file](#create-your-desired-state-file) |
+| `plan` reports `update (RUNNING) no hash of the files of stack/<stack>/ recorded (installed by hand?)` | The app was installed by hand from `truenas-app.yaml` and has no content hashes yet | [Record the content hashes](#record-the-content-hashes) |
+| `plan` reports `update ... its env file differs from the one hashed at the last apply`, and you changed nothing | Your copy of the environment file differs from the one hashed at the last apply, or (with `--local`) the server's file differs from the copy that the workstation hashed | Compare the checksums of both copies as in steps 1 and 2 of [Record the content hashes](#record-the-content-hashes), make them identical, then run `apply` |
+| `plan` reports `update ... its YAML differs from the include wrapper` for `ai-edge` or `ai-inference` | The app runs with an override file that your desired-state file does not list: the internal CA of Appendix D, or the `coder` fallback of Chapter 4 | Add an `overrides` line to the app's table, as in [Create your desired-state file](#create-your-desired-state-file). Do not run `apply` before: it would replace the YAML and drop the override |
+| `validate` reports `apps.<app>.overrides ...` | An `overrides` entry is not an absolute path, is not in a list, or is listed twice | Write `overrides = ["/mnt/tank/ai/appdata/..."]` with each path once |
+| `plan` and `drift` always report `ai-edge` with `redeploy (RUNNING) runs images other than <tag>'s`, and `apply` ends with exit code `1` | The app runs the Caddy image built on the server; `deploy.py` compares running images with the release's compose file, not with the override | Expected. Name the other apps with `--app` for `apply` and `drift`, as the note in [How deploy.py works](#how-deploypy-works) describes |
 | `plan` reports `conflict` for an app | A catalog app has the same name | `deploy.py` never touches it. Remove or rename the catalog app in **Apps** > **Installed** |
 | `note: STOPPED: not started by apply` | Someone stopped the app | Start it in **Apps** > **Installed** if it should run |
-| `apply` reports `<app>: CRASHED after the change` | The app did not start | Read `/var/log/app_lifecycle.log` and the logs of its containers |
-| `plan` reports `none`, but the containers run an old configuration | A configuration or secrets file changed; `deploy.py` detects only images and the app YAML | Redeploy the app by hand, as in [Redeploy one app](#redeploy-one-app) |
+| `apply` reports `<app>: FAILED: <app>: CRASHED after the change` | The app did not start | Read `/var/log/app_lifecycle.log` and the logs of its containers |
+| `apply` reports `<app>: FAILED: <app>: DEPLOYING after the change (waited up to 600 s)` | The app takes longer to start than `--timeout`, for example while Compose builds the MCP hub image | Wait until the app runs, then run `plan`; next time pass `--timeout 1200` |
+| `plan` reports `none`, but the containers run an old configuration | An override file or its copy changed, or the MCP hub image was rebuilt; `deploy.py` does not detect these changes | Redeploy the app by hand, as in [Redeploy one app](#redeploy-one-app) |
+
+### Evaluation issues
+
+[Act on failed evaluation cases](#act-on-failed-evaluation-cases) in Chapter 9 lists the reasons
+that `tools/eval.py` gives for a failed case.
+
+Table: Evaluation problems
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| `eval.py run` ends with `run aborted, no results written:` and a reason | The gateway refused the key, or could not be reached | See [Act on failed evaluation cases](#act-on-failed-evaluation-cases); run `python3 tools/smoke.py` |
+| `compare` ends with `gate: FAIL` | A suite's pass rate or the median speed dropped by more than `evals/gate.toml` allows | Read the `newly failing:` lines and their reasons. Run the full set again before you act on a single case, as [Regression gate rules](#regression-gate-rules) explains |
+| `tools` cases fail with `the text holds a tool call` | The model wrote the call into its text | See [Tool calls fail or loop](#tool-calls-fail-or-loop) |
+| The `tok/s` row fails, but `bench.sh` shows the usual speeds | Another client used the GPU during the run, or a model swap was measured | Run the evaluation again while no agent or Open WebUI user works |
+| `verify --current` prints `FAIL no results file in evals/results/ for configuration <hash>` | No evaluation was run since the configuration changed, or the clone is not at the configuration that the server runs | Check out the tag or branch that the server runs, then run the evaluation ([Check the configuration checksum](#check-the-configuration-checksum)) |
+| `eval.py suites` prints `FAIL` for a suite | A file under `evals/` was changed in the clone | Restore it with `git -C ~/local-agent-stack checkout -- evals/suites evals/sets.toml evals/rag-docs` |
+| `--rag-source openwebui` aborts with `HTTP 401 from Open WebUI` or `HTTP 403 from Open WebUI` | `EVAL_KB_KEY` is wrong, or the `kb-reader` user cannot read the knowledge base | Repeat step 3 of [Evaluate retrieval through Open WebUI](#evaluate-retrieval-through-open-webui) |
 
 ## Common problems and solutions
 

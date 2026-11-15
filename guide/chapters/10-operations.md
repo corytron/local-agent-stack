@@ -8,9 +8,9 @@ check on TrueNAS, take container image updates, change or add a model, monitor t
 services, read the logs of each app, and update TrueNAS itself.
 
 Every service runs on the TrueNAS server. The workstation runs only the commands you start:
-`tools/deploy.py`, `tools/smoke.py`, `git` and the coding agent. Nothing in this chapter installs a
-timer, a daemon or a container on the workstation; the only scheduled job is an optional cron job
-on TrueNAS.
+`tools/deploy.py`, `tools/smoke.py`, `tools/eval.py`, `git` and the coding agent. Nothing in this
+chapter installs a timer, a daemon or a container on the workstation; the only scheduled job is an
+optional cron job on TrueNAS.
 
 Table: Values used in this chapter
 
@@ -22,6 +22,7 @@ Table: Values used in this chapter
 | `/mnt/tank/ai/stacks/local-agent-stack` | The clone of this repository on TrueNAS (Chapter 3) |
 | `<old-tag>`, `<new-tag>` | The release the server runs now and the release you install, for example `v1.0` and `v1.1` |
 | `<app>` | One of the TrueNAS apps `ai-inference`, `ai-rag`, `ai-web` and `ai-edge` |
+| `<stack>` | The app's folder under `stack/` and the name of its environment file: `inference`, `rag`, `web` or `edge` (for example `stack/inference/` and `inference.env` for `ai-inference`) |
 
 ## Releases of the stack
 
@@ -57,10 +58,12 @@ Table: How release changes take effect
 
 | Changed file | Effect | How it takes effect |
 |---|---|---|
-| An `image:` line in `stack/<app>/compose.yaml` | A new container image | `deploy.py apply` redeploys the app; it detects image changes by itself |
-| Any other file under `stack/<app>/` (the llama-swap and LiteLLM configurations, the `Caddyfile`, the SearXNG settings, `oikb.yaml`, the MCP hub files) | New service configuration | A redeploy of the app. `deploy.py` does not detect these changes; redeploy the app by hand |
-| `stack/<app>/<app>.env.example` | New or changed variables | Add the variables to `/mnt/tank/ai/secrets/<app>.env`, then redeploy the app by hand |
-| Seed values of Open WebUI in `stack/web/compose.yaml` | Nothing on an existing installation | Open WebUI keeps these settings in its database after its first start; make the change in the Admin Panel when the release notes say so |
+| `stack/<stack>/compose.yaml`, an `image:` line included | New containers or container settings | `deploy.py apply` updates the app, which recreates its containers; the file is part of the app's content hash |
+| A configuration file that the compose file mounts: `stack/inference/llama-swap/config.yaml`, `stack/inference/litellm/config.yaml`, `stack/rag/oikb/oikb.yaml`, the files under `stack/web/searxng/`, `stack/edge/Caddyfile` | New service configuration | `deploy.py apply` updates the app; these files are part of the app's content hash |
+| `stack/edge/Dockerfile` | A new Caddy image | With the published image, the release also pins the new image in `stack/edge/compose.yaml`, and `apply` updates the app. With the image built on the server, build it again and redeploy `ai-edge` by hand ([Apply the release](#apply-the-release)) |
+| The MCP hub files under `stack/web/mcp-hub/` | A new hub image | Build the image on TrueNAS, then redeploy `ai-web` by hand if `apply` did not update it ([Apply the release](#apply-the-release)); `deploy.py` does not hash build files |
+| `stack/<stack>/<stack>.env.example` | New or changed variables | Add the variables to your copy `~/.config/local-agent-stack/secrets/<stack>.env` and to `/mnt/tank/ai/secrets/<stack>.env`; `deploy.py apply` then updates the app, because its environment file changed |
+| Seed values of Open WebUI in `stack/web/compose.yaml` | Nothing on an existing installation | Open WebUI keeps these settings in its database after its first start; make the change in the Admin Panel when the release notes say so. `apply` still recreates the `ai-web` containers, because the file changed |
 | `clients/` | Workstation configuration | The links that `clients/install.sh` created point into the workstation clone, so they follow its checkout; run `clients/install.sh` again for a new OpenCode or ssh-mcp version |
 | `deploy/truenas.toml` | The desired state of the project's own server | Compare it with your desired-state file (see [Create your desired-state file](#create-your-desired-state-file)) |
 
@@ -74,8 +77,9 @@ the assets from the release page on GitHub into `~/releases/<new-tag>` and run s
 #### About this task
 
 Read what the release changes, check that the assets are the ones the release workflow built, and
-list the files that differ from the release the server runs. The list decides which apps need a
-manual redeploy and which secrets files need new variables.
+list the files that differ from the release the server runs. The list tells you which apps the
+update touches, whether the MCP hub image needs a new build, and which environment files need new
+variables.
 
 #### Steps
 
@@ -111,7 +115,8 @@ manual redeploy and which secrets files need new variables.
 
     Each changed directory under `stack/` names an app that the update touches: `stack/inference`
     is `ai-inference`, `stack/rag` is `ai-rag`, `stack/web` is `ai-web` and `stack/edge` is
-    `ai-edge`.
+    `ai-edge`. A changed file under `stack/web/mcp-hub/` means that the MCP hub image must be built
+    again.
 
 6. Show the changes to the variables of the apps:
 
@@ -133,13 +138,52 @@ It runs on the workstation and talks to the TrueNAS API (JSON-RPC over a WebSock
 ### How deploy.py works
 
 The desired state names the release the server runs, the TrueNAS version the tool was checked
-against, and the four custom apps. Each app's YAML in TrueNAS is exactly this include wrapper:
+against, and the four custom apps. Each app's YAML in TrueNAS is this include wrapper, followed by
+two content hashes:
 
 ```
 include:
   - path: /mnt/tank/ai/stacks/local-agent-stack/stack/<stack>/compose.yaml
     env_file: /mnt/tank/ai/secrets/<stack>.env
 services: {}
+x-local-agent-stack:
+  files: sha256:<64 hex digits>
+  env: sha256:<64 hex digits>
+```
+
+The first four lines are the file `stack/<stack>/truenas-app.yaml`, which Chapters 4 to 6 paste
+into TrueNAS by hand. Compose ignores top-level keys that start with `x-`, so the
+`x-local-agent-stack` block changes nothing in the app; it records what `apply` deployed:
+
+- **`files`** is a SHA-256 checksum over the app's `compose.yaml` and the files under
+  `stack/<stack>/` that it mounts: `llama-swap/config.yaml` and `litellm/config.yaml` for
+  `ai-inference`, `oikb/oikb.yaml` for `ai-rag`, every file under `searxng/` for `ai-web`, and the
+  `Caddyfile` for `ai-edge`. `deploy.py` reads them from the release tag with `git archive`, so
+  every machine with the tag computes the same value. The MCP hub's build files are not part of
+  it, because a redeploy does not rebuild an image.
+- **`env`** is the SHA-256 checksum of the app's environment file: on the workstation, your copy
+  `<env_dir>/<stack>.env` (`~/.config/local-agent-stack/secrets/<stack>.env`); with `--local` on
+  TrueNAS, the server's file in `/mnt/tank/ai/secrets`. Only the checksum leaves the file; the
+  values are never printed or sent.
+
+Compose recreates a container when its definition changes, not when a file it mounts changes. The
+hashes make such a change visible: when one differs from the value the app's YAML records, `plan`
+reports `update`, and `apply` writes the new YAML, which recreates the app's containers.
+
+An app that runs with compose override files, such as the internal CA of Appendix D or the `coder`
+fallback of Chapter 4, lists them in its `overrides` line in the desired-state file. Its `path`
+then becomes a list, the release's compose file first, and `apply` keeps the overrides:
+
+```
+include:
+  - path:
+      - /mnt/tank/ai/stacks/local-agent-stack/stack/<stack>/compose.yaml
+      - <override file>
+    env_file: /mnt/tank/ai/secrets/<stack>.env
+services: {}
+x-local-agent-stack:
+  files: sha256:<64 hex digits>
+  env: sha256:<64 hex digits>
 ```
 
 Table: deploy.py commands
@@ -147,15 +191,15 @@ Table: deploy.py commands
 | Command | What it does | Key |
 |---|---|---|
 | `validate` | Checks the desired-state file and that the stack files it names exist; offline | None |
-| `render [--app <app>]` | Prints each app's YAML wrapper | None |
-| `plan [--app <app>]` | Shows, per app, what `apply` would do | Read-only |
-| `apply [--app <app>] [--dry-run] [--timeout <seconds>]` | Creates, updates or redeploys the apps, one at a time in the order of the desired-state file, and waits up to 600 seconds (default) for each to run | Full admin |
-| `drift [--app <app>]` | Runs `plan` and exits with code 3 when the server differs | Read-only |
-| `status` | Prints one line per app: state, YAML, images | Read-only |
+| `render [--app <app>]` | Prints each app's YAML as `apply` would write it for a new app, with the hashes this machine can compute; offline | None |
+| `plan [--app <app>]...` | Shows, per app, what `apply` would do | Read-only |
+| `apply [--app <app>]... [--dry-run] [--timeout <seconds>]` | Creates, updates or redeploys the apps, one at a time in the order of the desired-state file, and waits up to 600 seconds (default) for each to run | Full admin |
+| `drift [--app <app>]... [--issue]` | Runs `plan` and exits with code 3 when the server differs; `--issue` keeps one GitHub issue labelled `deploy` up to date (needs `gh`) | Read-only |
+| `status` | Prints one line per app: state, YAML, files, environment file, images | Read-only |
 
-The options `--file`, `--config` and `--local` belong to the program, not to the command: write
-them before the command, for example `deploy.py --local drift`. Written after the command, they are
-refused with `unrecognized arguments`.
+`--app` can be repeated. The options `--file`, `--config` and `--local` can stand before or after
+the command: `deploy.py --local drift` and `deploy.py drift --local` are the same. If an option is
+written on both sides, the value after the command wins.
 
 For each app, `plan` decides one action:
 
@@ -163,18 +207,20 @@ Table: deploy.py plan actions
 
 | Action | When | What apply does |
 |---|---|---|
-| `create` | The app does not exist | Creates the custom app with the wrapper |
-| `update` | The app's stored YAML differs from the wrapper | Replaces the YAML with the wrapper |
-| `redeploy` | The YAML matches, but the app runs images other than the release's, or it is `CRASHED` | Redeploys the app |
+| `create` | The app does not exist | Creates the custom app with the wrapper and its hashes |
+| `update` | The stored YAML differs from the wrapper, or one of its content hashes: the release's files of the app or its environment file changed, or no hash is recorded yet | Replaces the YAML; TrueNAS recreates every container of a running app. A stopped app only gets the new YAML |
+| `redeploy` | The YAML and its hashes match, but the app runs images other than the release's, or it is `CRASHED` | Redeploys the app |
 | `conflict` | An app of that name exists and is a catalog app | Nothing; reported only |
 | `none` | The app is in step | Nothing. A `STOPPED` app is reported and not started, because someone stopped it on purpose |
 
 `deploy.py` never deletes an app. Apps on the server that the desired state does not name are
-listed as `unmanaged` and left alone. It compares images by rendering the release's compose files
-with `git archive <release>` and `docker compose config --images` on the machine where it runs; for
-that it needs `git`, the Docker CLI with the Compose plugin (no Docker daemon) and the release tag in
-the local clone. Without one of them, it reports the images as not compared and checks only the
-YAML and the app states.
+listed as `unmanaged` and left alone. It computes the `files` hash and the release's images from
+`git archive <release>` and `docker compose config --images` on the machine where it runs; for that
+it needs `git`, the Docker CLI with the Compose plugin (no Docker daemon) and the release tag in the
+local clone. Without the tag, the files and images are reported as `not compared`; without Docker,
+the images. The `env` hash is `not compared` when the environment file cannot be read. A hash that
+is not compared keeps the value that the server has recorded, so a run from a machine without git or
+without the environment files never undoes what another run recorded.
 
 Table: deploy.py exit codes
 
@@ -185,11 +231,23 @@ Table: deploy.py exit codes
 | `2` | A usage or configuration error, including a server that reports another TrueNAS version than the desired state |
 | `3` | Drift found (`drift` only) |
 
-!!! caution
-    `deploy.py` detects a changed image and a changed app YAML. It does not detect a changed
-    configuration file under `stack/<app>/` or a changed secrets file: after such a change, `plan`
-    reports `none` while the containers still run with the old configuration. Redeploy those apps
-    by hand, as described in [Apply the release](#apply-the-release).
+!!! note
+    `deploy.py` detects changed images, a changed app YAML, changed files under `stack/<stack>/`
+    that the app mounts, and changed environment files (your copy in `env_dir`, or the server's
+    file with `--local`). It does not detect override files, files that only an override mounts,
+    or the MCP hub's build files. Redeploy the app by hand after such a change, as in
+    [Redeploy one app](#redeploy-one-app).
+
+!!! note
+    `deploy.py` compares the images that an app runs with the images of the release's compose
+    file, not with an override. With the Caddy image built on the server
+    ([Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas)), `plan` and `drift`
+    therefore always report `ai-edge` with `redeploy (RUNNING) runs images other than <tag>'s`, and
+    an `apply` of every app redeploys `ai-edge` (which keeps the local image) and ends with exit code
+    `1`, because its final plan still shows the redeploy. While you use the local image, apply and
+    check the other apps by name: `apply --app ai-inference --app ai-rag --app ai-web`, and the
+    same `--app` options for `drift`. For `ai-edge`, read the `YAML`, `files` and `env` fields of
+    `status`.
 
 The tool uses the two API keys from Chapter 3. `plan`, `drift` and `status` log in as `deploy-read`
 (Readonly Admin) and never change anything. Only `apply` loads the key of `deploy-apply` (Full
@@ -312,23 +370,48 @@ at this release:
    **System** > **Shell** prints for example `TrueNAS-25.10.8`, and the file holds `25.10.8`. Keep
    `stacks_dir` and `secrets_dir` unless you placed the clone or the secrets elsewhere.
 
-4. If an app runs with a compose override file, delete its table (the `[apps.<app>]` line and its
-   `stack` line) from the copy. That applies to `ai-edge` with the internal CA of Appendix D, and to
-   `ai-inference` with the fallback of
-   [Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit).
+4. Keep `env_dir`. It names the folder of your copies of the environment files, which Chapter 3
+   created; `deploy.py` computes each app's `env` hash from `<env_dir>/<stack>.env`. Without the
+   line, the environment files are not compared.
 
-    Such an app has a different YAML from the wrapper. With its table in place, `plan` would report
-    `update`, and `apply` would replace the YAML and drop the override. Without the table,
-    `deploy.py` lists the app as unmanaged and never changes it; redeploy it by hand after a release
-    update.
+5. If an app runs with a compose override file, add an `overrides` line to its table, below its
+   `stack` line. The guide creates three override files:
 
-5. Validate the file:
+    - The `coder` fallback of
+      [Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit):
+
+            [apps.ai-inference]
+            stack = "inference"
+            overrides = ["/mnt/tank/ai/appdata/llama-swap/fallback.override.yaml"]
+
+    - The Caddy image built on the server, of
+      [Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas):
+
+            [apps.ai-edge]
+            stack = "edge"
+            overrides = ["/mnt/tank/ai/appdata/caddy/local-image.override.yaml"]
+
+    - The internal CA of Appendix D, of
+      [Install the ai-edge app with the internal CA](#install-the-ai-edge-app-with-the-internal-ca):
+
+            [apps.ai-edge]
+            stack = "edge"
+            overrides = ["/mnt/tank/ai/appdata/caddy/internal-ca.override.yaml"]
+
+    With both edge overrides, one line names both files, in the order of the paths in the app's
+    YAML: `overrides = ["/mnt/tank/ai/appdata/caddy/local-image.override.yaml",
+    "/mnt/tank/ai/appdata/caddy/internal-ca.override.yaml"]`. Each entry is an absolute path on the
+    server, listed once. `apply` then writes the same YAML as the task that created the override,
+    followed by the content hashes, and keeps it; `plan` shows `override: <file>` under the app.
+    Without the line, `plan` reports `update` for the app, and `apply` would replace its YAML with
+    the four lines of `truenas-app.yaml` and drop the override.
+
+6. Validate the file:
 
         cd ~/local-agent-stack
         python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml validate
 
-    The output ends with `ok (4 apps, release v1.0, TrueNAS 25.10.8)`, with fewer apps if you
-    removed a table.
+    The output ends with `ok (4 apps, release v1.0, TrueNAS 25.10.8)`.
 
 ### Check the connection with deploy.py status
 
@@ -342,33 +425,114 @@ at this release:
 
         ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml status
 
-    The output has the following shape:
+    After the installation by hand of Chapters 4 to 6, the output has the following shape:
 
         TrueNAS 25.10.8; desired release v1.0
-        ai-inference: state RUNNING, YAML matches, images match
-        ai-rag: state RUNNING, YAML matches, images match
-        ai-web: state RUNNING, YAML matches, images match
-        ai-edge: state RUNNING, YAML matches, images match
+        ai-inference: state RUNNING, YAML matches, files not recorded, env not recorded, images match
+        ai-rag: state RUNNING, YAML matches, files not recorded, env not recorded, images match
+        ai-web: state RUNNING, YAML matches, files not recorded, env not recorded, images match
+        ai-edge: state RUNNING, YAML matches, files not recorded, env not recorded, images match
 
-    An app that is not installed yet shows `state -, YAML missing, images -`. Apps of other
-    projects appear as `<name>: unmanaged`.
+    `not recorded` means that the app's YAML carries no content hashes yet; the next task records
+    them. Once they are recorded, each line reads `files match, env match`. An app that is not
+    installed yet shows `state -, YAML missing, files -, env -, images -`, and a field that cannot
+    be computed on this machine shows `not compared`. Apps of other projects appear as
+    `<name>: unmanaged`.
 
 3. Show the plan:
 
         ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml plan
 
-    Each installed app shows `none (RUNNING) in step`.
+    Each installed app shows `update (RUNNING)` with the reasons that no hashes are recorded, as the
+    next task describes, and no other reason. An app with `YAML differs` runs another YAML than the
+    wrapper, for example an override that your desired-state file does not list yet.
 
 #### Results
 
-The read-only key works and the server matches the desired state. Nothing on the server has
-changed.
+The read-only key works, and the server matches the desired state apart from the content hashes.
+Nothing on the server has changed.
+
+### Record the content hashes
+
+#### Prerequisites
+
+- [Check the connection with deploy.py status](#check-the-connection-with-deploypy-status) shows
+  `YAML matches` for every app.
+- No agent or Open WebUI user is working: the task recreates the containers of every app once.
+
+#### About this task
+
+Apps installed by hand from `stack/<stack>/truenas-app.yaml` carry no content hashes. The first
+`apply` records them, which recreates every container of each app once
+([What a redeploy restarts](#what-a-redeploy-restarts) lists the effect). The `env` hash is
+computed from your copies of the environment files, so check first that they are identical to the
+files the apps run with on the server. With the Caddy image built on the server, `ai-edge` also
+shows `redeploy` in steps 3 to 6, and `apply` ends with exit code `1` and `drift` with
+`drift: yes`; the note in [How deploy.py works](#how-deploypy-works) explains why. The other apps
+show the results below.
+
+#### Steps
+
+1. On the workstation, display the checksums of your copies:
+
+        sha256sum ~/.config/local-agent-stack/secrets/*.env
+
+2. On TrueNAS, display the checksums of the server's files:
+
+        sudo sha256sum /mnt/tank/ai/secrets/*.env
+
+    Each file has the same checksum on both machines. If one differs, one copy was changed without
+    the other. The apps run with the server's file: bring the workstation copy to the values that
+    are current, and install it on the server as in
+    [Copy the environment files to TrueNAS](#copy-the-environment-files-to-truenas). Then repeat
+    steps 1 and 2.
+
+3. On the workstation, show the plan:
+
+        cd ~/local-agent-stack
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml plan
+
+    Each app shows a line of this shape, followed by a diff that adds the `x-local-agent-stack`
+    block:
+
+        ai-inference: update (RUNNING) no hash of the files of stack/inference/ recorded (installed by hand?); no hash of its env file recorded
+
+4. Run the apply as a dry run:
+
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml apply --dry-run
+
+    After the plan, each app shows `<app>: update (dry run)`. Nothing is changed.
+
+5. Apply:
+
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml apply
+
+    For each app, in the order `ai-inference`, `ai-rag`, `ai-web`, `ai-edge`, the tool prints
+    `<app>: update` and, once the app runs again, `<app>: RUNNING`. It ends with `after apply:` and
+    a new plan, in which every app shows `none (RUNNING) in step`. The exit code is `0`.
+
+6. Check for drift:
+
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml drift
+
+    The output ends with `drift: none`.
+
+#### Results
+
+Every app's YAML records the hashes of its files and its environment file, and `status` shows
+`files match, env match` for each app. From now on, `plan` reports `update` for an app whose
+release files or environment file change.
 
 ## Updating to a new release
 
-A release update moves both clones to the new tag, adds new variables to the secrets files,
-redeploys the apps whose images or files changed, and verifies the result. Plan for a few minutes of
-interruption per app; [What a redeploy restarts](#what-a-redeploy-restarts) lists the effect of each
+A release update moves both clones to the new tag, adds new variables to the environment files,
+lets `deploy.py apply` update the apps whose files, environment files or images changed, and
+verifies the result. Plan for a few minutes of interruption per app;
+[What a redeploy restarts](#what-a-redeploy-restarts) lists the effect of each app.
+
+Before the first update, record the content hashes as in
+[Record the content hashes](#record-the-content-hashes): `status` shows `files match, env match`
+for every app. Without them, `apply` cannot tell which apps the release changes, and updates every
 app.
 
 ### Prepare for a release update
@@ -442,16 +606,18 @@ You can return to the current state with
         git -C ~/local-agent-stack status --porcelain
         git -C ~/local-agent-stack checkout <new-tag>
 
-    The first command prints nothing. After the checkout, the OpenCode configuration that
-    `clients/install.sh` linked into the clone is the new release's.
+    The first command prints nothing, or only `?? evals/results/` and `?? evals/baselines/`: your
+    evaluation results of Chapter 9, which the checkout keeps. After the checkout, the OpenCode
+    configuration that `clients/install.sh` linked into the clone is the new release's.
 
 6. Set `release` in `~/.config/local-agent-stack/desired.toml` to `<new-tag>`, and compare the file
    with the release's desired state:
 
         diff ~/local-agent-stack/deploy/truenas.toml ~/.config/local-agent-stack/desired.toml
 
-    Apart from `release` and any change you made on purpose (such as a removed `ai-edge` table),
-    the files are the same. Take over any other difference, for example a new app.
+    Apart from `release` and the lines you changed on purpose (`overrides` lines and a changed
+    `env_dir`), the files are the same. Take over any other difference, for example a new app or a
+    new setting.
 
 7. If you created the drift cron job of
    [Scheduled drift checks on TrueNAS](#scheduled-drift-checks-on-truenas), copy the file to the
@@ -463,7 +629,11 @@ You can return to the current state with
    [Create the internal CA Caddyfile](#create-the-internal-ca-caddyfile) for the internal CA of
    Appendix D, and steps 2 and 3 of
    [Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit) for the
-   `coder` fallback.
+   `coder` fallback. `deploy.py` does not detect a changed copy; note the app for a redeploy by
+   hand in [Apply the release](#apply-the-release). The local Caddy image of
+   [Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas) needs a new build only when
+   the release changed `stack/edge/Dockerfile`; step 1 of [Apply the release](#apply-the-release)
+   covers it.
 
 ### Add new variables to the secrets files
 
@@ -471,9 +641,14 @@ You can return to the current state with
 
 Each compose file stops an app with an error that names the variable when a required variable is
 missing. Add every new variable from step 6 of
-[Check a release before you install it](#check-a-release-before-you-install-it) before you
-redeploy. Never run `tools/secrets.py gen` for an existing file: it creates new values for every
+[Check a release before you install it](#check-a-release-before-you-install-it) before you apply
+the release. Never run `tools/secrets.py gen` for an existing file: it creates new values for every
 secret, and `LITELLM_SALT_KEY` and `WEBUI_SECRET_KEY` must never change.
+
+The environment files are named after the app's folder, `<stack>.env`: `inference.env` for
+`ai-inference`, `rag.env`, `web.env` and `edge.env`. Change your workstation copy and install it on
+the server before you run `apply`: `apply` records the checksum of your copy, and the containers read
+the server's file.
 
 #### Steps
 
@@ -485,76 +660,90 @@ secret, and `LITELLM_SALT_KEY` and `WEBUI_SECRET_KEY` must never change.
 
     For a variable that you provide, use the value the release notes or the example file describe.
 
-2. Add the line `<VARIABLE>=<value>` to `~/.config/local-agent-stack/secrets/<app>.env` on the
+2. Add the line `<VARIABLE>=<value>` to `~/.config/local-agent-stack/secrets/<stack>.env` on the
    workstation with a text editor.
 
 3. Copy the file to the server:
 
-        scp ~/.config/local-agent-stack/secrets/<app>.env truenas_admin@192.0.2.10:
+        scp ~/.config/local-agent-stack/secrets/<stack>.env truenas_admin@192.0.2.10:
 
 4. On TrueNAS, install it and delete the copy:
 
-        sudo install -m 0600 -o root -g root ~/<app>.env /mnt/tank/ai/secrets/
-        rm ~/<app>.env
+        sudo install -m 0600 -o root -g root ~/<stack>.env /mnt/tank/ai/secrets/
+        rm ~/<stack>.env
 
 5. Verify the variable on the server:
 
-        sudo grep -c '^<VARIABLE>=' /mnt/tank/ai/secrets/<app>.env
+        sudo grep -c '^<VARIABLE>=' /mnt/tank/ai/secrets/<stack>.env
 
     The output is `1`.
 
+6. Verify that the server's file and your copy are identical: compare the output of
+   `sudo sha256sum /mnt/tank/ai/secrets/<stack>.env` on TrueNAS with that of
+   `sha256sum ~/.config/local-agent-stack/secrets/<stack>.env` on the workstation.
+
+    The two checksums are the same.
+
 #### Results
 
-The secrets files hold every variable of the new release. Each app whose file changed needs a
-redeploy, which the next task covers.
+The environment files hold every variable of the new release. `deploy.py plan` shows
+`its env file differs from the one hashed at the last apply` for each app whose file changed, and
+the next task applies it.
 
 ### Apply the release
 
 #### About this task
 
-`apply` redeploys every app whose running images differ from the new release's, one at a time in
-the order of the desired-state file (`ai-inference`, `ai-rag`, `ai-web`, `ai-edge`), and waits until
-each app runs before it moves to the next. Afterwards, you redeploy by hand each app whose files or
-secrets changed but whose images did not.
+`apply` updates every app whose release files or environment file changed, and redeploys every app
+whose running images differ from the release's. It works one app at a time, in the order of the
+desired-state file (`ai-inference`, `ai-rag`, `ai-web`, `ai-edge`), and waits until each app runs
+before it moves to the next. Some changes remain manual, because `deploy.py` does not detect them: a
+new MCP hub image, a new build of the local Caddy image, and an override copy that you refreshed in
+[Update the clones](#update-the-clones). With the local Caddy image, name the other apps with
+`--app` in steps 2 to 4 (see the note in [How deploy.py works](#how-deploypy-works)).
 
 #### Steps
 
-1. On the workstation, change to the clone and show the plan:
+1. If the release changed files under `stack/web/mcp-hub/`, build the hub image on TrueNAS first,
+   under the name that `stack/web/compose.yaml` gives it (`0.15.0` in this release), so that the
+   recreated `ai-web` uses it:
+
+        sudo docker build -t ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0 /mnt/tank/ai/stacks/local-agent-stack/stack/web/mcp-hub
+
+    If the release publishes the image, pull it instead, as in
+    [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image). If you run the Caddy image
+    built on the server and the release changed `stack/edge/Dockerfile`, build it again as in
+    steps 1 to 3 of [Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas).
+
+2. On the workstation, change to the clone and show the plan:
 
         cd ~/local-agent-stack
         ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml plan
 
-    Apps with new images show `redeploy (RUNNING) runs images other than <new-tag>'s`, followed by
-    the wanted and the running images. The other apps show `none`.
+    Apps whose release files changed show
+    `update (RUNNING) the files of stack/<stack>/ in <new-tag> differ from the last apply`, and apps
+    whose environment file you changed show `its env file differs from the one hashed at the last
+    apply`; each is followed by a diff of the hashes. A change of an `image:` line shows as a
+    change of the files, because `compose.yaml` is one of them. The other apps show
+    `none (RUNNING) in step`.
 
-2. Run the apply as a dry run:
+3. Run the apply as a dry run:
 
         ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml apply --dry-run
 
-    Each app to change shows its action and `(dry run)`. Nothing is changed.
+    After the plan, each app to change shows `<app>: <action> (dry run)`. Nothing is changed.
 
-3. Apply the release:
+4. Apply the release:
 
         ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml apply
 
     For each app it changes, the tool prints the action and then `RUNNING`. It ends with
     `after apply:` and a new plan, in which every app shows `none`. The exit code is `0`.
 
-4. If the release changed files under `stack/web/mcp-hub/`, rebuild the hub image on TrueNAS
-   under the name that `stack/web/compose.yaml` gives it (`0.15.0` in this release), then redeploy
-   `ai-web` in step 5 even if `apply` already did. A redeploy does not rebuild an image that is
-   already on the server:
-
-        sudo docker build -t ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0 /mnt/tank/ai/stacks/local-agent-stack/stack/web/mcp-hub
-
-    If the release publishes the image, pull it instead, as in
-    [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image).
-
-5. Compare the list of changed directories from
-   [Check a release before you install it](#check-a-release-before-you-install-it) with the apps
-   that `apply` redeployed. For each app whose directory under `stack/` changed, or whose secrets
-   file you changed, and that `apply` did not redeploy, redeploy it on TrueNAS. Do one app at a
-   time, in the order `ai-inference`, `ai-rag`, `ai-web`, `ai-edge`:
+5. Redeploy by hand each app that `apply` did not change and that needs it: `ai-web` after a new
+   hub image from step 1, `ai-edge` after a new local Caddy image, and an app whose override copy
+   you refreshed. Do one app at a time, in the
+   order `ai-inference`, `ai-rag`, `ai-web`, `ai-edge`:
 
         sudo midclt call -j app.redeploy <app>
 
@@ -571,7 +760,8 @@ secrets changed but whose images did not.
 
 #### Results
 
-The server runs the new release.
+The server runs the new release, and every app's YAML records the hashes of the release's files and
+of its environment file.
 
 ### Update the workstation clients
 
@@ -613,7 +803,8 @@ The server runs the new release.
         cd ~/local-agent-stack
         ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml drift
 
-    The output ends with `drift: none`, and the exit code (`echo $?`) is `0`.
+    The output ends with `drift: none`, and the exit code (`echo $?`) is `0`. With the Caddy
+    image built on the server, add `--app ai-inference --app ai-rag --app ai-web` after `drift`.
 
 2. Run the end-to-end checks:
 
@@ -664,8 +855,10 @@ roll back the database datasets to the snapshot of
 
 4. Check that every app of the stack runs. `deploy.py apply` does not start a stopped app.
 
-5. Run `deploy.py plan` and `deploy.py apply` as in [Apply the release](#apply-the-release), and
-   redeploy by hand each app whose files differ between the two tags.
+5. Run `deploy.py plan` and `deploy.py apply` as in [Apply the release](#apply-the-release).
+   `apply` updates every app whose files differ between the two tags. If the update built a new MCP
+   hub image under the same tag, build it again from the old tag's files first (step 1 of that
+   task), and redeploy `ai-web` by hand if `apply` did not update it.
 
 6. Run the verification of [Verify the release update](#verify-the-release-update).
 
@@ -676,7 +869,14 @@ apply. If you want a scheduled check, run it as a TrueNAS cron job on the server
 stack is scheduled on a workstation.
 
 On TrueNAS, `deploy.py --local` talks to the local middleware socket as `root`, so it needs no API
-key and no certificate.
+key and no certificate. It reads the environment files in `/mnt/tank/ai/secrets` for the `env`
+hashes and ignores `env_dir`. If your workstation copies differ from the server's files, the check
+reports the app as drifted, with the note
+`if apply ran from another machine, its copy of the env file differs from the one read here`: keep
+both copies identical, as [Add new variables to the secrets files](#add-new-variables-to-the-secrets-files)
+does. With the Caddy image built on the server, the check always reports `ai-edge`, because it
+compares the running image with the release's compose file and not with the override; in that case
+add `--app ai-inference --app ai-rag --app ai-web` after `drift` in the cron command below.
 
 ### Check that deploy.py runs on TrueNAS
 
@@ -709,8 +909,9 @@ check it.
 
         sudo python3 /mnt/tank/ai/stacks/local-agent-stack/tools/deploy.py --local --file /mnt/tank/ai/stacks/desired.toml status
 
-    The output has the same shape as on the workstation. If the images show `not compared`, git did
-    not read the clone; the cron job in the next task passes git a setting for that.
+    The output has the same shape as on the workstation. If the files and images show
+    `not compared`, git did not read the clone; the cron job in the next task passes git a setting
+    for that.
 
 ### Create the drift cron job
 
@@ -722,7 +923,8 @@ drift or fails. A TrueNAS cron job runs its command with `sh -c` as the selected
 Git refuses to work in a repository that belongs to another user unless the directory is listed in
 its `safe.directory` setting. The clone belongs to `truenas_admin` and the job runs as `root`, so
 the command passes that setting to git in its environment. Without it, `deploy.py` reports the
-images as not compared and checks only the YAML and the app states.
+files and images as not compared and checks only the YAML, the environment files and the app
+states.
 
 #### Steps
 
@@ -865,7 +1067,9 @@ The update is in `main` and reaches the server with the next release.
 
 `app.redeploy` stops every container of the app and creates it again (`docker compose down`, then
 `up --force-recreate`). Every container of the app restarts, even if only one changed. That is why
-the stack is split into four apps, and why you redeploy one app at a time.
+the stack is split into four apps, and why you redeploy one app at a time. The `update` of
+`deploy.py apply` has the same effect: TrueNAS stores the new YAML and recreates every container of
+a running app (`up --force-recreate --remove-orphans`).
 
 Table: Effect of a redeploy
 
@@ -877,6 +1081,12 @@ Table: Effect of a redeploy
 | `ai-edge` | `caddy`, `gpu-exporter` | Every host name is unreachable for the restart. Certificates stay in `/mnt/tank/ai/appdata/caddy/data` and are not requested again |
 
 ### Redeploy one app
+
+#### About this task
+
+`deploy.py apply` updates an app whenever its release files, its environment file or its images
+change. Redeploy an app by hand for the changes that `deploy.py` does not detect: a changed override
+file or override copy, a rebuilt MCP hub image, and a branch deployed for testing.
 
 #### Steps
 
@@ -1077,11 +1287,21 @@ branch.
 
 ### Pass the evaluation gate
 
+#### Prerequisites
+
+- An evaluation baseline of the model that the change replaces, recorded at the release the server
+  runs ([Record an evaluation baseline](#record-an-evaluation-baseline)), for example
+  `evals/baselines/local-coder-full.json`.
+- The change is committed to a branch, which is checked out in the workstation clone and pushed to
+  GitHub (Chapter 8).
+
 #### About this task
 
 A model change is merged only when it does not make the stack worse at what it is used for. The
-gate combines the benchmark, the end-to-end checks, the evaluations of Chapter 9, and a
-tool-calling session, run against the branch deployed on the server.
+gate combines the benchmark, the end-to-end checks, the regression gate of `tools/eval.py compare`
+([Compare a change with the baseline](#compare-a-change-with-the-baseline)) and a tool-calling
+session, run against the branch deployed on the server. It is the regression check of Chapter 9
+([Run the regression check](#run-the-regression-check)) applied to a model change.
 
 #### Steps
 
@@ -1093,16 +1313,31 @@ tool-calling session, run against the branch deployed on the server.
         git -C /mnt/tank/ai/stacks/local-agent-stack checkout --detach FETCH_HEAD
         sudo midclt call -j app.redeploy ai-inference
 
-2. From the workstation, run the end-to-end checks:
+2. On the workstation, check that the clone holds the same branch:
+
+        git -C ~/local-agent-stack branch --show-current
+
+    The output is `<branch>`. The evaluation takes its configuration checksum from the files of this
+    clone, so they must be the files that the server now runs.
+
+3. From the workstation, run the end-to-end checks:
 
         python3 tools/smoke.py
 
     The last line starts with `smoke: 8 passed, 0 failed`.
 
-3. Run the evaluations of Chapter 9 against the new model and compare them with the stored
-   results of the current model.
+4. Run the full evaluation set against the changed configuration and compare it with the baseline:
 
-4. Run a real agent task with tool calls for about 30 minutes, then search the `llama-swap` log for
+        cd ~/local-agent-stack
+        python3 tools/eval.py run --suite full --baseline evals/baselines/local-coder-full.json
+
+    The output ends with the comparison; the `config:` line names the changed files, and the last
+    line reads `gate: pass`. For a model under a new name, add `--model <name>` (and
+    `--anthropic-model <name>` for its Anthropic-format name, if it has one) and compare with the
+    baseline of the model it replaces; `compare` notes the different model. For a failed case, see
+    [Act on failed evaluation cases](#act-on-failed-evaluation-cases).
+
+5. Run a real agent task with tool calls for about 30 minutes, then search the `llama-swap` log for
    full prompt re-processing:
 
         sudo docker logs --since 30m llama-swap 2>&1 | grep -c 'Forcing full prompt re-processing'
@@ -1111,22 +1346,26 @@ tool-calling session, run against the branch deployed on the server.
     Also watch the session for tool calls written into the reasoning text instead of being executed,
     and for the same tool call repeated with the same arguments.
 
-5. Return the TrueNAS clone to the release tag and redeploy:
+6. Return the TrueNAS clone to the release tag and redeploy:
 
         git -C /mnt/tank/ai/stacks/local-agent-stack checkout <old-tag>
         sudo midclt call -j app.redeploy ai-inference
 
+7. Commit the new results file from `evals/results/` to the branch, and write the benchmark tables,
+   the smoke summary, the `compare` output and the session's outcome into the pull request.
+
 #### Results
 
-Merge the change when the speeds are acceptable, the smoke checks pass, the evaluations show no
-regression beyond what you accept (state the accepted loss in the pull request and in
-`CHANGELOG.md`), and the session shows none of the failure signs. The change reaches the server with
-the next release.
+Merge the change when the speeds are acceptable, the smoke checks pass, `compare` prints
+`gate: pass` or the pull request and the change's `CHANGELOG.md` line accept the regression with
+the issue number, and the session shows none of the failure signs. The change reaches the server
+with the next release; after you install it, record a new baseline
+([Record an evaluation baseline](#record-an-evaluation-baseline)).
 
 !!! note
-    While the TrueNAS clone is on a branch, `deploy.py plan` reports the images of the release in
-    your desired-state file and may show `redeploy`. Do not run `deploy.py apply` until the clone is
-    back on the release tag.
+    While the TrueNAS clone is on a branch, `deploy.py plan` compares the server with the release in
+    your desired-state file and may show `redeploy` for `ai-inference`. Do not run `deploy.py apply`
+    until the clone is back on the release tag.
 
 ### Change the embedding or reranker model
 

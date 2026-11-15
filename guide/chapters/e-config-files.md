@@ -17,6 +17,9 @@ Table: Inference app files
 | `stack/inference/llama-swap/config.yaml` | Models llama-swap serves, their llama-server flags and groups. |
 | `stack/inference/litellm/config.yaml` | Client-facing model names and how LiteLLM routes them. |
 | `stack/inference/inference.env.example` | Variables for /mnt/tank/ai/secrets/inference.env. |
+| `stack/inference/truenas-app.yaml` | The YAML of the ai-inference custom app in TrueNAS (the include wrapper). |
+| `stack/inference/models.tsv` | The model files: Hugging Face repository, revision and file name of each. |
+| `stack/inference/models.sha256` | The SHA-256 checksums of the model files, for `sha256sum -c`. |
 
 ### inference/compose.yaml
 
@@ -42,6 +45,24 @@ Variables for /mnt/tank/ai/secrets/inference.env.
 
 {{ include stack/inference/inference.env.example }}
 
+### inference/truenas-app.yaml
+
+The YAML of the ai-inference custom app in TrueNAS (the include wrapper).
+
+{{ include stack/inference/truenas-app.yaml }}
+
+### inference/models.tsv
+
+The model files: Hugging Face repository, revision and file name of each.
+
+{{ include stack/inference/models.tsv }}
+
+### inference/models.sha256
+
+The SHA-256 checksums of the model files, for `sha256sum -c`.
+
+{{ include stack/inference/models.sha256 }}
+
 ## RAG app files
 
 These files belong to the `ai-rag` TrueNAS app. On the server they are under `/mnt/tank/ai/stacks/local-agent-stack/`; the `.env.example` file is the template for the secrets file that lives outside the repository.
@@ -53,6 +74,7 @@ Table: RAG app files
 | `stack/rag/compose.yaml` | The ai-rag compose project: pgvector, docling and oikb. |
 | `stack/rag/oikb/oikb.yaml` | The document-share sync configuration. |
 | `stack/rag/rag.env.example` | Variables for /mnt/tank/ai/secrets/rag.env. |
+| `stack/rag/truenas-app.yaml` | The YAML of the ai-rag custom app in TrueNAS (the include wrapper). |
 
 ### rag/compose.yaml
 
@@ -72,6 +94,12 @@ Variables for /mnt/tank/ai/secrets/rag.env.
 
 {{ include stack/rag/rag.env.example }}
 
+### rag/truenas-app.yaml
+
+The YAML of the ai-rag custom app in TrueNAS (the include wrapper).
+
+{{ include stack/rag/truenas-app.yaml }}
+
 ## Web app files
 
 These files belong to the `ai-web` TrueNAS app. On the server they are under `/mnt/tank/ai/stacks/local-agent-stack/`; the `.env.example` file is the template for the secrets file that lives outside the repository.
@@ -86,6 +114,7 @@ Table: Web app files
 | `stack/web/mcp-hub/Dockerfile` | How the MCP hub image is built. |
 | `stack/web/mcp-hub/servers.json` | The tool servers the MCP hub serves. |
 | `stack/web/web.env.example` | Variables for /mnt/tank/ai/secrets/web.env. |
+| `stack/web/truenas-app.yaml` | The YAML of the ai-web custom app in TrueNAS (the include wrapper). |
 
 ### web/compose.yaml
 
@@ -123,6 +152,12 @@ Variables for /mnt/tank/ai/secrets/web.env.
 
 {{ include stack/web/web.env.example }}
 
+### web/truenas-app.yaml
+
+The YAML of the ai-web custom app in TrueNAS (the include wrapper).
+
+{{ include stack/web/truenas-app.yaml }}
+
 ## Edge app files
 
 These files belong to the `ai-edge` TrueNAS app. On the server they are under `/mnt/tank/ai/stacks/local-agent-stack/`; the `.env.example` file is the template for the secrets file that lives outside the repository.
@@ -135,6 +170,7 @@ Table: Edge app files
 | `stack/edge/Caddyfile` | Host names, TLS and reverse-proxy rules. |
 | `stack/edge/Dockerfile` | How the Caddy image with DNS provider modules is built. |
 | `stack/edge/edge.env.example` | Variables for /mnt/tank/ai/secrets/edge.env. |
+| `stack/edge/truenas-app.yaml` | The YAML of the ai-edge custom app in TrueNAS (the include wrapper). |
 
 ### edge/compose.yaml
 
@@ -160,12 +196,19 @@ Variables for /mnt/tank/ai/secrets/edge.env.
 
 {{ include stack/edge/edge.env.example }}
 
+### edge/truenas-app.yaml
+
+The YAML of the ai-edge custom app in TrueNAS (the include wrapper).
+
+{{ include stack/edge/truenas-app.yaml }}
+
 ## Workstation files
 
 Table: Workstation files
 
 | File | Purpose |
 |---|---|
+| `clients/client.env.example` | Variables for ~/.config/local-agent-stack/client.env on each workstation. |
 | `clients/opencode/opencode.jsonc` | OpenCode configuration: provider, models, MCP servers, permissions. |
 | `clients/opencode/agents/coordinator.md` | The coordinator agent. |
 | `clients/opencode/agents/researcher.md` | The researcher agent. |
@@ -183,6 +226,12 @@ Table: Workstation files
 | `clients/install.sh` | Installs OpenCode and links these files on a workstation. |
 | `clients/claude-code/claude-local` | Starts Claude Code against the local gateway. |
 | `clients/ssh-mcp/ssh-mcp-stdio` | Launches the SSH tool as a stdio child of the agent. |
+
+### clients/client.env.example
+
+Variables for ~/.config/local-agent-stack/client.env on each workstation.
+
+{{ include clients/client.env.example }}
 
 ### clients/opencode/opencode.jsonc
 
@@ -299,3 +348,27 @@ Table: Deployment state file
 The desired state tools/deploy.py applies and checks.
 
 {{ include deploy/truenas.toml }}
+
+## Evaluation files
+
+These files decide which evaluation cases `tools/eval.py` runs and when its regression gate fails
+(Chapter 9). They stay in the workstation's clone; nothing installs them on the server.
+
+Table: Evaluation files
+
+| File | Purpose |
+|---|---|
+| `evals/sets.toml` | The suite order and the run sets `smoke` and `full`. |
+| `evals/gate.toml` | The thresholds of the regression gate of tools/eval.py compare. |
+
+### evals/sets.toml
+
+The suite order and the run sets `smoke` and `full`.
+
+{{ include evals/sets.toml }}
+
+### evals/gate.toml
+
+The thresholds of the regression gate of tools/eval.py compare.
+
+{{ include evals/gate.toml }}

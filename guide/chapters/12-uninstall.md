@@ -28,9 +28,10 @@ Table: Data of the stack
 | `tank/ai/appdata/pgvector` | Open WebUI's users, chats, knowledge bases and vectors | You may reinstall the stack and want the chats and indexes back |
 | `tank/ai/appdata/litellm-db` | LiteLLM's virtual keys, budgets and usage logs | You may reinstall and keep the keys |
 | `tank/ai/appdata/open-webui`, `oikb`, `caddy` | Uploaded files, the sync history, certificates and the ACME account | Together with `pgvector` and `litellm-db` |
-| `tank/ai/secrets` | The four `<app>.env` files | With the application data: the databases only open with their original passwords and keys |
+| The folders `llama-swap`, `benchmarks` and `pg-dumps` in `tank/ai/appdata` | The override file and configuration copy of the `coder` fallback (the internal CA's files are in `caddy`), the benchmark baselines of Chapter 9, and the database dumps | You want the measurements or the dumps |
+| `tank/ai/secrets` | The four environment files `inference.env`, `rag.env`, `web.env` and `edge.env` | With the application data: the databases only open with their original passwords and keys |
 | `tank/ai/models` | The model files, about 36 GB | You will reinstall soon and want to skip the downloads |
-| `tank/ai/stacks` | The clone of this repository | Never needed; the release is on GitHub |
+| `tank/ai/stacks` | The clone of this repository, and `desired.toml` if you set up the drift cron job | Never needed; the release is on GitHub |
 
 To reinstall later on kept datasets, follow the deployment chapters again with the same secrets
 files. Never generate new secrets for kept data: `LITELLM_SALT_KEY`, `WEBUI_SECRET_KEY` and the
@@ -74,7 +75,9 @@ database passwords must match the data.
 #### About this task
 
 Remove the jobs that would act on the stack while you remove it: the drift check, which would
-report every removed app, and the nightly database dumps, which would fail.
+report every removed app, and the nightly database dumps, which would fail. From here on, do not run
+`tools/deploy.py apply`: it creates every app that your desired-state file names and the server
+lacks.
 
 #### Steps
 
@@ -133,8 +136,9 @@ back keys that clients still hold.
 #### About this task
 
 Delete the apps in the reverse order of installation: `ai-edge` first, so that nothing is reachable
-from the LAN any more, then `ai-web`, `ai-rag` and `ai-inference`. Deleting a custom app stops and
-removes its containers. The stack keeps no data in app volumes inside TrueNAS's `ix-apps` dataset,
+from the LAN any more, then `ai-web`, `ai-rag` and `ai-inference`. `tools/deploy.py` never deletes
+an app, so the apps are deleted in the web interface. Deleting a custom app stops and removes its
+containers. The stack keeps no data in app volumes inside TrueNAS's `ix-apps` dataset,
 so deleting an app does not delete data on the `tank/ai` datasets.
 
 #### Steps
@@ -490,17 +494,24 @@ on `PATH`. The block reads:
 
         rm -rf ~/.config/local-agent-stack
 
-    This removes `client.env` with your gateway key and hub token, and
-    `~/.config/local-agent-stack/secrets/` with the copies of the four `<app>.env` files and the
+    This removes `client.env` with your gateway key and hub token (and the `EVAL_KB_ID` and
+    `EVAL_KB_KEY` lines, if you left them there), `desired.toml`, and
+    `~/.config/local-agent-stack/secrets/` with the copies of the four environment files and the
     stored workstation keys `litellm-c4dev.key` and `litellm-mac.key`.
 
 2. Delete the release downloads and the diagnostics, if you created them:
 
         rm -rf ~/releases ~/diag-*.txt
 
-3. Delete the clone of the repository, after you saved any work in it:
+3. Delete the clone of the repository, after you saved any work in it. Your evaluation results
+   and baselines of Chapter 9 are in its `evals/results/` and `evals/baselines/` directories; copy
+   them elsewhere first if you want to keep them:
 
         rm -rf ~/local-agent-stack
+
+4. If you kept raw model answers with `--save-responses`, delete that directory too, for example:
+
+        rm -rf /tmp/eval-responses
 
 ### Remove the internal root certificate
 
@@ -552,7 +563,7 @@ root still works for anyone who holds a copy of `root.key`.
 
 3. Check that no variable of the stack is set:
 
-        env | grep -E '^(LAB_DOMAIN|LOCAL_LLM_KEY|MCP_HUB_TOKEN)='
+        env | grep -E '^(LAB_DOMAIN|LOCAL_LLM_KEY|MCP_HUB_TOKEN|EVAL_KB_ID|EVAL_KB_KEY)='
 
     The command prints nothing.
 

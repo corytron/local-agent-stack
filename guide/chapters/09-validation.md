@@ -5,8 +5,8 @@ title: Validating the deployment
 This chapter confirms that the whole stack works from the workstation, end to end, and records the
 performance of your system as a baseline for later comparisons. You run the smoke tests, check
 each endpoint by hand, test tool calling and retrieval over your documents, and record a benchmark
-baseline. The last topic describes how changes are checked for regressions: what the repository
-provides in this release, and the evaluation suites and regression gate that are planned.
+baseline. The last topic runs the evaluation suites of `tools/eval.py`, records an evaluation
+baseline per model, and compares every later change with it through a regression gate.
 
 Repeat this chapter after every change to the stack: a new release, a new model file, a new
 llama.cpp image, or changed server flags. Before you start, check the following:
@@ -562,8 +562,8 @@ tasks of Appendix A protect.
 The baseline uses the production flags of each model. If you applied a fallback in
 [Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit), use the
 flags of the fallback instead: without `--spec-type draft-mtp` for fallback A, and also
-`-c 49152` for fallback B. The llama-bench run uses five repetitions per test, the number that the
-planned regression gate uses for its medians.
+`-c 49152` for fallback B. The llama-bench run uses five repetitions per test (`-r 5`; the default
+of `bench.sh` is three), so that one slow run weighs less in each speed.
 
 #### Steps
 
@@ -675,7 +675,10 @@ sudo sed -e '/^  coder-moe:$/,/^    ttl: 0$/s/--n-cpu-moe 16/--n-cpu-moe <n>/' \
   sudo tee /mnt/tank/ai/appdata/llama-swap/config.yaml > /dev/null
 ```
 
-The cautions of that task apply: `tools/deploy.py apply` removes the override.
+As in that task, list the override in the `overrides` line of `[apps.ai-inference]` in your
+desired-state file ([Create your desired-state file](#create-your-desired-state-file)), so that
+`tools/deploy.py apply` keeps it. `deploy.py` does not detect a change to the copy: redeploy
+`ai-inference` by hand after you change it ([Redeploy one app](#redeploy-one-app)).
 
 ### Compare a new run with the baseline
 
@@ -692,9 +695,11 @@ The cautions of that task apply: `tools/deploy.py apply` removes the override.
     The lines that differ show the speeds of both runs.
 
 3. Treat a drop of more than 5% in generation or prompt speed at any depth as a regression to
-   explain before you accept the change. This is the threshold that the planned regression gate
-   uses. Also compare the **GPU MiB used** column of the server-mode runs: less headroom than
-   before can make the model fail to load after the next change.
+   explain before you accept the change. This is a manual rule for the engine speeds that
+   `bench.sh` measures; the evaluation gate applies its own rule, 15%, to the end-to-end speed of
+   the evaluation cases ([Regression gate rules](#regression-gate-rules)). Also compare the
+   **GPU MiB used** column of the server-mode runs: less headroom than before can make the model
+   fail to load after the next change.
 
 4. When a change is accepted, the new files become the baseline. Keep the old files; they record
    the history of the system.
@@ -705,79 +710,372 @@ You know whether the change made the stack slower, and by how much.
 
 ## Evaluations and the regression gate
 
-A change to the inference settings can make the stack slower or the model worse at its work. The
-repository's design checks every such change against stored results before it is accepted. This
-release ships the tools for speed and for end-to-end function; the evaluation suites that measure
-model quality are planned and are not in the repository yet.
+A change to the inference settings can make the stack slower or the model worse at its work.
+`tools/eval.py` runs fixed evaluation suites from the workstation against the gateway, stores the
+outcome in a results file tied to a checksum of the configuration, and compares two results files
+with a regression gate. It needs only the Python 3.11 standard library, like `smoke.py`.
 
 ### Validation tools in this release
 
 Table: Validation tools
 
-| Tool | In this release | What it checks |
+| Tool | What it checks |
+|---|---|
+| `tools/smoke.py` | Every endpoint, end to end, from the workstation ([Run the smoke tests](#run-the-smoke-tests)) |
+| `tools/bench.sh` | Fit in VRAM, GPU memory, prompt and generation speed ([Record a benchmark baseline](#record-a-benchmark-baseline)) |
+| Tool-calling and retrieval tests | Structured tool calls on both API formats; retrieval of a planted document (procedures in this chapter) |
+| `tools/eval.py` and `evals/` | Model quality on fixed suites: tool calling, output format, small coding tasks, answers from documents; the regression gate |
+| `tools/tests/` | Unit tests of the repository's tools, run by `tools/check.sh` and CI; they use no model |
+
+None of the CI jobs runs a model: CI has no GPU. Evaluations run from the workstation, by hand.
+
+### Evaluation suites
+
+Table: Evaluation suites
+
+| Suite | Cases | What a case checks |
 |---|---|---|
-| `tools/smoke.py` | Yes | Every endpoint, end to end, from the workstation ([Run the smoke tests](#run-the-smoke-tests)) |
-| `tools/bench.sh` | Yes | Fit in VRAM, GPU memory, prompt and generation speed ([Record a benchmark baseline](#record-a-benchmark-baseline)) |
-| Tool-calling and retrieval tests | Yes, as procedures in this chapter | Structured tool calls on both API formats; retrieval of a planted document |
-| `tools/tests/` | Yes | Unit tests of the repository's tools, `smoke.py` among them, run by `tools/check.sh` and CI; they use no model |
-| `evals/` and `tools/eval.py` | No, planned | Model quality: tool calling, agentic coding, retrieval; the regression gate |
+| `tools` | 20 | A structured tool call with the right name and arguments: single calls, parallel calls, no call when none is needed, nested arguments, and calls that follow a tool result; 13 on the OpenAI route (`/v1/chat/completions`), 7 on the Anthropic route (`/v1/messages`) |
+| `format` | 10 | Exact output: JSON with no code fence, exact text, a number of lines, JSON that fits a schema |
+| `coding` | 8 | A small Python function, run against hidden unit tests on the workstation |
+| `rag` | 6 | Answers from four sample documents placed in the request, with the source file named; one question the documents cannot answer |
 
-None of the CI jobs runs a model: CI has no GPU. Model checks run on your server, by hand.
+Two sets select the cases: `smoke`, a fixed subset of 15 cases from every suite, and `full`, all
+44 cases. Each case has a fixed ID, such as `tools-005`, that never changes. The suites are the
+files `evals/suites/<suite>.jsonl`, the sets are defined in `evals/sets.toml`, and the sample
+documents of the `rag` suite are `evals/rag-docs/eval-*.md`; Appendix E prints the set and gate
+files.
 
-### Planned evaluation suites
+How `eval.py` runs:
 
-The design keeps the evaluation suites in `evals/` and runs them with `tools/eval.py`, with three
-commands: `run`, `compare` and `verify`. Neither exists in this release.
+- **Settings.** As `smoke.py`: `LAB_DOMAIN` and `LOCAL_LLM_KEY` from the environment, then from
+  `~/.config/local-agent-stack/client.env` (or the file of `--env-file`). The key must allow the
+  models of the run; the `c4dev` key allows all eight names. With the internal CA of Appendix D,
+  add `--cafile ~/caddy-root.crt`, as for `smoke.py`.
+- **Models.** `--model` names the model of the OpenAI-route cases (default `local-coder`). The
+  Anthropic-route cases, which the `tools`, `format` and `coding` suites contain, use
+  `local-sonnet` with `local-coder`, `local-haiku` with `local-fast`, and otherwise the same name;
+  `--anthropic-model` overrides it.
+- **One request at a time.** The server has one slot, so parallel requests only queue and distort
+  the timings. A warm-up request per route comes first, so a model swap is not measured.
+- **Sampling.** The server's production settings are used unless you pass `--temperature` or
+  `--seed`. At the default temperature the answers vary from run to run, so a single case can
+  pass in one run and fail in the next.
+- **Coding tests.** The tests run on the workstation, on all cores, each in a temporary directory
+  with a 10-second limit (`--test-timeout`); the test process may not open network connections,
+  start processes or write outside its directory. The first output line names the protection as
+  `coding sandbox audit-hook`, or `netns+audit-hook` when the workstation also allows a private
+  network namespace. These rules protect against accidents; the code runs as your user.
+- **Results file.** `evals/results/<UTC time>-<model>-<set>.json` in the clone. It records, per
+  case, pass, fail or error, a short reason, the latency and the tokens; per suite, the pass rate
+  with a 95% interval and the median output tokens per second; and the configuration checksum. It
+  holds no prompt, no answer, no key and no domain. A run limited with `--case` is partial: its file
+  goes to `build/evals/` and never counts as a baseline.
+- **Exit codes.** `0` when the results file was written (and, with `--baseline`, the gate passed),
+  `1` when the run stopped or the gate failed, `2` for a usage error, such as a missing
+  `LOCAL_LLM_KEY`.
 
-Table: Planned evaluation suites
-
-| Area | Harness (pinned version) | Planned content |
-|---|---|---|
-| Throughput | llama-bench in the server's image; `llama-benchy` 0.4.0 from the workstation | The llama-bench grid with five repetitions; end-to-end prompt and generation speed and time to the first token at several depths |
-| Tool calling | Berkeley Function Calling Leaderboard, `bfcl-eval` 2026.3.23 | 50 tasks each of `simple_python`, `multiple`, `parallel`, `parallel_multiple`, `irrelevance`, `live_simple` and `live_multiple`, plus 40 of `multi_turn_base`, measured through the server's own tool-call parsing |
-| Agentic coding | Harbor 0.26.0 | Smoke suite: `terminal-bench-sample@2.0` (10 tasks) and 20 pinned `aider-polyglot` tasks. Full suite, overnight: `terminal-bench@2.0` (89 tasks), 60 `aider-polyglot` tasks and 20 pinned `swebench-verified` tasks |
-| Retrieval quality | ragas 0.4.4 | A golden set of 30 to 50 questions over your own documents, with reference answers and source passages; metrics such as faithfulness and context precision and recall |
-
-Each planned results file records a checksum of the configuration (the rendered inference compose
-file, the server flags and the model files' checksums), the harness versions, the GPU and driver,
-the server's slots and context, the temperature and seed, and for each metric its value, the
-number of tasks and a 95% interval. The files would be committed under `evals/results/`, with one
-baseline per model profile under `evals/baselines/`.
-
-### Planned regression gate rules
-
-`tools/eval.py compare` is designed to fail a change when any of these holds. The thresholds are
-proposals.
-
-- The median generation or prompt speed falls below 0.95 times the baseline at any depth
-  (llama-bench with five repetitions).
-- The tool-calling score drops by more than 2 points, and a two-proportion test finds the drop
-  significant.
-- The agentic pass rate of the smoke suite drops by more than one task. The smoke suite is small
-  and catches only gross regressions; the full suite decides.
-- Any retrieval metric drops by more than 0.05.
-
-`tools/eval.py verify` is designed to run in CI, offline: a pull request that changes the inference
-settings must carry a passing results file for its own configuration checksum, or a line in
-`CHANGELOG.md` with an issue number that accepts the regression.
-
-The design also fixes how evaluations share the one GPU:
-
-- A speed measurement has the server to itself, with no other suite running.
-- Functional suites share the server, with no more concurrent requests than the server has slots.
-- Two models are never loaded at once; a judge model runs after the generation phase.
-- Work that needs only the CPU, such as test containers and scoring, runs on the workstation.
-
-### Run the manual regression check
+### Run the smoke evaluation
 
 #### About this task
 
-Until `tools/eval.py` exists, check a change by hand with the tools of this release. Chapter 10
-applies this check to model changes in its evaluation gate.
+The smoke set takes a few minutes and tells you whether a change broke tool calling, output format,
+coding or answers from documents. Run it after every change to the inference settings, a model file
+or the llama.cpp image, after [Run the smoke tests](#run-the-smoke-tests) has passed.
 
 #### Steps
 
-1. Deploy the change on the server, as Chapter 10 describes for releases and model changes.
+1. On `c4dev`, change to the clone:
+
+        cd ~/local-agent-stack
+
+2. Check that the suites are intact:
+
+        python3 tools/eval.py suites
+
+    Every suite line starts with `ok`, and the last lines read `set smoke: 15 cases` and
+    `set full: 44 cases`.
+
+3. Run the smoke set with the agent model:
+
+        python3 tools/eval.py run --suite smoke
+
+    The output has this shape:
+
+        eval: set smoke, 15 cases, model local-coder (Anthropic route: local-sonnet), config <hash>, coding sandbox audit-hook
+        warm-up: local-coder (openai) answered in <s> s
+        warm-up: local-sonnet (anthropic) answered in <s> s
+        [ 1/15] tools-001    pass       <s> s   <n> tok   <n> tok/s  1 call(s) matched
+        ...
+        [12/15] coding-001   testing    <s> s   <n> tok   <n> tok/s  hidden tests queued
+        ...
+        tests coding-001   pass    tests passed in <s> s
+        suite      cases  pass     rate         95% CI    tok/s   latency
+        tools          8     8   100.0%        68-100%      <n>     <s> s
+        format         3     3   100.0%        44-100%      <n>     <s> s
+        coding         2     2   100.0%        34-100%      <n>     <s> s
+        rag            2     2   100.0%        34-100%      <n>     <s> s
+        overall       15    15   100.0%        80-100%      <n>     <s> s
+        results: /home/<user>/local-agent-stack/evals/results/<UTC time>-local-coder-smoke.json
+
+4. Check that the results file is complete:
+
+        python3 tools/eval.py verify evals/results/<file>.json
+
+    The output starts with `ok`, followed by the file, the set, the model, the passed cases and
+    the configuration checksum.
+
+#### Results
+
+The smoke results are stored. A failed case shows `fail` or `error` and its reason; see
+[Act on failed evaluation cases](#act-on-failed-evaluation-cases).
+
+### Record an evaluation baseline
+
+#### Prerequisites
+
+- The workstation clone is checked out at the release that the server runs (Chapter 3), with the
+  same configuration files.
+- [Run the smoke evaluation](#run-the-smoke-evaluation) has passed.
+
+#### About this task
+
+The baseline is the full set's results in a known-good state, one per model. Later runs are
+compared with it. Record it after the deployment passes this chapter, and again whenever you accept
+a change.
+
+!!! caution
+    An evaluation occupies the GPU for its whole run. Run it while no agent or Open WebUI user is
+    working.
+
+#### Steps
+
+1. Run the full set:
+
+        python3 tools/eval.py run --suite full
+
+    With `local-coder`, the run takes about 10 to 20 minutes (an estimate; the model thinks before
+    it answers).
+
+2. Verify the results files against the configuration of the clone:
+
+        python3 tools/eval.py verify --current
+
+    Each line starts with `ok` and names a results file of this configuration: the full run, and
+    the smoke run of the previous task. `--current` requires the results files to carry the
+    configuration checksum of the files in the clone.
+
+3. Keep the full run's file as the baseline:
+
+        mkdir -p evals/baselines
+        cp evals/results/<file>.json evals/baselines/local-coder-full.json
+
+4. Repeat steps 1 to 3 for the thinking-off model, which runs faster:
+
+        python3 tools/eval.py run --suite full --model local-fast
+
+    Copy its file to `evals/baselines/local-fast-full.json`.
+
+5. If you track your configuration in a repository, commit the results and the baselines with the
+   change that produced them (Chapter 8). In a clone that only follows the release tags, the two
+   directories stay untracked files, and `git checkout` of a new tag keeps them.
+
+#### Results
+
+Each model has a baseline that later runs are compared with.
+
+### Compare a change with the baseline
+
+#### Prerequisites
+
+- A baseline of the model, from [Record an evaluation baseline](#record-an-evaluation-baseline).
+- The workstation clone is checked out at the change: the new release tag, or the branch of the
+  change. The results file takes its configuration checksum from the files in the clone, so the
+  clone must hold the configuration that the server runs.
+
+#### Steps
+
+1. Deploy the change on the server: a release as in
+   [Updating to a new release](#updating-to-a-new-release), or a branch for testing as in step 1
+   of [Pass the evaluation gate](#pass-the-evaluation-gate).
+
+2. Run the full set and compare it with the baseline in one command:
+
+        python3 tools/eval.py run --suite full --baseline evals/baselines/local-coder-full.json
+
+    After the run, the output ends with the comparison:
+
+        compare: baseline local-coder full <time> -> result local-coder full <time>
+        config: <old hash> -> <new hash>; changed: stack/inference/llama-swap/config.yaml
+        suite             baseline          result     change    limit  verdict
+        tools         20/20 100.0%    19/20  95.0%    -5.0 pt     5 pt  ok
+        format        10/10 100.0%     9/10  90.0%   -10.0 pt     5 pt  FAIL
+        coding          8/8 100.0%      8/8 100.0%    +0.0 pt     5 pt  ok
+        rag             6/6 100.0%      6/6 100.0%    +0.0 pt     5 pt  ok
+        tok/s              <n>             <n>         <n>%      15%  ok
+        newly failing: tools-005, format-003
+          tools-005: fail: no tool call (finish: stop)
+          format-003: fail: not JSON: ```json
+        gate: FAIL (1 rule(s) failed)
+
+    The `changed:` list names the configuration files that differ from the baseline. With no
+    change, the line reads `config: same (<hash>)`.
+
+3. Confirm the exit code:
+
+        echo $?
+
+    `0` means that the gate passed; `1` means that a rule failed.
+
+4. To compare two existing results files, run:
+
+        python3 tools/eval.py compare evals/baselines/local-coder-full.json evals/results/<file>.json
+
+    The output is the comparison of step 2, with the same exit codes.
+
+#### Results
+
+You know which suites and cases got worse and whether the speed dropped. A failed gate means: find
+the cause, or accept the regression in the pull request and in the change's `CHANGELOG.md` line,
+with the issue number (Chapter 8), and record a new baseline.
+
+### Regression gate rules
+
+`tools/eval.py compare` reads its thresholds from `evals/gate.toml`:
+
+{{ include evals/gate.toml }}
+
+- **Pass rate.** For each suite, over the cases both files contain, the gate fails when the pass
+  rate drops by more than `pass_rate_drop_points` percentage points. One case is 5 points of the
+  `tools` suite, 10 of `format`, 12.5 of `coding` and about 16.7 of `rag`, so in the three small
+  suites a single newly failing case fails the gate. Run the full set again before you act on a
+  single case: answers vary between runs.
+- **Speed.** The gate fails when the median output tokens per second, over the cases both files
+  contain, drops by more than `tokens_per_second_drop_percent`. The speed is the output tokens over
+  the request time, prompt processing included, for answers of 32 tokens or more. The rule applies
+  only when both files have at least `min_cases_for_speed` such cases. For the exact engine speed,
+  use `tools/bench.sh` ([Compare a new run with the baseline](#compare-a-new-run-with-the-baseline)).
+- **Context.** `compare` also reports, in `note:` lines, a different model, sampling or suite
+  version, and in the `config:` line a different configuration. It does not fail on them. A `rag`
+  suite answered from Open WebUI retrieval is not compared with one answered from the bundled
+  documents.
+
+To allow a suite one case of noise, add a section such as `[gate.suites.coding]` with
+`pass_rate_drop_points = 12.5`.
+
+### Check the configuration checksum
+
+#### About this task
+
+Every results file carries the SHA-256 checksum of the files that decide its outcome:
+`stack/inference/llama-swap/config.yaml`, `stack/inference/litellm/config.yaml`,
+`stack/inference/compose.yaml`, `stack/inference/models.sha256`, `evals/sets.toml`, the suite
+files and the sample documents. A change to any of them gives a new checksum. `evals/gate.toml` is
+not part of it: a threshold changes the verdict, not the results.
+
+#### Steps
+
+1. Display the checksum of the clone and of each file:
+
+        python3 tools/eval.py config-hash --files
+
+    The last line is the checksum; the lines above it give each file's checksum and path.
+
+2. Find and verify a results file for the clone's configuration:
+
+        python3 tools/eval.py verify --current
+
+    Each line starts with `ok`. `FAIL no results file in evals/results/ for configuration <hash>`
+    means that no evaluation has been run since the configuration changed.
+
+#### Results
+
+You know whether the stored results belong to the deployed configuration.
+
+### Evaluate retrieval through Open WebUI
+
+#### About this task
+
+By default, the `rag` suite places the sample documents in the request, which tests the model's
+answers. This optional task instead answers the questions with the passages that Open WebUI's
+knowledge base retrieves, which tests indexing, embedding and reranking too. The sample documents
+of `evals/rag-docs/` are fictional and are named `eval-*.md`.
+
+!!! note
+    The retrieval request of this task was not tested against a running Open WebUI. If it fails,
+    use [Test retrieval over your documents](#test-retrieval-over-your-documents) instead.
+
+#### Steps
+
+1. Copy the four files `evals/rag-docs/eval-*.md` from the clone to the `rag-docs` share, as in
+   [Copy documents to the rag-docs share](#copy-documents-to-the-rag-docs-share).
+
+2. Start a sync and wait for its result, as in [Follow the oikb sync](#follow-the-oikb-sync).
+
+    **Workspace** > **Knowledge** > `rag-docs` in Open WebUI lists the four files.
+
+3. On `c4dev`, add the knowledge base ID (`OIKB_KB_ID` in `rag.env`) and the `kb-reader` user's
+   API key (`KB_READER_TOKEN` in `web.env`) to `client.env` as `EVAL_KB_ID` and `EVAL_KB_KEY`,
+   without printing them:
+
+        { sed -n 's/^OIKB_KB_ID=/EVAL_KB_ID=/p' ~/.config/local-agent-stack/secrets/rag.env
+          sed -n 's/^KB_READER_TOKEN=/EVAL_KB_KEY=/p' ~/.config/local-agent-stack/secrets/web.env
+        } >> ~/.config/local-agent-stack/client.env
+        grep -c '^EVAL_KB_\(ID\|KEY\)=.' ~/.config/local-agent-stack/client.env
+
+    The output is `2`.
+
+4. Run the six retrieval cases:
+
+        python3 tools/eval.py run --suite full --rag-source openwebui \
+          --case rag-001 --case rag-002 --case rag-003 --case rag-004 --case rag-005 --case rag-006
+
+    The summary table has a `rag` row. The results file, under `build/evals/` with a name that ends
+    in `-partial.json`, records `"source": "openwebui"` and a `retrieval_hit_rate`: the share of
+    questions for which the expected file was among the retrieved passages.
+
+5. Delete the four `eval-*.md` files from the share and start a sync.
+
+6. Remove the two lines from `client.env`:
+
+        sed -i '/^EVAL_KB_\(ID\|KEY\)=/d' ~/.config/local-agent-stack/client.env
+
+#### Results
+
+The retrieval path answers the sample questions. A run with `--case` is partial: it is stored
+under `build/evals/` and is not used as a baseline.
+
+### Act on failed evaluation cases
+
+Table: Failed evaluation cases
+
+| Reason | Likely cause | What to do |
+|---|---|---|
+| `run aborted, no results written: HTTP 401` | The key does not allow a model of the run | Check `LOCAL_LLM_KEY` ([Verify a LiteLLM key](#verify-a-litellm-key)) |
+| `run aborted ... cannot reach` | The gateway or the network is down | Run `python3 tools/smoke.py` |
+| `no answer within 600 s` | A model swap or a very long answer | Run again with `--timeout 1200` |
+| `max_tokens reached before an answer` | The model thought too long | Run the case again; with `--max-tokens 16384` if it repeats |
+| `no tool call ...; the text holds a tool call` | The model wrote the call as text | [Tool calls fail or loop](#tool-calls-fail-or-loop) |
+| `tests failed: ...` or `the tests timed out after 10 s` | The generated code is wrong or loops | Check the case's reason; repeat the run before you act on one case |
+| `not JSON` | The answer had a code fence or extra text | A format regression if it repeats |
+| `eval.py: LOCAL_LLM_KEY is not set` or `LAB_DOMAIN is not set` | `client.env` lacks the value | Complete `client.env` (Chapter 7) |
+| `verify` prints `FAIL` and `made with configuration ..., the working tree is ...` | The results file belongs to another configuration than the clone | Check out the tag or branch that the results file was made with, or run the evaluation again |
+
+To repeat one case, add `--case <id>` (repeatable). To keep the raw answers for inspection, add
+`--save-responses <dir>` with a directory outside the clone, such as `/tmp/eval-responses`; those
+files contain the model's answers, so do not commit them.
+
+### Run the regression check
+
+#### About this task
+
+Check a change with the tools of this release. Chapter 10 applies this check to model changes in
+its evaluation gate ([Pass the evaluation gate](#pass-the-evaluation-gate)).
+
+#### Steps
+
+1. Deploy the change on the server, as Chapter 10 describes for releases and model changes, and
+   check out the same tag or branch in the workstation clone.
 
 2. From the workstation, run the smoke tests:
 
@@ -785,16 +1083,21 @@ applies this check to model changes in its evaluation gate.
 
     The last line starts with `smoke: 8 passed, 0 failed`.
 
-3. Run [Test tool calling](#test-tool-calling), including a real agent session.
+3. Run the full evaluation set and compare it with the baseline, as in
+   [Compare a change with the baseline](#compare-a-change-with-the-baseline). The last line reads
+   `gate: pass`.
 
-4. Run [Test retrieval over your documents](#test-retrieval-over-your-documents).
+4. Run [Test tool calling](#test-tool-calling), including a real agent session.
 
-5. Benchmark the changed configuration and compare it with the baseline, as in
+5. Run [Test retrieval over your documents](#test-retrieval-over-your-documents).
+
+6. Benchmark the changed configuration and compare it with the baseline, as in
    [Compare a new run with the baseline](#compare-a-new-run-with-the-baseline).
 
-6. Write the results into the pull request of the change: the benchmark tables, the smoke summary
-   and the outcome of the tests. If you accept a regression, state it in the pull request and in
-   the change's `CHANGELOG.md` line, with the issue number (Chapter 8).
+7. Write the results into the pull request of the change: the benchmark tables, the smoke summary,
+   the `compare` output and the outcome of the tests. Commit the new results file from
+   `evals/results/` with the change. If you accept a regression, state it in the pull request and
+   in the change's `CHANGELOG.md` line, with the issue number (Chapter 8).
 
 #### Results
 
