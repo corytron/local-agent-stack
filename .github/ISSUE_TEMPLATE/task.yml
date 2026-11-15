@@ -1,0 +1,25 @@
+name: Task or feature
+description: New work on the stack, the guide or the tools
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done.
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Approach and files
+      description: >-
+        The contract under docs/ it builds against, how the work splits across agents, and the
+        files each part touches.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The verification a reader or CI can run.
+    validations:
+      required: true

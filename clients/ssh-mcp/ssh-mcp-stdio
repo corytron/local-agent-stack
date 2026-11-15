@@ -1,0 +1,24 @@
+#!/bin/sh
+# ssh-mcp-stdio: how OpenCode starts the SSH tool (opencode.jsonc, mcp.servers.ssh).
+#
+# OpenCode runs this as a stdio child process when a session connects the "ssh" server and
+# stops it when the session ends: nothing keeps running on the workstation afterwards.
+# It runs the pinned ssh-mcp that clients/install.sh installed, with strict host-key checking
+# and a tamper-evident audit log, and keeps your own ssh-agent away from it: the agent uses
+# only the key named in its policy file, unless SSH_MCP_AUTH_SOCK points at a separate agent
+# that holds just that key.
+set -eu
+
+bin="${SSH_MCP_BIN:-$HOME/.local/share/local-agent-stack/ssh-mcp/node_modules/.bin/ssh-mcp}"
+if [ ! -x "$bin" ]; then
+	echo "ssh-mcp-stdio: $bin not found; run clients/install.sh (needs Node.js 20.6 or newer)" >&2
+	exit 2
+fi
+
+if [ -n "${SSH_MCP_AUTH_SOCK:-}" ]; then
+	export SSH_AUTH_SOCK="$SSH_MCP_AUTH_SOCK"
+else
+	unset SSH_AUTH_SOCK
+fi
+
+exec "$bin" --hostKeyMode=strict --auditTamperEvident "$@"

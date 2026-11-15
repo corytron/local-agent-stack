@@ -1,0 +1,31 @@
+# Run sets of tools/eval.py (evals/README.md). `tools/eval.py run --suite <set>` runs the cases a
+# set pins, in the order of `suites` and then the order of each suite file. Case IDs are stable:
+# a case is never renumbered or reused; a changed case gets a new ID, or its suite a new version.
+# This file is part of the configuration hash (tools/eval.py config-hash).
+
+# The suite files evals/suites/<name>.jsonl, in run and report order.
+suites = ["tools", "format", "coding", "rag"]
+
+[sets.smoke]
+description = "A fixed 15-case subset of every suite, a few minutes on the GPU: run after every change."
+cases = [
+    "tools-001",
+    "tools-005",
+    "tools-007",
+    "tools-009",
+    "tools-011",
+    "tools-014",
+    "tools-015",
+    "tools-016",
+    "format-001",
+    "format-006",
+    "format-009",
+    "coding-001",
+    "coding-003",
+    "rag-001",
+    "rag-006",
+]
+
+[sets.full]
+description = "Every case of every suite: run before a release and to decide on a change."
+cases = "all"

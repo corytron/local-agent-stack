@@ -1,0 +1,53 @@
+# ssh-mcp 2.26.0 policy for the coding agent's SSH tool (docs/stack-design.md §7).
+#
+# Deny by default: ssh-mcp reaches only the hosts listed as [[profiles]] here, refuses every
+# tool call until this file exists, and treats a host without a known tier as production
+# (strictest). Destructive and privileged commands are refused outright unless a profile says
+# otherwise, and then they need your approval in the OpenCode prompt (MCP elicitation).
+#
+# Install: clients/install.sh copies this file once (never over an existing one) to
+#   Linux  ~/.config/ssh-mcp/config.toml
+#   macOS  ~/Library/Application Support/ssh-mcp/config.toml
+# with mode 600 in a 700 directory; ssh-mcp refuses to start with looser modes.
+# Then replace the placeholders. Keys follow the ssh-mcp README (Configuration, Policy Engine).
+# Unknown keys are a startup error, so a typo cannot silently fall back to defaults.
+#
+# Never add the TrueNAS host itself (its root, middleware or Docker socket) as a profile.
+
+[defaults]
+# A call that names a profile not listed here fails ("Profile ... not found"). Without
+# defaultProfile, a call that names none goes to the first profile (seen with 2.26.0).
+approvalMode = "deny"         # destructive/privileged: refused unless a profile allows asking
+approvalGrantTtlMs = 0         # every approval is asked again; no auto-approval window
+commandTimeoutMs = 60000
+commandQuotaPerDay = 300       # circuit breaker for a runaway agent
+commandMaxOutputBytes = 1048576
+
+# The one allowed host: a lab VM the agent may work on. Placeholders throughout.
+[[profiles]]
+name = "lab-vm"
+host = "192.0.2.30"
+port = 22
+user = "agent"                 # a dedicated, non-root, non-sudo account on the host
+auth = "key"
+keyRef = "~/.ssh/agent_ed25519" # a key made only for the agent, never your own key
+group = "dev"                  # policy tier: dev, staging or prod
+role = "operator"              # read-only, safe and destructive commands on dev
+approvalPolicy = "ask-destructive"
+tty = false
+# Pin the host key (ssh-keyscan -t ed25519 192.0.2.30 | ssh-keygen -lf -). The launcher runs
+# ssh-mcp with --hostKeyMode=strict, so an unpinned or changed key is refused.
+trustedHostKey = "SHA256:REPLACEwithTHEhostKEYfingerprintFROMssh0keygen0"
+workdir = "/home/agent"
+
+[policy]
+# Applied on top of ssh-mcp's built-in never-allowed list (rm -rf /, mkfs, dd of=/dev/,
+# shutdown, curl|sh, cron and authorized_keys writes, ...).
+denylist = [
+  "^\\s*(sudo\\s+)?(shutdown|reboot|poweroff|halt)\\b",
+  "\\bzfs\\s+(destroy|rollback)\\b",
+  "\\bzpool\\s+(destroy|labelclear)\\b",
+  "\\bdocker\\s+(system|volume|image)\\s+prune\\b",
+  "\\bmidclt\\b",
+  "\\.ssh/authorized_keys$",
+]

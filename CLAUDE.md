@@ -21,6 +21,15 @@ the Apache License 2.0 since 2026-11-15** (`LICENSE`, `NOTICE`).
 - **Verified facts only.** Image names, tags, flags, environment variables, API fields and UI
   labels come from primary sources (official docs, release notes, model cards, `--help`).
   Never invent one. When uncertain, say what you verified and what you're assuming.
+- **The guide is self-contained** (owner, 2026-11-15). Everything the reader needs to install,
+  configure, verify, operate, back up and remove the stack is in the deployment guide itself:
+  every step, click path, command, value, first-run setting, file the reader creates or copies,
+  caveat and known limitation. READMEs, contracts and research notes under `stack/`, `clients/`
+  and `docs/` are for developers and agents; nothing may live only there. When a builder's
+  hand-back or a README says "the guide must say X", X goes into a chapter in the same PR.
+  Files the reader installs are quoted with `{{ include <path> }}` (never retyped), and
+  Appendix E prints every one of them. Before a release a reviewer agent audits the repo
+  against the guide and lists anything missing; the release waits until the list is empty.
 - **The guide and the stack agree.** The guide quotes files in `stack/`; when they disagree,
   `stack/` wins and the guide is the bug. Every procedure in the guide ends with a verification
   step the reader can run.
@@ -66,6 +75,10 @@ say in one line how it is split and which agent owns which files.
   shared by every model; VRAM is the budget that decides everything.
 - **Workstation:** this Ubuntu VM (c4dev, 32 cores), where the coding agent and this repo live.
   The owner drives sessions from a Mac (Claude Desktop over SSH) and has a Windows VM.
+- **Everything runs on TrueNAS** (owner, 2026-11-15): every service is a container on the
+  server. Workstations run only what the owner starts (the agent CLI, a browser, the stdio MCP
+  children the CLI spawns). No daemon, container or timer of this stack on c4dev; agents may run
+  short local tests (a `docker build`, `compose config`) and remove everything they create.
 - **Local only for the core path:** models, RAG and tools run on the LAN. Web search goes out
   through self-hosted SearXNG. No cloud fallback for inference.
 

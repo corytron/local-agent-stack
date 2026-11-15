@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# git pre-push hook (installed by tools/setup-checks.sh: git config core.hooksPath tools/hooks).
+#
+# 1. Refuses any push whose remote ref is refs/heads/main: main changes only through pull
+#    requests (CLAUDE.md, "Everything runs through GitHub"). Deleting main is refused too.
+# 2. Runs the fast checks before anything leaves the machine:
+#      tools/check.sh --only secrets yaml shell python
+#    (secrets: gitleaks over the tree and every local ref's history; the others are quick).
+#
+# git runs it from the top of the work tree with the remote's name and URL as arguments and one
+# line per ref on standard input: <local ref> <local sha> <remote ref> <remote sha>.
+# Bypass for an emergency only, and say so in the PR: git push --no-verify.
+set -euo pipefail
+
+remote_name="${1:-}"
+refused=no
+while read -r local_ref _local_sha remote_ref _remote_sha; do
+	if [[ "$remote_ref" == refs/heads/main ]]; then
+		echo "pre-push: refusing to push ${local_ref:-(delete)} to ${remote_name:-the remote}'s main: main changes only through a pull request (branch, PR, merge)" >&2
+		refused=yes
+	fi
+done
+if [[ "$refused" == yes ]]; then
+	exit 1
+fi
+
+root="$(git rev-parse --show-toplevel)"
+if [[ ! -x "$root/tools/check.sh" ]]; then
+	echo "pre-push: $root/tools/check.sh is missing or not executable" >&2
+	exit 1
+fi
+echo "pre-push: tools/check.sh --only secrets yaml shell python" >&2
+exec "$root/tools/check.sh" --only secrets yaml shell python

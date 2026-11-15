@@ -1,0 +1,138 @@
+# LiteLLM proxy 1.108.8 configuration for ai-inference (docs/stack-design.md §5; b-inference §3.5,
+# §4). The model_name values are the only model names clients use. Every upstream is llama-swap
+# on ai-net; no cloud provider is configured and no provider key exists anywhere in the stack.
+# Keys were checked against docs.litellm.ai (read 2026-11-15) and the LiteLLM source at tag
+# v1.108.8 (litellm/proxy/_types.py, proxy_server.py, router.py, llms/*), cited per item.
+#
+# Upstream routes:
+#   anthropic/<id>  LiteLLM appends /v1/messages to a custom api_base (docs: providers/anthropic,
+#                   "Custom API Base"), so Claude Code's requests reach llama-server's native
+#                   Anthropic endpoint without a format conversion in LiteLLM (b-inference §4.4,
+#                   §6: do not route Claude Code through openai/ models).
+#   openai/<id>     OpenAI-compatible chat and embeddings at api_base .../v1
+#                   (docs: providers/openai_compatible, embedding "OpenAI Compatible Embedding Models").
+#   hosted_vllm/<id> rerank: posts the Cohere/Jina body to <api_base>/rerank
+#                   (llms/hosted_vllm/rerank/transformation.py), which llama-swap serves and
+#                   llama-server answers with results[{index, relevance_score}].
+# llama-swap ids (llama-swap/config.yaml): coder, coder-fast (alias of coder, thinking off),
+# coder-moe, embed, rerank. Checked on 2026-11-15 by running this file in the pinned image against
+# a stub upstream: every model_name below reached the path and id given here, with the llama-swap
+# key (x-api-key on the anthropic route, Bearer on the others).
+#
+# cost_per_second is a notional price per second of request time (since v1.105.0, docs:
+# proxy/custom_pricing): at 0.0001, a key's max_budget of 50 allows 500,000 GPU-seconds, so
+# budgets become GPU-time quotas (b-inference §3.5). It is set on the GPU models only. Checked
+# with this file in the pinned image against a stub upstream: spend rows were charged for
+# /v1/messages (call type anthropic_messages) and chat completions; rerank rows carry no cost.
+# Spend logs record tokens and duration for every call either way.
+
+model_list:
+  # ---- Claude Code (Anthropic Messages API) ----
+  - model_name: local-opus
+    litellm_params:
+      model: anthropic/coder
+      api_base: http://llama-swap:8080
+      api_key: os.environ/LLAMA_SWAP_API_KEY
+    model_info:
+      # Reported by /v1/models and /model/info; Claude Code's own window is set on the client
+      # with CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536 (b-inference §4.2).
+      max_input_tokens: 65536
+      cost_per_second: 0.0001
+  - model_name: local-sonnet
+    litellm_params:
+      model: anthropic/coder
+      api_base: http://llama-swap:8080
+      api_key: os.environ/LLAMA_SWAP_API_KEY
+    model_info:
+      max_input_tokens: 65536
+      cost_per_second: 0.0001
+  # Small/fast role: the same coder process with thinking off, so background calls never swap
+  # the GPU model (docs/stack-design.md §1).
+  - model_name: local-haiku
+    litellm_params:
+      model: anthropic/coder-fast
+      api_base: http://llama-swap:8080
+      api_key: os.environ/LLAMA_SWAP_API_KEY
+    model_info:
+      max_input_tokens: 65536
+      cost_per_second: 0.0001
+
+  # ---- OpenAI-format clients: OpenCode, Open WebUI, scripts ----
+  - model_name: local-coder
+    litellm_params:
+      model: openai/coder
+      api_base: http://llama-swap:8080/v1
+      api_key: os.environ/LLAMA_SWAP_API_KEY
+    model_info:
+      max_input_tokens: 65536
+      cost_per_second: 0.0001
+  # Thinking off (chat_template_kwargs.enable_thinking=false, set by llama-swap for coder-fast):
+  # titles, scouts, summaries.
+  - model_name: local-fast
+    litellm_params:
+      model: openai/coder-fast
+      api_base: http://llama-swap:8080/v1
+      api_key: os.environ/LLAMA_SWAP_API_KEY
+    model_info:
+      max_input_tokens: 65536
+      cost_per_second: 0.0001
+  # Fast profile: the first request swaps coder out of the GPU (tens of seconds), and the next
+  # request for any coder-based name swaps it back.
+  - model_name: local-coder-moe
+    litellm_params:
+      model: openai/coder-moe
+      api_base: http://llama-swap:8080/v1
+      api_key: os.environ/LLAMA_SWAP_API_KEY
+    model_info:
+      max_input_tokens: 65536
+      cost_per_second: 0.0001
+
+  # ---- RAG (Open WebUI); CPU-only models that stay loaded, so no GPU-time price ----
+  - model_name: local-embed
+    litellm_params:
+      model: openai/embed
+      api_base: http://llama-swap:8080/v1
+      api_key: os.environ/LLAMA_SWAP_API_KEY
+    model_info:
+      # mode picks the operation a health check sends (docs: proxy/health, "Model modes").
+      mode: embedding
+  - model_name: local-rerank
+    litellm_params:
+      model: hosted_vllm/rerank
+      api_base: http://llama-swap:8080
+      api_key: os.environ/LLAMA_SWAP_API_KEY
+    model_info:
+      mode: rerank
+
+litellm_settings:
+  # Drop request parameters the provider route does not support instead of failing the request
+  # (docs: proxy/config_settings).
+  drop_params: true
+  # A long agent turn (30K-token prefill plus a long answer) can take minutes on this GPU.
+  request_timeout: 900
+  # Prometheus metrics at litellm:4000/metrics (needs a key); prometheus_client ships in the image
+  # (docs: proxy/prometheus).
+  callbacks: ["prometheus"]
+  # Send an SSE comment frame (": ping") when a stream is silent for 30 s, including before the
+  # upstream answers at all (model swap, long prefill), so Claude Code (300 s idle limit,
+  # b-inference §4.2) and Caddy keep the stream open (docs: proxy/timeout, "A proxy-wide default";
+  # litellm.sse_keepalive_ping_interval_seconds in __init__.py and proxy_server.py at v1.108.8).
+  # Trade-off from the same page: once a ping has gone out the status is 200, so a later failure
+  # arrives as an SSE error frame rather than an HTTP error status.
+  sse_keepalive_ping_interval_seconds: 30
+
+router_settings:
+  # One local upstream: a retry repeats minutes of GPU work and cannot reach another deployment.
+  num_retries: 0
+  timeout: 900
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # Models come only from this file (also STORE_MODEL_IN_DB=False in compose.yaml).
+  store_model_in_db: false
+  # Spend logs on: one row per request (key, model, tokens, duration) in Postgres, shown in the
+  # Admin UI at /ui (docs: proxy/config_settings).
+  disable_spend_logs: false
+  # Privacy: rows keep metadata only, not prompts and responses (b-inference open question 6).
+  store_prompts_in_spend_logs: false

@@ -1,0 +1,200 @@
+# llama-swap v273 configuration for ai-inference (docs/stack-design.md §5).
+# Keys follow docs/config.example.yaml at tag v273; llama-server flags follow tools/server/README.md
+# at llama.cpp tag b12407 (the build inside the image). Section references:
+# a-models = docs/research/a-models.md, b-inference = docs/research/b-inference.md.
+#
+# Model ids (clients never use them directly; LiteLLM maps its local-* names onto them):
+#   coder      Qwen3.8-27B, GPU, 64K    group llm (swap: one GPU model at a time)
+#   coder-fast alias of coder with thinking off (filters.setParamsByID below; no second process)
+#   coder-moe  Qwen3.6-35B-A3B, GPU + experts in RAM, 64K   group llm
+#   embed      Qwen3-Embedding-0.6B, CPU only               group rag (persistent)
+#   rerank     Qwen3-Reranker-0.6B, CPU only                group rag (persistent)
+
+# Seconds a model may take to become healthy; a 12 GB GGUF read from ZFS on a cold cache needs
+# more than the default 120 (b-inference §3.4).
+healthCheckTimeout: 600
+logLevel: info
+# "upstream" copies llama-server's own output to the container log (Apps > Installed > ai-inference
+# > Workloads > View Logs): the CPU backend line (sapphirerapids, AMX_INT8 = 1) and "Forcing full
+# prompt re-processing" warnings are there (b-inference §5.3, a-models §9).
+logToStdout: "proxy,upstream"
+# ${PORT} for the llama-server children: 10001 and up, on 127.0.0.1 inside the container.
+startPort: 10001
+# Never inject "loading" text into the reasoning field: Claude Code and OpenCode would see it as
+# model output (b-inference §3.4).
+sendLoadingState: false
+# Never unload a model on a timer; the swap group and the persistent group decide.
+globalTTL: 0
+# Privacy: keep no request/response bodies in llama-swap's memory (default 5 MB). Set e.g. 5 while
+# debugging tool calls in the UI. LiteLLM's store_prompts_in_spend_logs is off for the same reason.
+captureBuffer: 0
+# The UI's Help page chats with a model the admin picks, which would swap the GPU model.
+helpagent:
+  disable: true
+
+# Bearer, Basic (password) or x-api-key header (internal/server/auth.go at v273). Required on
+# every inference and /api route; /health stays open for the container healthcheck.
+apiKeys:
+  - "${env.LLAMA_SWAP_API_KEY}"
+
+macros:
+  # Every child listens on loopback only. --host and --port are always given because the image
+  # sets LLAMA_ARG_HOST=0.0.0.0 and LLAMA_ARG_PORT=8080, and a command-line argument beats the
+  # environment (server README); llama-server's own default port is 9931.
+  # --metrics: Prometheus per model at llama-swap:8080/upstream/<id>/metrics (b-inference §4.1).
+  # --no-webui: llama-swap has its own UI.
+  "server": >-
+    /app/llama-server
+    --host 127.0.0.1 --port ${PORT}
+    --metrics --no-webui
+  "gguf": "/models/gguf"
+
+models:
+  # ---- Primary agent model, fully on the GPU (a-models §2, Recommendation (a)) ----
+  # Estimated 14.3 GiB VRAM at 64K with q8_0 KV (a-models §2 "VRAM by context"), plus the MTP draft
+  # context; -ot token_embd.weight=CPU moves the token embeddings (about 0.6 GiB, a lookup only) to
+  # the CPU to make room for it (a-models §2, from Unsloth discussion #70).
+  # UNVERIFIED: the saving from -ot token_embd.weight=CPU (not measured; a no-op if llama.cpp
+  # already keeps that tensor on the CPU).
+  # -ngl 99: all 64 layers. -np 1: one 64K slot; concurrent requests queue and an idle slot goes to
+  # the host-RAM prompt cache (--cache-ram, MiB; b-inference §2). No --cache-reuse: it works by KV
+  # shifting, which the hybrid DeltaNet layers cannot do (a-models §9).
+  # -b/-ub: llama.cpp defaults written out; tools/bench.sh --mode server sweeps -ub against VRAM.
+  # -t 4: generation runs on the GPU; few CPU threads are needed (b-inference §3.4).
+  # Reasoning and sampling defaults are the model card's thinking settings, effort medium
+  # (a-models §2); requests may override them.
+  # --spec-type draft-mtp: speculative decoding with the MTP head inside the -mtp GGUF. Verified in
+  # llama.cpp b12407 source: draft-mtp sets load_mtp and builds the draft context on the main model
+  # when no -md is given (common/common.cpp, common/speculative.cpp). --spec-draft-n-max 3 is the
+  # default, written out. If the model fails to load with an out-of-memory error, remove the two
+  # --spec-* flags first, then lower -c (a-models §2: 40-45 tok/s without MTP, 50-65 with).
+  # UNVERIFIED: that the MTP head inside this IST-DASLab file loads in b12407 (a-models §2 says the
+  # -mtp files carry it) and that weights, 64K KV and the MTP context fit in 16 GB together
+  # (estimate). Check with tools/bench.sh --mode server before relying on it.
+  # --no-mmproj: no vision projector (a-models §7: it costs 0.6-0.9 GiB of VRAM).
+  coder:
+    name: "Qwen3.8-27B IQ3_S + MTP (GPU, 64K)"
+    description: "Primary agent model, thinking on (effort medium)"
+    cmd: |
+      ${server}
+      -m ${gguf}/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
+      -ngl 99 -fa on
+      -c 65536 -np 1
+      -ctk q8_0 -ctv q8_0
+      -b 2048 -ub 512
+      -t 4
+      -ot token_embd.weight=CPU
+      --cache-ram 6144
+      --jinja --reasoning-format deepseek --reasoning-effort medium
+      --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0
+      --spec-type draft-mtp --spec-draft-n-max 3
+      --no-mmproj
+    ttl: 0
+    filters:
+      # A request for "coder-fast" is served by this same process with these fields written into
+      # its JSON body; llama-swap registers every setParamsByID key as an alias of the model
+      # (internal/config/load.go at v273). This is the Haiku/fast role: thinking off, no second
+      # model in VRAM (docs/stack-design.md §1, a-models §5). The values are the model card's
+      # non-thinking sampling (a-models §2).
+      # llama-server reads chat_template_kwargs, temperature, top_p and top_k on both
+      # /v1/chat/completions and /v1/messages (tools/server/server-chat.cpp at b12407 passes them
+      # through the Anthropic conversion); presence_penalty only takes effect on the OpenAI route.
+      setParamsByID:
+        "coder-fast":
+          chat_template_kwargs:
+            enable_thinking: false
+          temperature: 0.7
+          top_p: 0.8
+          top_k: 20
+          presence_penalty: 1.5
+
+  # ---- Fast profile: MoE with 16 layers of experts in RAM (a-models §3, Recommendation (a')) ----
+  # About 15.7 GiB VRAM and 8 GB RAM at 64K, ~80 tok/s measured on a 4080 SUPER with two DDR5-4800
+  # channels (a-models §3). Loading it unloads coder (group llm).
+  # --n-cpu-moe 16: experts of the first 16 layers stay in RAM; 14 overflowed VRAM in the measured
+  # run, sweep 14-20 with tools/bench.sh (a-models §3).
+  # -lm none: no mmap, so the RAM-resident experts are anonymous memory the kernel cannot evict
+  # and the ARC does not cache twice (b-inference "System RAM budget", a-models §8).
+  # -t 8 -tb 16: decode on two memory channels saturates at about 6-8 threads (b-inference §3.4);
+  # a-models §3 measured with -t 12 on another CPU and suggests starting at 16. Sweep 4-16 with
+  # tools/bench.sh and keep the fastest.
+  # -ub 2048: the measured command; a large -ub amortises the per-batch upload of CPU experts over
+  # PCIe (a-models §1 "PCIe").
+  # No sampling or reasoning-effort defaults: a-models gives none for this model; clients set them.
+  # No MTP: speculative decoding was net-negative for this A3B model in a-models §3.
+  coder-moe:
+    name: "Qwen3.6-35B-A3B Q4_K_XL (GPU + experts in RAM, 64K)"
+    description: "Fast profile; swaps out coder"
+    cmd: |
+      ${server}
+      -m ${gguf}/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+      -ngl 99 --n-cpu-moe 16 -fa on
+      -c 65536 -np 1
+      -ctk q8_0 -ctv q8_0
+      -b 2048 -ub 2048
+      -t 8 -tb 16
+      -lm none
+      --cache-ram 6144
+      --jinja --reasoning-format deepseek
+      --no-mmproj
+    ttl: 0
+
+  # ---- RAG models: CPU only, no VRAM (docs/stack-design.md §1; b-inference §2, a-models §6) ----
+  # --device none: no offload; the official image picks its sapphirerapids CPU backend (AVX-512,
+  # AMX INT8) at run time (b-inference §3.1). CUDA_VISIBLE_DEVICES=-1 hides the GPU from these
+  # children so they do not create a CUDA context (about 0.3 GiB of VRAM each, b-inference §3.4).
+  # UNVERIFIED: that --device none alone would create a CUDA context, and that the variable
+  # prevents it; check nvidia-smi for llama-server processes after the rag group loads.
+  # -c/-b/-ub 4096: each input (query + document for the reranker) must fit one ubatch; RAG chunks
+  # are far smaller. -t 4 -tb 8: batch threads matter here, generation does not (b-inference §3.4).
+  embed:
+    name: "Qwen3-Embedding-0.6B Q8_0 (CPU)"
+    description: "Embeddings for Open WebUI RAG; last-token pooling per the GGUF model card"
+    env:
+      - "CUDA_VISIBLE_DEVICES=-1"
+    cmd: |
+      ${server}
+      -m ${gguf}/Qwen3-Embedding-0.6B-Q8_0.gguf
+      --device none
+      --embedding --pooling last
+      -c 4096 -b 4096 -ub 4096 -np 1
+      -t 4 -tb 8
+    ttl: 0
+
+  rerank:
+    name: "Qwen3-Reranker-0.6B Q8_0 (CPU)"
+    description: "Reranker for Open WebUI RAG (/v1/rerank)"
+    env:
+      - "CUDA_VISIBLE_DEVICES=-1"
+    cmd: |
+      ${server}
+      -m ${gguf}/qwen3-reranker-0.6b-q8_0.gguf
+      --device none
+      --reranking
+      -c 4096 -b 4096 -ub 4096 -np 1
+      -t 4 -tb 8
+    ttl: 0
+
+routing:
+  router:
+    use: group
+    settings:
+      groups:
+        # One GPU model at a time; loading one unloads the other. exclusive: false leaves the rag
+        # group alone.
+        llm:
+          swap: true
+          exclusive: false
+          members: [coder, coder-moe]
+        # Always loaded together; persistent: no other group can unload them.
+        rag:
+          persistent: true
+          swap: false
+          exclusive: false
+          members: [embed, rerank]
+
+hooks:
+  on_startup:
+    # Ready after a reboot without a first slow request. Both groups are defined, so preloading
+    # three models does not make them swap each other out (config.example.yaml).
+    preload: [embed, rerank, coder]

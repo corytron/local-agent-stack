@@ -1,0 +1,48 @@
+{
+  // Markdown lint (pymarkdown, pinned in tools/requirements-checks.txt), run by
+  // tools/check.sh (the "markdown" check) over every Markdown file git tracks or
+  // would track, except the archival research notes under docs/research/ (their
+  // links are still checked by the "links" check). The rules below are switched
+  // off or tuned because the repository's own conventions differ, not to hide
+  // mistakes:
+  //   md013 line length: prose wraps near 100 columns, but tables, URLs and
+  //         commands may not;
+  //   md040 fenced code language: the guide's code blocks carry no language
+  //         tag (docs/guide-style.md, "Code");
+  //   md041 first line heading, md046 code block style: guide chapters start
+  //         with a Python-Markdown meta block (title:, kind:) and their callouts
+  //         (!!! note) hold text indented four spaces;
+  //   md007 list indent: the guide nests lists four spaces under a numbered
+  //         step, which Python-Markdown requires (CommonMark would take three);
+  //   md033 inline HTML: guide figures are <figure markdown> blocks;
+  //   md032 blanks around lists: a list straight after its lead-in line is
+  //         the house style of the contracts;
+  //   md024 duplicate headings: siblings only, because the guide repeats its
+  //         task labels (#### Steps, #### Results) under every task;
+  //   md060 table column style: delimiter rows are written |---|---|;
+  //   md010 hard tabs: allowed inside code blocks (Caddyfiles, Makefiles);
+  //   md051 link fragments: tools/check_links.py (the "links" check) checks
+  //         every anchor, with GitHub's slugs and, in guide chapters, the
+  //         guide-wide ids tools/guide/build.py gives (one HTML document).
+  // OpenCode's agent and command files start with YAML front matter
+  // (front-matter extension). Tables are GitHub tables (markdown-tables
+  // extension), so the table rules apply: an unescaped | inside a code span in
+  // a table splits the cell on GitHub too.
+  "extensions": {
+    "front-matter": {"enabled": true},
+    "markdown-tables": {"enabled": true}
+  },
+  "plugins": {
+    "md007": {"enabled": false},
+    "md010": {"code_blocks": false},
+    "md013": {"enabled": false},
+    "md024": {"siblings_only": true},
+    "md032": {"enabled": false},
+    "md033": {"enabled": false},
+    "md040": {"enabled": false},
+    "md041": {"enabled": false},
+    "md046": {"enabled": false},
+    "md051": {"enabled": false},
+    "md060": {"enabled": false}
+  }
+}

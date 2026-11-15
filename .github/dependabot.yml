@@ -1,0 +1,34 @@
+# Dependabot keeps two kinds of pins current (docs/stack-design.md, section 8); container images
+# are Renovate's (renovate.json), because Dependabot handles tags like server-cuda-b12407 poorly.
+# - github-actions: every `uses:` of .github/workflows is pinned by commit SHA with its version in
+#   a comment; Dependabot moves both together. One grouped pull request a week.
+# - pip: the hash-pinned check tools of tools/requirements-checks.txt (ruff, zizmor, yamllint,
+#   pymarkdown, shellcheck-py and their dependencies). One grouped pull request a week.
+# Both wait 7 days after a release before proposing it, so that a compromised release has a week
+# to be noticed and withdrawn first; security updates are never delayed by the cooldown.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    labels:
+      - dependencies
+      - ci
+    groups:
+      github-actions:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    labels:
+      - dependencies
+      - ci
+    groups:
+      check-tools:
+        patterns: ["*"]

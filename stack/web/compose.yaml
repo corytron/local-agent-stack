@@ -1,0 +1,210 @@
+# ai-web: the browser GUI, web search and the shared MCP tool hub (docs/stack-design.md §1-§3;
+# docs/research/d-gui-rag-search.md D1-D4).
+#   open-webui  Open WebUI 0.13.3 (slim: no local ML). Models through LiteLLM, database and
+#               vectors in ai-rag's pgvector, extraction by ai-rag's docling, web search through
+#               searxng. Browsers reach it as chat.<LAB_DOMAIN> through Caddy (ai-edge).
+#   searxng     SearXNG metasearch with the JSON API on (searxng/settings.yml); used by
+#               Open WebUI and by the hub's searxng server.
+#   mcp-hub     mcp-proxy serving the searxng, fetch and kb MCP servers at
+#               /servers/<name>/mcp behind one bearer token (mcp-hub/). OpenCode reaches it as
+#               mcp.<LAB_DOMAIN> through Caddy; containers as http://mcp-hub:8096.
+# No ports are published and no service uses the GPU. Install ai-rag (pgvector) and
+# ai-inference (litellm) first.
+#
+# TrueNAS custom app "ai-web", Install via YAML (docs/stack-design.md §4):
+#   include:
+#     - path: /mnt/tank/ai/stacks/local-agent-stack/stack/web/compose.yaml
+#       env_file: /mnt/tank/ai/secrets/web.env
+#   services: {}
+#
+# Variables: stack/web/web.env.example. Relative paths resolve against this file's directory.
+# Check: docker compose --env-file web.env.example -f compose.yaml config -q
+#
+# Images are pinned by tag and digest (multi-platform index digests read with
+# `docker buildx imagetools inspect` on 2026-11-15). None is CUDA-based; NVIDIA_VISIBLE_DEVICES
+# is void anyway because nvidia is TrueNAS's default runtime (docs/research/e-truenas.md §2).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.13.3-slim@sha256:8faf917243afee55e042b10ddc08ed6ae6fa9c62522c7e14d81e7cf2922325ae
+    container_name: open-webui
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # Image default: bash start.sh, uvicorn on 0.0.0.0:8080 as root (the upstream default).
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+
+      # --- Read from the environment at every start --------------------------------------------
+      # Signs sessions and encrypts stored OAuth/MCP tokens: must never change once set.
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?set WEBUI_SECRET_KEY in web.env}
+      # Application database and vector store: the same PostgreSQL in ai-rag (PGVECTOR_DB_URL
+      # defaults to DATABASE_URL).
+      DATABASE_URL: postgresql://openwebui:${PG_PASSWORD:?set PG_PASSWORD in web.env (same value as rag.env)}@pgvector:5432/openwebui
+      VECTOR_DB: pgvector
+      PGVECTOR_INDEX_METHOD: hnsw
+      # true (the default, stated here): the settings in the next block seed the database on
+      # the first start, and from then on the Admin Panel is the source of truth for them.
+      ENABLE_PERSISTENT_CONFIG: "true"
+      # Served only as https://chat.<LAB_DOMAIN> through Caddy.
+      CORS_ALLOW_ORIGIN: https://chat.${LAB_DOMAIN:?set LAB_DOMAIN in web.env, e.g. lab.example.com}
+      WEBUI_SESSION_COOKIE_SECURE: "true"
+      # No outbound calls of its own: no update check, no Hugging Face downloads (the slim image
+      # needs none), no pip installs for plugin requirements. Telemetry is off (the image sets
+      # the same three variables; stated here so it stays off).
+      OFFLINE_MODE: "true"
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      SCARF_NO_ANALYTICS: "true"
+      DO_NOT_TRACK: "true"
+      ANONYMIZED_TELEMETRY: "false"
+      # fetch_url and web loading may not reach private addresses (ai-net, the LAN).
+      ENABLE_LOCAL_WEB_FETCH: "false"
+
+      # --- Seed values (PersistentConfig): read on the FIRST start only -------------------------
+      # After the first start these live in the database; change them in the Admin Panel.
+      # Editing them here later has no effect (see README.md, "Settings that persist").
+      WEBUI_URL: https://chat.${LAB_DOMAIN}
+      # The first account still signs up and becomes admin (Open WebUI never gates the first
+      # user on this flag); everyone after that is created by the admin.
+      ENABLE_SIGNUP: "false"
+      DEFAULT_USER_ROLE: pending
+      ENABLE_COMMUNITY_SHARING: "false"
+      # API keys for oikb's indexer user and the kb MCP server's kb-reader user.
+      ENABLE_API_KEYS: "true"
+      # Models: LiteLLM's OpenAI-compatible endpoint with Open WebUI's virtual key.
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_OPENAI_API: "true"
+      OPENAI_API_BASE_URLS: http://litellm:4000/v1
+      OPENAI_API_KEYS: ${LITELLM_WEBUI_KEY:?set LITELLM_WEBUI_KEY in web.env}
+      DEFAULT_MODELS: local-coder
+      # Titles, tags and follow-ups: the primary model with thinking off (no model swap).
+      TASK_MODEL_EXTERNAL: local-fast
+      # Embeddings: Qwen3-Embedding-0.6B (CPU) through LiteLLM. Queries carry the model's
+      # instruction prefix; documents carry none (model card). 1024 dimensions.
+      RAG_EMBEDDING_ENGINE: openai
+      RAG_OPENAI_API_BASE_URL: http://litellm:4000/v1
+      RAG_OPENAI_API_KEY: ${LITELLM_WEBUI_KEY}
+      RAG_EMBEDDING_MODEL: local-embed
+      RAG_EMBEDDING_BATCH_SIZE: "16"
+      RAG_EMBEDDING_QUERY_PREFIX: "Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery:"
+      # Hybrid search (BM25 in PostgreSQL + vectors), then Qwen3-Reranker-0.6B (CPU) through
+      # LiteLLM's /v1/rerank, which takes Open WebUI's {model, query, documents, top_n} and
+      # returns results[].index/relevance_score (README.md, "Reranker").
+      ENABLE_RAG_HYBRID_SEARCH: "true"
+      RAG_HYBRID_BM25_WEIGHT: "0.5"
+      RAG_RERANKING_ENGINE: external
+      RAG_EXTERNAL_RERANKER_URL: http://litellm:4000/v1/rerank
+      RAG_EXTERNAL_RERANKER_API_KEY: ${LITELLM_WEBUI_KEY}
+      RAG_RERANKING_MODEL: local-rerank
+      RAG_EXTERNAL_RERANKER_TIMEOUT: "120"
+      # 20 candidates reranked on the CPU take seconds (b-inference); keep the best 8.
+      RAG_TOP_K: "20"
+      RAG_TOP_K_RERANKER: "8"
+      # Chunking: split on Markdown headers (docling emits Markdown), then by size.
+      ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER: "true"
+      CHUNK_SIZE: "1500"
+      CHUNK_OVERLAP: "150"
+      CHUNK_MIN_SIZE_TARGET: "600"
+      # Content extraction: docling-serve in ai-rag.
+      CONTENT_EXTRACTION_ENGINE: docling
+      DOCLING_SERVER_URL: http://docling:5001
+      DOCLING_API_KEY: ${DOCLING_API_KEY:?set DOCLING_API_KEY in web.env (same value as rag.env)}
+      # Web search: SearXNG's JSON API (Open WebUI strips the "?q=<query>" form itself).
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: searxng
+      SEARXNG_QUERY_URL: http://searxng:8080/search?q=<query>
+      WEB_SEARCH_RESULT_COUNT: "5"
+    volumes:
+      # Dataset tank/ai/appdata/open-webui: uploaded files and caches (the database is pgvector).
+      - ${AI_ROOT:-/mnt/tank/ai}/appdata/open-webui:/app/backend/data
+    healthcheck:
+      # /health answers {"status": true}; curl is in the image.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    logging: *logging
+    networks: [ai-net]
+
+  searxng:
+    image: docker.io/searxng/searxng:2026.11.15-2d500cb6b@sha256:932f69dca010db9880bddebb2171f05d8e1a25d04a59149ff65409993d680024
+    container_name: searxng
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # The image's server (granian) listens on [::]:8080; attached to ai-net only.
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in web.env}
+      SEARXNG_BASE_URL: https://search.${LAB_DOMAIN}/
+      # Required by the Wikipedia, Wikidata and OpenStreetMap engines (sent to them in the
+      # User-Agent, per their API policies); empty leaves those three engines unloaded.
+      SEARXNG_CONTACT_URL: ${SEARXNG_CONTACT_URL:-}
+      # The configuration is a read-only mount from the repository: do not chown it.
+      FORCE_OWNERSHIP: "false"
+    volumes:
+      - ./searxng:/etc/searxng:ro
+    tmpfs:
+      # Favicon cache only; nothing worth keeping across restarts.
+      - /var/cache/searxng
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+    networks: [ai-net]
+
+  mcp-hub:
+    # Built from mcp-hub/Dockerfile. Compose pulls this tag if it is published, and builds it
+    # from mcp-hub/ on the NAS if it is not.
+    # .github/workflows/mcp-hub-image.yml publishes it from main; pin its digest here from the
+    # first run's summary. UNVERIFIED: building on TrueNAS 25.10 (the fallback) was not tried
+    # there; the image was built and smoke-tested on c4dev (README.md).
+    image: ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0
+    build:
+      context: ./mcp-hub
+    container_name: mcp-hub
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # Entrypoint (base image): catatonit -- mcp-proxy. Runs as uid 10001.
+    command:
+      - --host=0.0.0.0
+      - --port=8096
+      - --named-server-config=/etc/mcp-hub/servers.json
+      # The kb server reads its Open WebUI key from the environment below; mcp-proxy removes
+      # MCP_PROXY_AUTH_TOKEN before passing the rest on.
+      - --pass-environment
+      # mcp-proxy rejects any Host header it does not trust (HTTP 421). Containers use
+      # mcp-hub:8096, and Caddy sends the same Host for mcp.<LAB_DOMAIN>.
+      - --allowed-host=mcp-hub:8096
+      - --initialization-timeout=60
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+      # Bearer token every request must carry. Characters allowed: A-Z a-z 0-9 - . _ ~ + /
+      MCP_PROXY_AUTH_TOKEN: ${MCP_HUB_TOKEN:?set MCP_HUB_TOKEN in web.env}
+      # API key of the read-only "kb-reader" user in Open WebUI, for the kb server. Empty until
+      # that user exists: the kb tools then fail with an authentication error.
+      OPEN_WEBUI_API_TOKEN: ${KB_READER_TOKEN:-}
+    healthcheck:
+      # Healthy when /status (with the token) lists searxng, fetch and kb as started.
+      test: ["CMD", "mcp-hub-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging: *logging
+    networks: [ai-net]
+
+networks:
+  ai-net:
+    external: true

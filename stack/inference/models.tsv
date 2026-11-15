@@ -1,0 +1,5 @@
+# id	repository	revision	file	(checksums: models.sha256; guide chapter 4)
+coder	ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF	d562806dbafae37109975e970aae91b43e73b440	Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
+coder-moe	unsloth/Qwen3.6-35B-A3B-GGUF	a483e9e6cbd595906af30beda3187c2663a1118c	Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+embed	Qwen/Qwen3-Embedding-0.6B-GGUF	370f27d7550e0def9b39c1f16d3fbaa13aa67728	Qwen3-Embedding-0.6B-Q8_0.gguf
+rerank	ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF	a02f48bb4f057028298c21fa033da2b30d7742d5	qwen3-reranker-0.6b-q8_0.gguf

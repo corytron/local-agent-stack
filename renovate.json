@@ -1,0 +1,42 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Container image updates for stack/ (docs/stack-design.md, section 8). GitHub Actions and the pip check tools are Dependabot's (.github/dependabot.yml).",
+    "config:best-practices pins every image as tag@sha256:digest (docker:pinDigests) and keeps tag and digest current together.",
+    "A release must be 7 days old before it is proposed, the same cooldown Dependabot uses."
+  ],
+  "extends": ["config:best-practices"],
+  "enabledManagers": ["docker-compose", "dockerfile"],
+  "labels": ["dependencies", "stack"],
+  "minimumReleaseAge": "7 days",
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "description": "llama.cpp server images are tagged server-cuda-b<build>: compare the build number, never switch to another variant (cpu, vulkan, rocm).",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/ggml-org/llama.cpp"],
+      "versioning": "regex:^(?<compatibility>server-cuda)-b(?<patch>\\d+)$"
+    },
+    {
+      "description": "llama-swap images are tagged v<release>-cuda-b<llama.cpp build>: compare release, then build, within the cuda variant.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/mostlygeek/llama-swap"],
+      "versioning": "regex:^v(?<major>\\d+)-(?<compatibility>cuda)-b(?<patch>\\d+)$"
+    },
+    {
+      "description": [
+        "CUDA <= 13.0: the NVIDIA driver of TrueNAS SCALE 25.10 supports CUDA up to 13.0 (docs/research/e-truenas.md), so an image built for a newer CUDA would not start on the GPU.",
+        "Tags that name their CUDA version (cuda13.1, cuda-13.2, cu131, 13.1.0-...-cudnn) above 13.0 are never proposed; images whose tags do not name it are checked by hand in the update PR (the image's release notes)."
+      ],
+      "matchDatasources": ["docker"],
+      "allowedVersions": "!/(?:cuda-?|cu)(?:13\\.?[1-9]|1[4-9]|[2-9][0-9])|^(?:13\\.[1-9]|1[4-9]\\.|[2-9][0-9]\\.)[0-9.]*-(?:cudnn|base|runtime|devel)/"
+    },
+    {
+      "description": "Major versions of databases need a dump and restore: proposed separately, never grouped or automerged.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres", "pgvector/pgvector"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}

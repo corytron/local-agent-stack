@@ -1,0 +1,148 @@
+# ai-rag: the retrieval layer behind Open WebUI (docs/stack-design.md §1, §2, §4;
+# docs/research/d-gui-rag-search.md D1, D2).
+#   pgvector  PostgreSQL 17 + pgvector 0.8.7: Open WebUI's database and its vector store in one
+#             instance (hybrid search runs in SQL). ai-web's open-webui connects to pgvector:5432.
+#   docling   docling-serve on the CPU: PDF/Office/HTML/images to Markdown with OCR and tables,
+#             Open WebUI's content extraction engine (docling:5001).
+#   oikb      Open WebUI's knowledge-base sync daemon: keeps a knowledge base in step with the
+#             rag-docs dataset (read-only), configured by oikb/oikb.yaml.
+# No ports are published and no service uses the GPU. Install this app before ai-web: Open
+# WebUI cannot start without pgvector.
+#
+# TrueNAS custom app "ai-rag", Install via YAML (docs/stack-design.md §4):
+#   include:
+#     - path: /mnt/tank/ai/stacks/local-agent-stack/stack/rag/compose.yaml
+#       env_file: /mnt/tank/ai/secrets/rag.env
+#   services: {}
+#
+# Variables: stack/rag/rag.env.example. Relative paths resolve against this file's directory.
+# Check: docker compose --env-file rag.env.example -f compose.yaml config -q
+#
+# Images are pinned by tag and digest (multi-platform index digests read with
+# `docker buildx imagetools inspect` on 2026-11-15). None of the three images is CUDA-based;
+# NVIDIA_VISIBLE_DEVICES=void is set anyway because TrueNAS makes nvidia the default runtime
+# (docs/research/e-truenas.md §2), so no service here can ever be handed the GPU.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  pgvector:
+    image: pgvector/pgvector:0.8.7-pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
+    container_name: pgvector
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # PostgreSQL's parallel workers and index builds use /dev/shm; Docker's 64 MB default is small.
+    shm_size: 256m
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+      # Used by the image's entrypoint only when the data directory is empty (first start).
+      # Changing PG_PASSWORD later does not change the database password (see README.md).
+      POSTGRES_USER: openwebui
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in rag.env (same value in web.env)}
+      POSTGRES_DB: openwebui
+      # A subdirectory of the mount, which the entrypoint creates and owns (mode 0700); the
+      # mount point itself belongs to the dataset. TrueNAS's own app library also keeps
+      # PGDATA one level below its volume.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      # Dataset tank/ai/appdata/pgvector (record size 32K suits PostgreSQL; e-truenas §4).
+      - ${AI_ROOT:-/mnt/tank/ai}/appdata/pgvector:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "openwebui", "-d", "openwebui"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging: *logging
+    networks: [ai-net]
+
+  docling:
+    # CPU build of docling-serve (no CUDA libraries); models for the default pipeline are in
+    # the image (DOCLING_SERVE_ARTIFACTS_PATH), so it converts without internet access.
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.38.2@sha256:7a480a1604fa3b42efeddc7db9527690d9f9bc903226136013e2bfe6b1a4dfb0
+    container_name: docling
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # Image default command: docling-serve run (uvicorn on 0.0.0.0:5001, user 1001).
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+      # Every API request must carry X-Api-Key with this value; Open WebUI sends it from its
+      # DOCLING_API_KEY (web.env, same value).
+      DOCLING_SERVE_API_KEY: ${DOCLING_API_KEY:?set DOCLING_API_KEY in rag.env (same value in web.env)}
+      # Open WebUI calls the synchronous /v1/convert/file; large PDFs on the CPU need more than
+      # the 120 s default.
+      DOCLING_SERVE_MAX_SYNC_WAIT: "600"
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "2"
+      # The API reference pages need no key; nobody browses them here.
+      DOCLING_SERVE_ENABLE_API_DOCS: "false"
+    deploy:
+      resources:
+        limits:
+          # d-gui D7, 64 GB tier: 8 GB and 2 workers. 4g with 1 worker on a 32 GB host.
+          memory: 8g
+    healthcheck:
+      # /ready answers 200 once the models are loaded and the task queue runs. The image has
+      # Python on PATH (/opt/app-root/bin).
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    logging: *logging
+    networks: [ai-net]
+
+  oikb:
+    image: ghcr.io/open-webui/oikb:0.6.0@sha256:2a8a480c2c6db99499558ba620ec0ea9cb71754ef915d104fa88f05348e83467
+    container_name: oikb
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # TrueNAS "apps" user and group: rag-docs grants the apps group Read (e-truenas §4), and
+    # appdata datasets (Apps preset) grant it Modify. The image's own user (1000) has neither.
+    # UNVERIFIED: oikb 0.6.0 running as 568:568 (an arbitrary UID with no passwd entry) was not
+    # started on TrueNAS; /app in the image is world-readable, and HOME and the state directory
+    # are set below so nothing writes under the image's home.
+    user: "568:568"
+    # Entrypoint is oikb; the daemon syncs on the configured intervals and serves /health,
+    # /history, /sync/<name> and /metrics on :8080 (ai-net only).
+    command: ["daemon", "--config", "/config/oikb.yaml"]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+      HOME: /state
+      # oikb keeps its sync history (history.db, SQLite) in OIKB_CONFIG_DIR when it exists.
+      OIKB_CONFIG_DIR: /state
+      OPEN_WEBUI_URL: http://open-webui:8080
+      # API key of the dedicated "indexer" user in Open WebUI (created after Open WebUI's first
+      # start; see README.md). Until it is set, each sync fails with an error in the log.
+      OPEN_WEBUI_API_KEY: ${OIKB_TOKEN:-}
+      # Protects /sync and /history; empty turns that protection off (oikb's default).
+      OIKB_API_KEY: ${OIKB_API_KEY:-}
+      # Knowledge base ID, interpolated into oikb/oikb.yaml. The default keeps the daemon running
+      # (syncs fail with an error) until the knowledge base exists.
+      OIKB_KB_ID: ${OIKB_KB_ID:-not-configured}
+      LOG_FORMAT: json
+    volumes:
+      - ./oikb/oikb.yaml:/config/oikb.yaml:ro
+      # Documents to index: dataset tank/ai/rag-docs, read-only (docs/stack-design.md §4).
+      - ${AI_ROOT:-/mnt/tank/ai}/rag-docs:/data/docs:ro
+      # Dataset tank/ai/appdata/oikb: sync history.
+      - ${AI_ROOT:-/mnt/tank/ai}/appdata/oikb:/state
+    healthcheck:
+      # /health/ready is the daemon's liveness route; the image has Python but no curl or wget.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *logging
+    networks: [ai-net]
+
+networks:
+  ai-net:
+    external: true

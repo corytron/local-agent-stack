@@ -42,9 +42,62 @@ def slug_unique(seen: set[str], base: str) -> str:
 	return s
 
 
+def nest_fences(text: str) -> str:
+	"""Turn indented ``` fences (code inside a list item) into indented code blocks.
+
+	Python-Markdown's fenced_code extension only recognises fences at column 0, so a fence under a
+	numbered step would render as inline code. An indented code block (fence indent + 4 spaces)
+	is what Markdown nests inside list items.
+	"""
+	out, lines, i = [], text.split("\n"), 0
+	while i < len(lines):
+		m = re.match(r"^( +)(```|~~~)[^`]*$", lines[i])
+		if not m:
+			out.append(lines[i])
+			i += 1
+			continue
+		indent, fence = m.group(1), m.group(2)
+		j = i + 1
+		while j < len(lines) and lines[j].strip() != fence:
+			j += 1
+		body = lines[i + 1:j]
+		if out and out[-1].strip():
+			out.append("")
+		pad = indent + "    "
+		out.extend(pad + (b[len(indent):] if b.startswith(indent) else b.lstrip()) if b.strip() else "" for b in body)
+		out.append("")
+		i = j + 1
+	return "\n".join(out)
+
+
+INCLUDE = re.compile(r"^( *)\{\{\s*include\s+(\S+)(?:\s+lines=(\d+)-(\d+))?\s*\}\}\s*$", re.M)
+
+
+def expand_includes(text: str, path: str) -> str:
+	"""Replace `{{ include <repo-relative path> [lines=A-B] }}` with a fenced copy of that file.
+
+	The guide quotes stack/ and clients/ files this way, so the printed text is always the file
+	that ships (docs/guide-style.md). A missing file or line range fails the build.
+	"""
+	def repl(m: re.Match) -> str:
+		indent, rel = m.group(1), m.group(2)
+		src = ROOT / rel
+		if not src.is_file():
+			raise SystemExit(f"{path}: include of missing file {rel}")
+		lines = src.read_text(encoding="utf-8").rstrip("\n").split("\n")
+		if m.group(3):
+			a, b = int(m.group(3)), int(m.group(4))
+			if not 1 <= a <= b <= len(lines):
+				raise SystemExit(f"{path}: include {rel} lines={a}-{b} out of range (1-{len(lines)})")
+			lines = lines[a - 1:b]
+		body = "\n".join(indent + ln if ln else "" for ln in lines)
+		return f"{indent}```\n{body}\n{indent}```"
+	return INCLUDE.sub(repl, text)
+
+
 def render_chapter(path: str) -> dict:
 	"""Markdown -> {title, kind, html, headings[(level, id, text)]}; runs in a worker process."""
-	text = Path(path).read_text(encoding="utf-8")
+	text = nest_fences(expand_includes(Path(path).read_text(encoding="utf-8"), path))
 	md = markdown.Markdown(extensions=EXTENSIONS, extension_configs=EXT_CONFIG)
 	body = md.convert(text)
 	meta = {k: " ".join(v) for k, v in md.Meta.items()}
@@ -62,6 +115,17 @@ def render_chapter(path: str) -> dict:
 		for l, i, t in re.findall(r'<h([23]) id="([^"]+)">(.*?)</h\1>', rest, re.S)]
 	return {"path": path, "title": title, "kind": meta.get("kind", "chapter"), "intro": intro,
 		"html": rest, "headings": headings}
+
+
+def number_figures(doc: str) -> str:
+	doc = doc.replace('src="../figures/', f'src="{(GUIDE / "figures").as_uri()}/')
+	n = 0
+
+	def repl(m: re.Match) -> str:
+		nonlocal n
+		n += 1
+		return f"<figcaption>Figure {n}. {m.group(1)}</figcaption>"
+	return re.sub(r"<figcaption>\s*Figure:\s*(.*?)</figcaption>", repl, doc, flags=re.S)
 
 
 def number_tables(doc: str) -> str:
@@ -96,11 +160,13 @@ def build_html(cfg: dict, chapters: list[dict], pages: dict[str, int] | None) ->
 			if uid != hid:
 				body = body.replace(f'id="{hid}"', f'id="{uid}"', 1)
 			heads.append((lvl, uid, text))
+		# H4/H5 task labels ("Steps", "Prerequisites") repeat in every task: make their ids unique too
+		body = re.sub(r'<h([45]) id="([^"]+)">', lambda m: f'<h{m.group(1)} id="{slug_unique(seen, m.group(2))}">', body)
 		page = f"c{i}"
 		title_css = ch["title"].replace("\\", "\\\\").replace('"', '\\"')
 		css_pages.append(
-			f'@page {page}:left {{ @bottom-left {{ content: counter(page) "\\2003\\2003{title_css}"; padding-left: 14mm; }} }}\n'
-			f'@page {page}:right {{ @bottom-right {{ content: "{title_css}\\2003\\2003" counter(page); padding-right: 14mm; }} }}')
+			f'@page {page}:left {{ @bottom-left {{ content: counter(page) "\\2003\\2003 {title_css}"; padding-left: 14mm; }} }}\n'
+			f'@page {page}:right {{ @bottom-right {{ content: "{title_css}\\2003\\2003 " counter(page); padding-right: 14mm; }} }}')
 		topics = "".join(f'<li><a href="#{h[1]}">{html.escape(h[2])}</a></li>' for h in heads if h[0] == 2)
 		topics_html = f'<div class="topics"><h4>Topics:</h4><ul>{topics}</ul></div>' if topics else ""
 		tab_cls = "tab appendix" if ch["kind"] == "appendix" else "tab"
@@ -118,8 +184,8 @@ def build_html(cfg: dict, chapters: list[dict], pages: dict[str, int] | None) ->
 			toc_rows.append(f'<li class="lvl{lvl}"><a class="row" href="#{uid}"><span class="label">{html.escape(text)}</span>'
 				f'<span class="dots"></span><span class="pg">{pg(uid)}</span></a></li>')
 
-	css_pages.append('@page toc:left { @bottom-left { content: counter(page) "\\2003\\2003Contents"; padding-left: 14mm; } }\n'
-		'@page toc:right { @bottom-right { content: "Contents\\2003\\2003" counter(page); padding-right: 14mm; } }')
+	css_pages.append('@page toc:left { @bottom-left { content: counter(page) "\\2003\\2003 Contents"; padding-left: 14mm; } }\n'
+		'@page toc:right { @bottom-right { content: "Contents\\2003\\2003 " counter(page); padding-right: 14mm; } }')
 	css = (TEMPLATE / "guide.css").read_text(encoding="utf-8")
 	esc = html.escape
 	notes = (
@@ -143,7 +209,8 @@ def build_html(cfg: dict, chapters: list[dict], pages: dict[str, int] | None) ->
 <nav class="toc"><div class="toc-head">Contents</div><ol>{''.join(toc_rows)}</ol></nav>
 {''.join(body_parts)}
 </body></html>"""
-	return number_tables(doc)
+	doc = re.sub(r"<pre>(.*?)</pre>", lambda m: ('<pre class="long">' if m.group(1).count("\n") > 24 else "<pre>") + m.group(1) + "</pre>", doc, flags=re.S)
+	return number_figures(number_tables(doc))
 
 
 def chrome_bin() -> str:

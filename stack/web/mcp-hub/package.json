@@ -1,0 +1,11 @@
+{
+  "name": "local-agent-stack-mcp-hub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js MCP servers served by the mcp-hub container (stack/web/mcp-hub). Exact versions; package-lock.json pins the whole tree and is installed with npm ci.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "mcp-searxng": "2.10.1",
+    "open-webui-knowledge-mcp-server": "0.2.0"
+  }
+}

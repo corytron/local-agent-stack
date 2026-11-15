@@ -9,3 +9,20 @@ wordmark: "<b>LOCAL</b>AgentStack"
 legal: "Local Agent Stack is a personal project. Product names mentioned in this guide are trademarks of their respective owners and are used for identification only; no affiliation or endorsement is implied."
 chapters:
   - chapters/01-introduction.md
+  - chapters/02-planning.md
+  - chapters/03-truenas.md
+  - chapters/04-inference.md
+  - chapters/05-edge.md
+  - chapters/06-rag-web.md
+  - chapters/07-workstation.md
+  - chapters/08-workflow.md
+  - chapters/09-validation.md
+  - chapters/10-operations.md
+  - chapters/11-troubleshooting.md
+  - chapters/12-uninstall.md
+  - chapters/a-backup.md
+  - chapters/b-profiles.md
+  - chapters/c-parity.md
+  - chapters/d-internal-ca.md
+  - chapters/e-config-files.md
+  - chapters/f-references.md

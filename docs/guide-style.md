@@ -66,11 +66,29 @@ Callouts (indented four spaces under the line):
 Tables: a paragraph `Table: <Title>` directly above a pipe table; the build numbers tables
 across the guide ("Table 7. Port assignments"). Keep tables to 2-5 columns.
 
-Code: fenced blocks with no language tag needed. Long lines wrap in print; prefer breaking
+Code: fenced blocks with no language tag needed, also inside numbered steps (indent the fence
+with the step; the build nests it). Long lines wrap in print; prefer breaking
 commands with `\`.
 
 Figures: `<figure markdown><img src="../figures/x.svg"><figcaption>Figure: ...</figcaption></figure>`
+(the build numbers them "Figure N." and resolves `../figures/` to `guide/figures/`)
 (only when a diagram genuinely helps; inline SVG under `guide/figures/`).
+
+## Self-contained
+
+The guide is the only document the reader needs (CLAUDE.md). If a README, contract, research
+note or agent hand-back says something the reader must do, know or check, it goes into a chapter.
+Never write "see `stack/web/README.md`" as a substitute for the steps.
+
+Quote repository files with the include macro, on a line by itself (indent it to nest in a step):
+
+```
+{{ include stack/web/searxng/settings.yml }}
+{{ include stack/inference/compose.yaml lines=120-160 }}
+```
+
+The build copies the file (or the line range) into a code block at render time and fails if the
+file or range does not exist, so the printed text is always what ships.
 
 ## Accuracy
 

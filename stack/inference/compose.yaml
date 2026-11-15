@@ -1,0 +1,176 @@
+# ai-inference: the model-serving layer (docs/stack-design.md §1, §2, §5; docs/research/b-inference.md).
+#   llama-swap  llama.cpp llama-server processes, one GPU model at a time plus the CPU-only RAG
+#               models (llama-swap/config.yaml); the only service with the GPU.
+#   litellm     the gateway clients use: OpenAI /v1/... and Anthropic /v1/messages, virtual keys,
+#               spend logs (litellm/config.yaml).
+#   litellm-db  PostgreSQL for LiteLLM's keys, budgets and spend logs.
+# No ports are published: other apps reach llama-swap:8080 and litellm:4000 by name on ai-net, and
+# browsers and workstations go through Caddy in ai-edge (docs/stack-design.md §2, §3).
+#
+# TrueNAS custom app "ai-inference", Install via YAML (docs/stack-design.md §4):
+#   include:
+#     - path: /mnt/tank/ai/stacks/local-agent-stack/stack/inference/compose.yaml
+#       env_file: /mnt/tank/ai/secrets/inference.env
+#   services: {}
+#
+# Variables: stack/inference/inference.env.example. Relative paths resolve against this file's
+# directory. Check: docker compose --env-file inference.env.example -f compose.yaml config -q
+#
+# Images are pinned by tag and digest (b-inference §3.1; e-truenas §6). The digests were read with
+# `docker buildx imagetools inspect` on 2026-11-15. Only CUDA <= 13.0 images start on the NVIDIA 580
+# driver of TrueNAS 25.10.6+ (e-truenas §2): llama-swap's image is CUDA 12.8.1 (cuda>=12.8).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  llama-swap:
+    # llama.cpp b12407 server image (CUDA 12.8.1) with llama-swap v273 added (b-inference §3.1).
+    # Single-platform (linux/amd64) manifest. Image entrypoint:
+    #   /app/llama-swap -config /app/config.yaml -watch-config   (listens on :8080)
+    image: ghcr.io/mostlygeek/llama-swap:v273-cuda-b12407@sha256:8fd9f1cfe9e96cddf53fbdc5cb2683b19633ab49b1a41a406e6239376ead65e6
+    container_name: llama-swap
+    restart: unless-stopped
+    # llama-swap stops its llama-server children on SIGTERM (unloadTimeout 10 s each).
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # e-truenas §2: TrueNAS makes nvidia Docker's default runtime; these plus the device
+      # reservation below are the pattern TrueNAS's own app library renders.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      # Read by llama-swap/config.yaml as ${env.LLAMA_SWAP_API_KEY}; config loading fails if unset.
+      LLAMA_SWAP_API_KEY: ${LLAMA_SWAP_API_KEY:?set LLAMA_SWAP_API_KEY in inference.env}
+    volumes:
+      # GGUF files under gguf/ (dataset tank/ai/models: recordsize 1M, primarycache=metadata;
+      # docs/stack-design.md §4). Read-only: nothing here writes model files.
+      - ${AI_ROOT:-/mnt/tank/ai}/models:/models:ro
+      # Redeploy the app after `git pull` (app.redeploy restarts it).
+      # UNVERIFIED: whether -watch-config sees a file that git replaced; a single-file bind mount
+      # keeps the old inode.
+      - ./llama-swap/config.yaml:/app/config.yaml:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # one GPU; count avoids hard-coding the UUID, which breaks on a card swap (e-truenas §2)
+              count: all
+              capabilities: [gpu]
+        limits:
+          # b-inference "System RAM budget": a runaway llama-server is OOM-killed inside this
+          # container. coder-moe peaks at about 18 GiB (8 GB experts + 6 GiB prompt cache + RAG).
+          # UNVERIFIED: the peak is an estimate; check `docker stats llama-swap` under load.
+          memory: 32G
+    healthcheck:
+      # llama-swap's own /health; it is served without the API key (internal/server/server.go at
+      # v273) and does not wait for models. curl is in the image (llama.cpp .devops/cuda.Dockerfile).
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      # probe every 5 s during start_period so litellm can start sooner (Docker Engine 25+)
+      start_interval: 5s
+    logging: *logging
+    networks: [ai-net]
+
+  litellm:
+    # LiteLLM 1.108.8 (LTS line). Pinned by digest because LiteLLM's PyPI and Docker images were
+    # compromised in 2026 (b-inference Summary; v1.107.0 and the floating tags in October). The
+    # index digest below covers linux/amd64 and linux/arm64; the image's
+    # org.opencontainers.image.revision label is the v1.108.8 tag commit (e1476b2).
+    image: ghcr.io/berriai/litellm:v1.108.8@sha256:f0c49f0b498b57853ca8fb56fb002a275ac9e84ae460f8646b79c1332d55f7ec
+    container_name: litellm
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # Image entrypoint docker/prod_entrypoint.sh runs `litellm "$@"`. One Uvicorn worker is plenty:
+    # the GPU serves one request at a time (-np 1 in llama-swap/config.yaml).
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      # Not a CUDA image (Wolfi base); void keeps the nvidia default runtime from exposing the GPU
+      # (e-truenas §2).
+      NVIDIA_VISIBLE_DEVICES: void
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in inference.env}
+      # Encrypts credentials stored in the database; never change it after the first start.
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?set LITELLM_SALT_KEY in inference.env}
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?set LITELLM_DB_PASSWORD in inference.env}@litellm-db:5432/litellm
+      # Models live in litellm/config.yaml (git), not in the database.
+      STORE_MODEL_IN_DB: "False"
+      # Use the cost map bundled in the image; no fetch from GitHub at start-up
+      # (litellm_core_utils/get_model_cost_map.py at v1.108.8).
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      # Forces usage telemetry off (litellm/proxy/telemetry/settings.py at v1.108.8: the
+      # LITELLM_TELEMETRY_* settings, field "disabled", is the veto; checked in the pinned image).
+      LITELLM_TELEMETRY_DISABLED: "true"
+      # Production mode: no load_dotenv() of a stray .env (LiteLLM production checklist).
+      LITELLM_MODE: PRODUCTION
+      # Used by litellm/config.yaml as os.environ/LLAMA_SWAP_API_KEY for every upstream call.
+      LLAMA_SWAP_API_KEY: ${LLAMA_SWAP_API_KEY:?set LLAMA_SWAP_API_KEY in inference.env}
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+      llama-swap:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          # LiteLLM's production guide: 4 GiB per worker is a floor (Prisma's query engine keeps its
+          # high-water mark); 6G leaves headroom without letting it eat the model's RAM.
+          memory: 6G
+    healthcheck:
+      # The command LiteLLM's own docker-compose.yml (v1.108.8) uses; /health/liveliness needs no key
+      # and makes no model calls. Do not point a probe at /health: it sends a real request to every
+      # model, which would swap coder-moe onto the GPU.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # the first start runs the Prisma migrations
+      start_period: 120s
+    logging: *logging
+    networks: [ai-net]
+
+  litellm-db:
+    image: postgres:16.13@sha256:5d143123fdf80462d1778cd4f24b9f7ca13c87174bca19141fb194c5a1ebca59
+    container_name: litellm-db
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:?set LITELLM_DB_PASSWORD in inference.env}
+      POSTGRES_DB: litellm
+      # One level below the mount, as pgvector in stack/rag does: initdb gets a directory it
+      # creates itself, whatever the dataset's ACL and hidden entries are.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      # Dataset tank/ai/appdata/litellm-db (Apps preset; record size 32K suits PostgreSQL,
+      # e-truenas §4). PostgreSQL 16 keeps its data in the image's VOLUME /var/lib/postgresql/data.
+      - ${AI_ROOT:-/mnt/tank/ai}/appdata/litellm-db:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+      start_interval: 2s
+    logging: *logging
+    networks: [ai-net]
+
+networks:
+  ai-net:
+    # created once on the host: docker network create ai-net (docs/stack-design.md §2)
+    external: true

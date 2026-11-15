@@ -1,0 +1,9 @@
+# SearXNG bot-detection settings, mounted read-only at /etc/searxng/limiter.toml.
+#
+# The limiter is off (settings.yml: server.limiter: false), but SearXNG still reads this file at
+# start-up and logs "missing config file: /etc/searxng/limiter.toml" without it. Values here
+# are merged over SearXNG's defaults, so an empty file keeps every default.
+#
+# If the instance is ever exposed beyond the LAN: set server.limiter: true in settings.yml, add
+# a Valkey container (SEARXNG_VALKEY_URL), and list the Docker network that Caddy uses and the
+# LAN in [botdetection] trusted_proxies and [botdetection.ip_lists] pass_ip below.

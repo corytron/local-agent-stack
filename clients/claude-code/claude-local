@@ -1,0 +1,52 @@
+#!/bin/sh
+# claude-local: run Claude Code against the local gateway (LiteLLM at https://llm.<LAB_DOMAIN>)
+# for this one session, without touching ~/.claude/settings.json.
+#
+# It loads ~/.config/local-agent-stack/client.env, puts your LAB_DOMAIN into
+# clients/claude-code/settings.json in place of lab.example.com and passes the result with
+# `claude --settings` (a file path or an inline JSON string, code.claude.com/docs/en/cli-reference).
+# Your normal `claude` keeps using Anthropic. clients/install.sh links this script into
+# ~/.local/bin. Unsupported by Anthropic: Claude Code on non-Claude models (clients/README.md).
+set -eu
+
+# Read (not export) the variables: the key reaches Claude Code only through the settings'
+# apiKeyHelper, which reads the same file, so tools Claude runs do not inherit it.
+env_file="$HOME/.config/local-agent-stack/client.env"
+if [ -r "$env_file" ]; then
+	# shellcheck disable=SC1090  # the path is the user's own config file
+	. "$env_file"
+fi
+
+: "${LAB_DOMAIN:?set LAB_DOMAIN in $env_file (for example lab.example.com)}"
+: "${LOCAL_LLM_KEY:?set LOCAL_LLM_KEY in $env_file (your LiteLLM virtual key)}"
+case "$LAB_DOMAIN" in
+*[!A-Za-z0-9.-]* | "")
+	echo "claude-local: LAB_DOMAIN may contain only letters, digits, dots and hyphens" >&2
+	exit 2
+	;;
+esac
+
+command -v claude >/dev/null 2>&1 || {
+	echo "claude-local: Claude Code (claude) is not installed" >&2
+	exit 127
+}
+
+# Find settings.json next to the real path of this script (it is usually a symlink).
+self=$0
+while [ -L "$self" ]; do
+	link=$(readlink "$self")
+	case "$link" in
+	/*) self=$link ;;
+	*) self=$(dirname "$self")/$link ;;
+	esac
+done
+settings_file=$(cd "$(dirname "$self")" && pwd)/settings.json
+[ -r "$settings_file" ] || {
+	echo "claude-local: cannot read $settings_file" >&2
+	exit 2
+}
+
+settings=$(sed "s/lab\\.example\\.com/$LAB_DOMAIN/g" "$settings_file")
+# Also exported here: the docs ask for this one "in the environment that starts Claude Code".
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536
+exec claude --settings "$settings" "$@"
