@@ -15,6 +15,9 @@ chapters:
   - chapters/06-rag-web.md
   - chapters/07-workstation.md
   - chapters/08-workflow.md
+  - chapters/10-operations.md
+  - chapters/11-troubleshooting.md
+  - chapters/12-uninstall.md
   - chapters/a-backup.md
   - chapters/b-profiles.md
   - chapters/c-parity.md
