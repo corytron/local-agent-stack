@@ -13,6 +13,7 @@ chapters:
   - chapters/03-truenas.md
   - chapters/05-edge.md
   - chapters/06-rag-web.md
+  - chapters/07-workstation.md
   - chapters/08-workflow.md
   - chapters/a-backup.md
   - chapters/b-profiles.md
