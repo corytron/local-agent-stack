@@ -75,6 +75,10 @@ say in one line how it is split and which agent owns which files.
   shared by every model; VRAM is the budget that decides everything.
 - **Workstation:** this Ubuntu VM (c4dev, 32 cores), where the coding agent and this repo live.
   The owner drives sessions from a Mac (Claude Desktop over SSH) and has a Windows VM.
+- **Everything runs on TrueNAS** (owner, 2026-11-15): every service is a container on the
+  server. Workstations run only what the owner starts (the agent CLI, a browser, the stdio MCP
+  children the CLI spawns). No daemon, container or timer of this stack on c4dev; agents may run
+  short local tests (a `docker build`, `compose config`) and remove everything they create.
 - **Local only for the core path:** models, RAG and tools run on the LAN. Web search goes out
   through self-hosted SearXNG. No cloud fallback for inference.
 
