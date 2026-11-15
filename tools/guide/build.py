@@ -135,6 +135,8 @@ def build_html(cfg: dict, chapters: list[dict], pages: dict[str, int] | None) ->
 			if uid != hid:
 				body = body.replace(f'id="{hid}"', f'id="{uid}"', 1)
 			heads.append((lvl, uid, text))
+		# H4/H5 task labels ("Steps", "Prerequisites") repeat in every task: make their ids unique too
+		body = re.sub(r'<h([45]) id="([^"]+)">', lambda m: f'<h{m.group(1)} id="{slug_unique(seen, m.group(2))}">', body)
 		page = f"c{i}"
 		title_css = ch["title"].replace("\\", "\\\\").replace('"', '\\"')
 		css_pages.append(
