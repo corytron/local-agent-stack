@@ -209,6 +209,7 @@ def build_html(cfg: dict, chapters: list[dict], pages: dict[str, int] | None) ->
 <nav class="toc"><div class="toc-head">Contents</div><ol>{''.join(toc_rows)}</ol></nav>
 {''.join(body_parts)}
 </body></html>"""
+	doc = re.sub(r"<pre>(.*?)</pre>", lambda m: ('<pre class="long">' if m.group(1).count("\n") > 24 else "<pre>") + m.group(1) + "</pre>", doc, flags=re.S)
 	return number_figures(number_tables(doc))
 
 

@@ -73,7 +73,9 @@ CLIENTS_DIR=$(cd "$(dirname "$0")" && pwd -P)
 STAMP=$(date +%Y%m%d-%H%M%S)
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 OPENCODE_CONFIG="$CONFIG_HOME/opencode"
-STACK_CONFIG="$CONFIG_HOME/local-agent-stack"
+# Always ~/.config: tools/secrets.py, smoke.py, eval.py and the guide read client.env there,
+# whatever XDG_CONFIG_HOME says (OpenCode itself follows XDG for its own config).
+STACK_CONFIG="$HOME/.config/local-agent-stack"
 OPENCODE_BIN_DIR="$HOME/.opencode/bin"
 LOCAL_BIN="$HOME/.local/bin"
 SSH_MCP_PREFIX="$HOME/.local/share/local-agent-stack/ssh-mcp"

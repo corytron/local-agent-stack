@@ -232,8 +232,9 @@ It answers `results` with `index` and `relevance_score`, the first document scor
 - Open WebUI, and the reranker and embedding chain Open WebUI → LiteLLM → llama-swap, were not
   run (the owner's rule: nothing of the stack runs on c4dev). The request and response shapes
   were checked in the source of both projects at the pinned versions.
-- Publishing `ghcr.io/corytron/local-agent-stack-mcp-hub`: no workflow does it yet, and the
-  fallback, Compose building the image on TrueNAS 25.10, was not tried there.
+- Building the image on TrueNAS 25.10 (the fallback when the published
+  `ghcr.io/corytron/local-agent-stack-mcp-hub` image cannot be pulled) was not tried there;
+  `.github/workflows/mcp-hub-image.yml` publishes the image from main.
 - `no-new-privileges` with Open WebUI's start script (runs as root; no setuid binaries used).
 - The English captions of the Admin Panel tabs in "First start of Open WebUI": the field labels
   in step 3, **Admin Panel**, **Add User**, **Default permissions**, **API Keys**, **API keys**
