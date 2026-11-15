@@ -5,5 +5,5 @@
   attestations. Both project-built images (Caddy, MCP hub) are public and pinned by digest.
 - Nothing has run on the TrueNAS server yet: every hardware figure is an estimate, and every
   not-verified item is listed in Chapter 1, "Validation status and known issues".
-- Next: #18 (one-command maintenance update: stop the stack, update in order, verify, roll back),
-  #17 (deploy.py image comparison with overrides).
+- Next: issue #18 (one-command maintenance update: stop the stack, update in order, verify,
+  roll back) and issue #17 (deploy.py image comparison with overrides).
