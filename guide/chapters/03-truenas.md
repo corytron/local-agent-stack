@@ -4,9 +4,10 @@ title: Preparing TrueNAS SCALE
 
 This chapter prepares the TrueNAS SCALE server for the stack. You confirm the release, turn on
 the NVIDIA driver that ships with TrueNAS, set the GPU and memory parameters, create the datasets
-and the document share, free ports 80 and 443 for the edge proxy, create the shared Docker
-network, place a copy of the repository and the secrets on the pool, and create the API keys that
-`tools/deploy.py` uses.
+and the document share, create the shared Docker network, place a copy of the repository on the
+pool, check that ports 80 and 443 are free for the edge proxy, place the secrets on the pool, and
+create the API keys that `tools/deploy.py` uses. The TrueNAS web interface keeps ports of its own;
+it moves only if it holds port 80 or 443.
 
 Perform the tasks in the order shown. Run TrueNAS commands in **System** > **Shell** in the web
 interface, or in an SSH session from the workstation as `truenas_admin`. Commands that start with
@@ -23,6 +24,8 @@ Table: Values used in this chapter
 | `tank` | The pool that holds the apps and the stack's datasets |
 | `<release-tag>` | The release of this guide, for example `v1.0` |
 | `<smb-user>` | The SMB user that copies documents to the `rag-docs` share |
+| `<ui-https-port>` | The HTTPS port of the TrueNAS web interface; `444` in this guide's examples |
+| `<ui-http-port>` | The HTTP port of the TrueNAS web interface; `81` in this guide's examples |
 
 ## Verify the TrueNAS release
 
@@ -671,41 +674,6 @@ The **Permissions** card of `rag-docs` lists a `Group - apps` entry with Read ac
 
 Users write to `rag-docs` over SMB, and containers read it without being able to change it.
 
-## Move the TrueNAS web UI to ports 8080 and 8443
-
-The `caddy` container of the edge app publishes ports 80 and 443 on the server. The TrueNAS web
-interface uses the same ports by default, so it moves to 8080 (HTTP) and 8443 (HTTPS).
-
-### Change the web interface ports
-
-#### Steps
-
-1. Go to **System** > **General Settings**.
-
-2. On the **GUI** card, click **Settings**.
-
-3. Set **Web Interface HTTP Port** to `8080` and **Web Interface HTTPS Port** to `8443`.
-
-4. Click **Save**.
-
-    The **Restart Web Service** dialog opens.
-
-5. Select **Confirm** and click **Continue**.
-
-    The web interface restarts, and the browser reconnects on the new port.
-
-6. In **System** > **Shell**, confirm which ports the web server listens on:
-
-        sudo ss -tlnp | grep -E ':(80|443|8080|8443) '
-
-    The output shows listeners on ports 8080 and 8443 and none on 80 or 443.
-
-#### Results
-
-The web interface is at `https://192.0.2.10:8443`, and ports 80 and 443 are free for Caddy.
-Update your bookmarks. The TrueNAS API moves with the web interface:
-`tools/deploy.py` connects to `wss://192.0.2.10:8443/api/current`.
-
 ## Create the ai-net network
 
 All four apps join one external Docker network, `ai-net`, and reach each other by container name.
@@ -803,6 +771,129 @@ The repository is on the pool at the release tag.
     Do not edit files in the clone. Local changes make the server differ from the release and
     block the move to the next tag. Chapter 10 describes updates
     ([Updating to a new release](#updating-to-a-new-release)).
+
+## Check the ports for the edge proxy
+
+The `caddy` container of the edge app publishes ports 80 and 443 over TCP, and 443 over UDP for
+HTTP/3, on the server; the stack publishes no other port on the server. The TrueNAS web interface
+keeps ports of its own, which this guide writes as `<ui-https-port>` and `<ui-http-port>` (`444`
+and `81` in the examples). A new TrueNAS installation serves the web interface on ports 80 and 443;
+only in that case does the web interface move.
+
+`tools/port-inventory.sh`, in the clone, lists what listens on the server's ports, the ports that
+Docker containers publish and the ports of the TrueNAS web interface, and says for each of the
+three ports that Caddy needs whether it is free. It only reads: it runs `ss`, `docker ps` and
+`midclt call system.general.config`, writes no file and changes nothing.
+
+### Run the port inventory
+
+#### About this task
+
+Run the script on the server, in **System** > **Shell** or over SSH from the workstation, as
+`truenas_admin`. It runs its three commands through `sudo`, because only root can see which
+process or container holds a port. With `--no-sudo` it skips `sudo`, but then it cannot name most
+of them. With `--json` it prints the same report as one JSON object. Its exit status is `0` when
+every port that Caddy needs is free or already used by the edge app, and `1` otherwise.
+
+#### Steps
+
+1. In **System** > **Shell**, run the following command:
+
+        sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh
+
+    If `sudo` has not cached your password, the script prints
+    `port-inventory.sh: sudo asks for your password once`, and `sudo` asks for the `truenas_admin`
+    password.
+
+    To run the same check from the workstation, use SSH with `-t`, which gives `sudo` a terminal
+    for its password prompt:
+
+        ssh -t truenas_admin@192.0.2.10 sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh
+
+    The report has the sections `Listening sockets`, `Ports published by Docker containers`,
+    `TrueNAS web interface` and `Ports the stack needs on this server`, then `Notes` when there is
+    something to note, and a result line.
+
+2. In the section `TrueNAS web interface`, note the two ports. In this guide's examples, it reads:
+
+        TrueNAS web interface (midclt call system.general.config; System > General Settings > GUI)
+          HTTP port (ui_port)         81
+          HTTPS port (ui_httpsport)   444
+          Redirect HTTP to HTTPS      yes
+          Addresses                   0.0.0.0, ::
+
+    `HTTPS port (ui_httpsport)` is `<ui-https-port>` and `HTTP port (ui_port)` is `<ui-http-port>`
+    in the rest of this guide. They are the values of **Web Interface HTTPS Port** and
+    **Web Interface HTTP Port** behind the **GUI** card of **System** > **General Settings**.
+
+3. Check the section `Ports the stack needs on this server` and the result line. Before the edge
+   app is installed, they read:
+
+        Ports the stack needs on this server (Caddy, app ai-edge)
+          80/tcp    free
+          443/tcp   free
+          443/udp   free
+
+        Result: every port the stack needs is free or already used by the stack (exit 0).
+
+    After the edge app is installed in Chapter 5, the three lines read
+    `ours: container caddy (app ai-edge)`, and the result line is the same.
+
+4. If a line reads anything else, act on it as the table shows, then repeat step 1.
+
+    Table: Verdicts of the port inventory
+
+    | Verdict | Action |
+    |---|---|
+    | `used by the TrueNAS web interface` | Give the web interface other ports ([Change the web interface ports](#change-the-web-interface-ports)). The `Notes` section says the same |
+    | `used by container <name> (app <app>)` | A TrueNAS app publishes the port. In **Apps** > **Installed**, select the app and click **Edit** to change its port, or click **Stop** |
+    | `used by container <name> (not a TrueNAS app)` | A container started outside the TrueNAS apps publishes the port. Stop it, or change its port where it was started |
+    | `used by <process>` | A service of the server listens on the port; the section `Listening sockets` shows it. Stop that service or give it another port |
+    | `unknown (ss could not be run)` | The script could not read the sockets. Read the `Notes` section, and run the script again with your password |
+
+#### Results
+
+Ports 80/tcp, 443/tcp and 443/udp are free for Caddy, and the result line ends with `(exit 0)`.
+The web interface is at `https://192.0.2.10:<ui-https-port>` (`https://192.0.2.10:444` in this
+guide's examples), and `tools/deploy.py` connects to `wss://192.0.2.10:<ui-https-port>/api/current`
+(`wss://192.0.2.10:444/api/current`).
+
+### Change the web interface ports
+
+#### About this task
+
+Do this only when the port inventory reports `used by the TrueNAS web interface`, which is the case
+on a new TrueNAS installation. Choose two ports that the inventory lists neither under
+`Listening sockets` nor under `Ports published by Docker containers`; this guide uses `81` for
+HTTP and `444` for HTTPS. The web interface restarts on the new ports, and the TrueNAS API moves
+with it.
+
+#### Steps
+
+1. Go to **System** > **General Settings**.
+
+2. On the **GUI** card, click **Settings**.
+
+3. Set **Web Interface HTTP Port** to `81` and **Web Interface HTTPS Port** to `444`, or to other
+   ports that the inventory does not list.
+
+4. Click **Save**.
+
+    The **Restart Web Service** dialog opens.
+
+5. Select **Confirm** and click **Continue**.
+
+    The web interface restarts on the new ports. Open `https://192.0.2.10:444` and log in again.
+
+6. Run the port inventory again ([Run the port inventory](#run-the-port-inventory), step 1).
+
+    `80/tcp` and `443/tcp` read `free`, and `HTTPS port (ui_httpsport)` is `444`.
+
+#### Results
+
+The web interface is at `https://192.0.2.10:444`, and ports 80 and 443 are free for Caddy. Update
+your bookmarks. Use `444` as `<ui-https-port>` and `81` as `<ui-http-port>` in the rest of this
+guide.
 
 ## Create the secrets files
 
@@ -927,7 +1018,8 @@ a value on the server, run for example
 ## Create TrueNAS API keys for deploy.py
 
 `tools/deploy.py` runs on the workstation and talks to the TrueNAS API (JSON-RPC over WebSocket at
-`wss://192.0.2.10:8443/api/current`) to compare and install the apps. TrueNAS 25.10 has no role
+`wss://192.0.2.10:<ui-https-port>/api/current`, `wss://192.0.2.10:444/api/current` in this guide's
+examples) to compare and install the apps. TrueNAS 25.10 has no role
 smaller than full administrator that can write apps, so the tool uses two keys, each tied to its
 own user:
 
@@ -944,9 +1036,10 @@ built-in groups avoid custom privileges, which TrueNAS 25.10 deprecates.
 !!! warning
     An API key is equivalent to its user's password and bypasses two-factor authentication. The
     `deploy-apply` key gives full control of the server. TrueNAS 25.10 has no challenge-response
-    login, so the key is protected only by TLS: always connect with `wss://` on port 8443. TrueNAS
-    revokes a key automatically if it is ever sent over plain HTTP. Keep the key files only on the
-    workstation, with mode 0600, and never commit, paste or attach them.
+    login, so the key is protected only by TLS: always connect with `wss://` on the web interface's
+    HTTPS port, `<ui-https-port>`. TrueNAS revokes a key automatically if it is ever sent over
+    plain HTTP. Keep the key files only on the workstation, with mode 0600, and never commit, paste
+    or attach them.
 
 ### Create the deploy users
 
@@ -1026,7 +1119,7 @@ dialog. If a key is lost, delete it and create a new one.
 #### Results
 
 The workstation holds a read-only key and an apply key for `tools/deploy.py`. Chapter 10
-configures the tool with the address `wss://192.0.2.10:8443/api/current` and these two files
-([Setting up deploy.py](#setting-up-deploypy)), and checks the read-only key with
-`deploy.py status` before anything is applied. To revoke a key,
-open **View API Keys** for its user and delete it.
+configures the tool with the address `wss://192.0.2.10:<ui-https-port>/api/current` and these two
+files ([Setting up deploy.py](#setting-up-deploypy)), and checks the read-only key with
+`deploy.py status` before anything is applied. To revoke a key, open **View API Keys** for its
+user and delete it.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Internal DNS: a step-by-step procedure for a UniFi UDM-Pro SE (five local A records, content-filter, browser DNS-over-HTTPS and public-zone checks) (#32).
+
 - Images: the agent models read images with their vision projector on the CPU (64K context kept); LiteLLM, OpenCode and Open WebUI pass images through; Open WebUI's long-term Memory is on; an optional vision evaluation case (#33).
 
 - `tools/port-inventory.sh`: a read-only check, run on TrueNAS, that ports 80/tcp, 443/tcp and 443/udp are free for Caddy; the guide keeps the TrueNAS web interface on its own ports (444 in the examples) (#31).

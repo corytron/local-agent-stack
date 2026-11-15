@@ -77,30 +77,52 @@ and [Verify each host name](#verify-each-host-name).
 
 #### About this task
 
-The clients must resolve every host name to the TrueNAS server. Add A records in your local DNS
-server or router. If that is not possible, add the names to the hosts file of each client.
+The clients must resolve every host name to the TrueNAS server. The records are the same as in
+Chapter 5, with the `lab.home.arpa` names: one A record per host name, pointing to `192.0.2.10`, and
+no AAAA records. On a UniFi gateway, follow the tasks of
+[Create the local DNS records](#create-the-local-dns-records), from
+[Give the TrueNAS server a fixed IP address](#give-the-truenas-server-a-fixed-ip-address) to
+[Add the host names to local DNS](#add-the-host-names-to-local-dns), with the names of the table
+above. If no local DNS server can hold the records, add the names to the hosts file of each client.
+
+With the internal CA, Caddy makes no DNS queries for certificates, so the public zone and the
+Content Filter check of Chapter 5 do not apply. The browsers do: `home.arpa` is not a public name,
+and a browser that uses only a public secure DNS service cannot resolve it
+([Check the secure DNS setting of each browser](#check-the-secure-dns-setting-of-each-browser)).
 
 #### Steps
 
-1. In your local DNS server or router, add an A record for each host name in the table above,
-   pointing to `192.0.2.10`.
+1. In your local DNS server, add a **Host (A)** record (on UniFi) or an A record for each host name
+   in the table above, pointing to `192.0.2.10`.
 
     Alternatively, add the following line to `/etc/hosts` on Linux and macOS, and to
     `C:\Windows\System32\drivers\etc\hosts` on Windows (edit as administrator):
 
         192.0.2.10 chat.lab.home.arpa llm.lab.home.arpa models.lab.home.arpa mcp.lab.home.arpa search.lab.home.arpa
 
-2. Verify the name on each client:
+2. If you added the records on the gateway, ask it directly from the workstation:
+
+        for n in chat llm models mcp search; do dig +short @192.0.2.1 $n.lab.home.arpa A; done
+
+    The output is `192.0.2.10` five times.
+
+3. Verify the name through the system resolver of each client:
 
     - Ubuntu: `getent hosts chat.lab.home.arpa`
     - macOS: `dscacheutil -q host -a name chat.lab.home.arpa`
-    - Windows (PowerShell): `Resolve-DnsName chat.lab.home.arpa`
+    - Windows (PowerShell): `Resolve-DnsName chat.lab.home.arpa -Type A`
 
-    Each command returns `192.0.2.10`.
+    Each command returns `192.0.2.10`. If one does not, check the client's DNS servers as in
+    [Check name resolution from each client](#check-name-resolution-from-each-client).
 
 #### Results
 
 Every client resolves the five lab host names to the TrueNAS server.
+
+!!! note
+    Whether UniFi accepts names under `home.arpa` as the **Domain Name** of a record has not been
+    checked. If the UniFi Network application refuses the name, or the gateway does not answer in
+    step 2, use a subdomain of a domain you own, or the hosts file.
 
 ### Set the edge environment for the internal CA
 
@@ -420,10 +442,15 @@ Test each tool against `https://llm.lab.home.arpa` before you rely on it.
    the file to the server
    ([Copy the environment files to TrueNAS](#copy-the-environment-files-to-truenas)).
 
+    DNS-01 needs Caddy's DNS queries to reach the public resolvers. On a UniFi gateway, check that
+    no Content Filter or Ad Blocking policy covers the TrueNAS server
+    ([Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection)).
+
     If `LAB_DOMAIN` changes with it, for example from `lab.home.arpa` to `lab.example.com`, change
     it everywhere: add DNS records for the new host names
-    ([Add the host names to local DNS](#add-the-host-names-to-local-dns)); set the same value in
-    `web.env`, copy it to the server
+    ([Add the host names to local DNS](#add-the-host-names-to-local-dns)) and check that the
+    public zone does not answer for them ([Check the public zone](#check-the-public-zone)); set the
+    same value in `web.env`, copy it to the server
     ([Copy a changed environment file to TrueNAS](#copy-a-changed-environment-file-to-truenas))
     and redeploy `ai-web` ([Redeploy one app](#redeploy-one-app)); change the URL that Open WebUI
     stored at its first start in its **Admin Panel**

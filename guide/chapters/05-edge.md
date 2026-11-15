@@ -9,10 +9,12 @@ challenge, and forwards each name to its container on the `ai-net` network. Its 
 container serves Prometheus metrics for the GPU on `ai-net` only.
 
 The edge app comes before the RAG and web apps because Open WebUI has no published port: browsers
-reach it only through Caddy. You add the host names to your local DNS, create a DNS API token,
-complete `edge.env`, check the Caddy image, install the app, obtain a test certificate and then a
-production certificate, and verify every host name. The worked example uses Cloudflare as the DNS
-provider; the other supported providers differ only in the credentials they need.
+reach it only through Caddy. You add the host names to your local DNS, check them on the clients
+and in the public zone, create a DNS API token, complete `edge.env`, check the Caddy image, install
+the app, obtain a test certificate and then a production certificate, and verify every host name.
+The worked example uses a UniFi Dream Machine Pro SE (UDM-Pro SE) as the local DNS server and
+Cloudflare as the DNS provider; other local DNS servers need the same records, and the other
+supported providers differ only in the credentials they need.
 
 Table: Values used in this chapter
 
@@ -20,6 +22,8 @@ Table: Values used in this chapter
 |---|---|
 | `192.0.2.10` | LAN address of the TrueNAS server |
 | `192.0.2.20` | LAN address of the workstation `c4dev` |
+| `192.0.2.1` | LAN address of the UniFi gateway (UDM-Pro SE), the DNS server of the LAN; on another network (VLAN), use the gateway's address on that network |
+| `<ui-https-port>` | The HTTPS port of the TrueNAS web interface, `444` in this guide's examples ([Run the port inventory](#run-the-port-inventory)) |
 | `lab.example.com` | Your lab domain (`LAB_DOMAIN`); every host name of the stack is directly under it |
 | `example.com` | The DNS zone at your DNS provider that holds the lab domain; it can also be the lab domain itself |
 | `<cloudflare-token>` | The Cloudflare API token that you create in this chapter |
@@ -147,7 +151,7 @@ stops Caddy from writing that configuration to `/config/caddy/autosave.json`.
 Split-horizon DNS and the `resolvers` setting:
 
 - Your local DNS answers for the lab names with the server's LAN address, while the public zone at
-  the DNS provider does not need to contain them. This is split-horizon DNS.
+  the DNS provider holds no record for them. This is split-horizon DNS.
 - During the challenge, Caddy first finds the zone that holds `_acme-challenge.lab.example.com`,
   then waits until the TXT record it created is visible. If your local resolver serves its own zone
   for `lab.example.com` (an Unbound `local-zone`, a dnsmasq `address=/lab.example.com/...` line, a
@@ -156,7 +160,13 @@ Split-horizon DNS and the `resolvers` setting:
 - The `Caddyfile` therefore sends these lookups to public resolvers: `ACME_RESOLVERS`, by default
   `1.1.1.1 1.0.0.1` (Cloudflare's public resolvers). The setting affects only certificate issuance
   and renewal, which need the internet anyway; browsers and tools still resolve the lab names
-  through your local DNS.
+  through your local DNS. The five exact-name records of a UniFi gateway do not cover
+  `_acme-challenge.lab.example.com`, so these lookups would reach the public zone even through the
+  gateway; the public resolvers keep issuance independent of the local DNS in every case.
+- A gateway that intercepts DNS traffic defeats the setting: a UniFi Content Filter or Ad Blocking
+  policy whose source includes the TrueNAS server makes the gateway answer the queries that Caddy
+  sends to `1.1.1.1`. Keep the server out of such policies
+  ([Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection)).
 
 Caddy renews the certificate automatically before it expires. Renewal uses the same DNS-01
 challenge, so the server needs internet access and a valid DNS token for as long as the stack runs.
@@ -171,8 +181,42 @@ directory is lost, Caddy obtains a new certificate on its next start.
 
 ## Create the local DNS records
 
-Every client resolves the host names of the stack to the TrueNAS server through your local DNS
-server or router. The names do not need public DNS records.
+The host names of the stack use split-horizon DNS. On the LAN, your local DNS server answers each
+name with the address of the TrueNAS server. The public zone at your DNS provider holds no record
+for the names: Caddy writes only the temporary TXT record of the DNS-01 challenge,
+`_acme-challenge.lab.example.com`, and removes it again. Outside the LAN, the names do not
+resolve.
+
+Table: Local DNS records
+
+| Name | Type | Address |
+|---|---|---|
+| `chat.lab.example.com` | A | `192.0.2.10` |
+| `llm.lab.example.com` | A | `192.0.2.10` |
+| `models.lab.example.com` | A | `192.0.2.10` |
+| `mcp.lab.example.com` | A | `192.0.2.10` |
+| `search.lab.example.com` | A | `192.0.2.10` |
+
+The names get A records only. Do not add AAAA (IPv6) records: Caddy's default
+`EDGE_ALLOWED_CIDRS` admits the private IPv6 range `fd00::/8` but no global IPv6 address, so a
+client that reached the server over a global IPv6 address would have its connection closed. A
+client that gets no IPv6 address for a name connects over IPv4, after a wait of at most 50 ms.
+
+The worked example of this topic is a UniFi Dream Machine Pro SE (UDM-Pro SE), the gateway and DNS
+server of the LAN, managed in the UniFi Network application. On the UDM, each record is a DNS
+policy of type **Host (A)**. UniFi does not accept a wildcard name such as `*.lab.example.com`, so
+each host name gets its own record. A record applies to every network (VLAN) of the site, and it
+answers only the clients that use the gateway as their DNS server. For another router or DNS
+server, see [Other DNS servers and the hosts file](#other-dns-servers-and-the-hosts-file).
+
+!!! note
+    The UniFi labels in this topic were checked against Ubiquiti's documentation for UniFi
+    Network 9.4. On 15 November 2026 the current release firmware of the UDM-Pro SE was UniFi
+    OS 6.0.17, with UniFi Network 11.0. That Network 10.6 and 11.0 use the same path to the DNS
+    records is assumed, not verified: a third-party walk-through of Network 9.5.21 and Ubiquiti's
+    release notes of Network 10.5 use it, and no source names another path. That UniFi rejects
+    wildcard names is also assumed: Ubiquiti documents no wildcard records, and the UniFi API
+    refuses a `*.` name as an invalid host name.
 
 ### Choose the host names
 
@@ -203,87 +247,452 @@ certificate and new client settings.
 You have the lab domain for `LAB_DOMAIN` and the five host names. `search.lab.example.com` is
 optional for browsers, but adding it costs nothing.
 
+### Check the UniFi Network version
+
+#### About this task
+
+Where the DNS records are created depends on the version of the UniFi Network application.
+
+#### Steps
+
+1. Log in to the UniFi Network application of the UDM-Pro SE.
+
+2. Go to **Settings** > **Control Plane** > **Updates**.
+
+    The page shows the installed versions of UniFi OS and of the Network application, and the
+    release channel.
+
+3. Note the version of the Network application.
+
+#### Results
+
+You know which path the next tasks use:
+
+Table: Path to the DNS records by UniFi Network version
+
+| UniFi Network | Path |
+|---|---|
+| 9.4 or later | **Settings** > **Policy Table** > **Create New Policy** > **DNS** (assumed for 10.6 and 11.0) |
+| 9.3 | **Settings** > **Policy Engine** > **DNS** > **Create DNS Record** |
+| Older than 9.3 | Not covered by this guide; update the Network application first |
+
+### Give the TrueNAS server a fixed IP address
+
+#### About this task
+
+The five records point to one address, so the server must keep it. In UniFi, a fixed IP address
+is set on the client device.
+
+#### Steps
+
+1. In the UniFi Network application, go to **Client Devices** and select the TrueNAS server.
+
+2. Open **Settings**.
+
+3. Turn on **Fixed IP Address** and enter the address that the server uses now, `192.0.2.10`.
+
+4. Click **Apply Changes**.
+
+5. On TrueNAS, in **System** > **Shell**, display the server's IPv4 addresses:
+
+        ip -4 -brief address
+
+    The line of the LAN interface shows `192.0.2.10` followed by its prefix length, for example
+    `192.0.2.10/24`.
+
+#### Results
+
+The gateway gives the TrueNAS server the address `192.0.2.10` every time.
+
+### Check the DNS server of each network
+
+#### About this task
+
+The records answer only the clients that use the gateway as their DNS server. Every UniFi network
+hands out the gateway by default. This task checks that no network was changed.
+
+#### Steps
+
+1. Go to **Settings** > **Networks**.
+
+2. Select each network that has clients of the stack (the network of the workstation, the Mac and
+   the Windows VM, and any VLAN they use), and check **DNS Server**.
+
+    It keeps its default, which hands out the gateway. If DNS servers are entered there, the
+    clients of that network ask them instead and do not get the records: return the setting to
+    its default and save the network.
+
+3. If IPv6 is on for a network, check that its IPv6 settings hand out no other DNS server, such as
+   one of your internet provider's. The label of this setting was not verified; the client checks in
+   [Check name resolution from each client](#check-name-resolution-from-each-client) list the DNS
+   servers that each client really uses.
+
+4. On WiFi networks of UniFi Network 10.3 or later, leave **DNS Assistance** at its default, and
+   enter no public failover DNS servers there.
+
+    Ubiquiti does not document how this setting answers. A public failover server does not know
+    the lab names.
+
+#### Results
+
+Every network that has clients of the stack hands out the gateway as its DNS server.
+
 ### Add the host names to local DNS
 
 #### Prerequisites
 
-- Access to the administration interface of the DNS server that your clients use: the router, or
-  a DNS server such as Pi-hole, AdGuard Home, dnsmasq or Unbound.
+- UniFi Network 9.4 or later ([Check the UniFi Network version](#check-the-unifi-network-version)).
+  On 9.3, start the record with the path of that task's table instead.
+- The TrueNAS server has a fixed address
+  ([Give the TrueNAS server a fixed IP address](#give-the-truenas-server-a-fixed-ip-address)).
 
 #### About this task
 
-Add one A record per host name, each pointing to the TrueNAS server. The exact menu depends on the
-product; look for a setting named "local DNS records", "static DNS", "DNS host entries" or similar.
+Create one DNS policy of type **Host (A)** per host name, each pointing to the TrueNAS server.
+Leave the TTL empty, so that UniFi uses its default.
 
 #### Steps
 
-1. In your local DNS server or router, add the following A records:
+1. In the UniFi Network application, go to **Settings** > **Policy Table**.
 
-    Table: Local DNS records
+2. Click **Create New Policy** and select **DNS**.
 
-    | Name | Type | Address |
-    |---|---|---|
-    | `chat.lab.example.com` | A | `192.0.2.10` |
-    | `llm.lab.example.com` | A | `192.0.2.10` |
-    | `models.lab.example.com` | A | `192.0.2.10` |
-    | `mcp.lab.example.com` | A | `192.0.2.10` |
-    | `search.lab.example.com` | A | `192.0.2.10` |
+3. Enter the following values:
 
-    Some products answer for a whole domain with one entry instead, for example a dnsmasq line
-    `address=/lab.example.com/192.0.2.10`, an Unbound `local-zone`, or a router "local domain".
-    That works for the clients. It also hides the public zone from the local resolver, which is the
-    reason the edge app uses public resolvers for the DNS challenge (`ACME_RESOLVERS`).
+    - **Type**: **Host (A)**
+    - **Domain Name**: `chat.lab.example.com`
+    - **IP Address**: `192.0.2.10`
+    - **TTL**: empty
 
-2. Save the configuration of the DNS server.
+4. Click **Add**.
 
-3. If a client does not use the local DNS server, add the names to its hosts file instead:
-   `/etc/hosts` on Ubuntu and macOS, `C:\Windows\System32\drivers\etc\hosts` on Windows (edit it as
-   administrator). Add this line:
+5. Repeat steps 2 to 4 for `llm.lab.example.com`, `models.lab.example.com`,
+   `mcp.lab.example.com` and `search.lab.example.com`.
 
-        192.0.2.10 chat.lab.example.com llm.lab.example.com models.lab.example.com mcp.lab.example.com search.lab.example.com
+    Do not enter `*.lab.example.com`, and do not create **Host (AAAA)** records.
+
+6. On the workstation, ask the gateway for the five names:
+
+        for n in chat llm models mcp search; do dig +short @192.0.2.1 $n.lab.example.com A; done
+
+    The output is `192.0.2.10` five times. If `dig` is not installed, install the
+    `bind9-dnsutils` package.
 
 #### Results
 
-The local DNS answers for the five names with `192.0.2.10`. No record is needed at the public DNS
+The gateway answers for the five names with `192.0.2.10`. No record is needed at the public DNS
 provider.
 
+!!! note
+    A variant needs only one change when the server's address changes: one **Host (A)** record
+    `edge.lab.example.com` pointing to `192.0.2.10`, and five records of type **Alias (CNAME)**,
+    each with a host name as **Alias Domain Name** and `edge.lab.example.com` as
+    **Target Domain Name**. Alias records need UniFi OS 4.3 and UniFi Network 9.3 or later. The two
+    field labels come from a third-party guide and were not verified.
+
+!!! note
+    Keep the **Domain Name** of your networks, a DHCP setting, different from the lab domain. If
+    the gateway registers the names of DHCP clients under that domain, a device named `chat` or
+    `search` would collide with a host name of the stack.
+
+### Keep the server out of DNS redirection
+
+#### About this task
+
+UniFi Content Filtering works by redirecting the DNS traffic of the clients in a policy's
+**Source** to the gateway, and a policy with **Ad Blocking** on also redirects the clients that use
+other DNS servers. For the workstation and the other clients this is harmless: the gateway holds
+the records. For the TrueNAS server it is not. Caddy's queries to the public resolvers of
+`ACME_RESOLVERS` leave the server with its address, so the gateway would answer them. Before the
+challenge record exists, the answers are negative, and the gateway keeps negative answers for the
+zone's negative-caching time (1800 seconds by default for a Cloudflare zone), far longer than the
+two minutes that Caddy waits for the record. Issuance and every renewal would then fail with
+`timed out waiting for record to fully propagate`.
+
+!!! warning
+    A Content Filter or Ad Blocking policy that covers the TrueNAS server stops certificate
+    renewal without any visible sign until the certificate expires. Check every policy.
+
+#### Steps
+
+1. In the UniFi Network application, go to **Settings** > **CyberSecure** > **Content Filter**.
+
+2. For every policy, including those with **Ad Blocking** on, check its **Source**.
+
+3. If a policy's **Source** includes the TrueNAS server, either as a device or through its
+   network, change the **Source** to devices that do not include the server, or to networks that
+   do not contain it, and save the policy.
+
+#### Results
+
+No Content Filter or Ad Blocking policy covers the TrueNAS server. Once the edge app runs,
+[Verify the edge containers](#verify-the-edge-containers) tests this from the `caddy` container.
+
+!!! note
+    The redirect and its effect on Caddy follow from Ubiquiti's documentation of Content Filtering
+    and Ad Blocking and from Caddy's source code; they have not been observed on a UDM. That the
+    records keep answering clients inside such a policy is assumed for the same reason. **Encrypted
+    DNS** (**Settings** > **CyberSecure**) encrypts only the gateway's own queries to its upstream
+    servers, and a third-party guide reports that local records keep working with it. If the lab
+    names resolve only some of the time, test with Encrypted DNS off.
+
+### Other DNS servers and the hosts file
+
+With another router or DNS server (Pi-hole, AdGuard Home, dnsmasq, Unbound and others), the same
+rules apply:
+
+- Add the five A records of the table in
+  [Create the local DNS records](#create-the-local-dns-records), each pointing to `192.0.2.10`.
+  Look for a setting named "local DNS records", "static DNS", "DNS host entries" or similar. Give
+  the TrueNAS server a fixed address, for example with a DHCP reservation.
+- Some products answer for a whole domain with one entry instead, for example a dnsmasq line
+  `address=/lab.example.com/192.0.2.10`, an Unbound `local-zone` or a router "local domain". That
+  works for the clients. It also hides the public zone from the local resolver, which is the
+  reason the edge app uses public resolvers for the DNS challenge (`ACME_RESOLVERS`).
+- If the DNS server or a firewall redirects DNS queries to public resolvers, keep the TrueNAS
+  server out of the redirect, as on UniFi.
+- In the checks of [Check name resolution from each client](#check-name-resolution-from-each-client),
+  use the address of your DNS server instead of `192.0.2.1`.
+
+A client that does not use the local DNS server, for example a VPN client with DNS servers of its
+own, can use its hosts file instead: `/etc/hosts` on Ubuntu and macOS,
+`C:\Windows\System32\drivers\etc\hosts` on Windows (edit it as administrator). Add this line:
+
+```
+192.0.2.10 chat.lab.example.com llm.lab.example.com models.lab.example.com mcp.lab.example.com search.lab.example.com
+```
+
+## Check the lab names in DNS
+
+These checks confirm the records from every client, confirm that the public zone does not answer
+for the lab names, and set the browsers so that they ask the local DNS server.
+
 ### Check name resolution from each client
+
+#### About this task
+
+Each step first asks the gateway directly, which shows that the records exist, then the client's
+system resolver, which shows that the client uses the gateway. `dig` and `Resolve-DnsName` with
+`-DnsOnly -NoHostsFile` ignore the hosts file; `getent` and `dscacheutil` read it first.
 
 #### Steps
 
 1. On Ubuntu (`c4dev`), run the following commands:
 
+        dig +short @192.0.2.1 chat.lab.example.com A
+        dig @192.0.2.1 chat.lab.example.com AAAA +noall +comments | grep -E 'status:|ANSWER:'
         getent hosts chat.lab.example.com
-        dig +short chat.lab.example.com
+        resolvectl status
 
-    Both print `192.0.2.10`. `getent` uses the system resolver, including `/etc/hosts`; `dig`
-    asks the DNS server directly and ignores `/etc/hosts`. If `dig` is not installed, install the
-    `bind9-dnsutils` package.
+    The first and third commands print `192.0.2.10`. The second shows `status: NOERROR` and
+    `ANSWER: 0`: the name exists but has no IPv6 address. `resolvectl status` lists only the
+    gateway as DNS server of the LAN interface.
 
 2. On macOS, run the following commands in **Terminal**:
 
+        dig +short @192.0.2.1 chat.lab.example.com A
         dscacheutil -q host -a name chat.lab.example.com
-        dig +short chat.lab.example.com
+        scutil --dns | grep nameserver
 
-    The first prints `ip_address: 192.0.2.10`; the second prints `192.0.2.10`. As on Ubuntu, `dig`
-    ignores the hosts file.
+    The first prints `192.0.2.10`, the second `ip_address: 192.0.2.10`, and the third lists only
+    addresses of the gateway.
 
 3. On Windows, run the following commands in PowerShell:
 
-        Resolve-DnsName chat.lab.example.com
-        nslookup chat.lab.example.com
+        Resolve-DnsName chat.lab.example.com -Server 192.0.2.1 -Type A -DnsOnly
+        Resolve-DnsName chat.lab.example.com -Type A -DnsOnly -NoHostsFile
+        Get-DnsClientServerAddress
 
-    Both show the address `192.0.2.10`.
+    The first two show `IPAddress` `192.0.2.10`. For the active network adapter, the third lists
+    only addresses of the gateway: in the IPv4 row and, if the network has IPv6, in the IPv6 row.
 
-4. Repeat the checks for `llm`, `models`, `mcp` and `search`.
+4. Check all five names through the system resolver, with the command for the client's system:
+
+        for n in chat llm models mcp search; do getent hosts $n.lab.example.com; done
+        for n in chat llm models mcp search; do dscacheutil -q host -a name $n.lab.example.com; done
+        'chat','llm','models','mcp','search' | ForEach-Object { Resolve-DnsName "$_.lab.example.com" -Type A -DnsOnly -NoHostsFile }
+
+    The first line is for Ubuntu, the second for macOS and the third for Windows PowerShell. Each
+    name shows `192.0.2.10`.
 
 #### Results
 
-Every client resolves every host name to `192.0.2.10`. If a client returns another address or
-none, check which DNS server it uses (`resolvectl status` on Ubuntu, `scutil --dns` on macOS,
-`Get-DnsClientServerAddress` on Windows) and flush its cache: `resolvectl flush-caches` on Ubuntu,
+Every client resolves every host name to `192.0.2.10` through the gateway. If the gateway answers
+but the system resolver does not, the client uses another DNS server: check the list of DNS servers
+from the step for its system, and flush its cache: `resolvectl flush-caches` on Ubuntu,
 `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` on macOS, `ipconfig /flushdns` on
-Windows.
+Windows. If the client must keep another DNS server, use the hosts file
+([Other DNS servers and the hosts file](#other-dns-servers-and-the-hosts-file)). If the gateway
+itself does not answer, check the records
+([Add the host names to local DNS](#add-the-host-names-to-local-dns)).
+
+!!! note
+    The answer to the IPv6 (AAAA) query in step 1 is assumed, not yet checked on a UDM: UniFi's
+    resolver is expected to answer `NOERROR` without data for a name that has only an A record. If
+    the status is `NXDOMAIN` instead, the IPv4 address still works; record the result in a project
+    issue.
+
+### Check the public zone
+
+#### About this task
+
+The public zone must not answer for the lab names, so that a browser or a resolver outside the LAN
+gets "name does not exist" (`NXDOMAIN`). A wildcard record of the public zone, for example
+`*.example.com`, would answer for `chat.lab.example.com` as long as no record exists at
+`lab.example.com` itself, and browsers that use public DNS would then reach the wildcard's target
+instead of the server. The commands ask Cloudflare's public resolver over HTTPS, the way a browser
+with secure DNS does; a UniFi gateway cannot redirect these queries.
+
+#### Steps
+
+1. On the workstation, look up a lab name in the public DNS:
+
+        curl -s -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=chat.lab.example.com&type=A'
+
+    The output contains `"Status":3` (3 is `NXDOMAIN`) and no `"Answer"`.
+
+2. Look up a name that no record should match:
+
+        curl -s -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=nonexistent-check.lab.example.com&type=A'
+
+    The output contains `"Status":3`.
+
+3. Check that no challenge record is left over:
+
+        curl -s -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=_acme-challenge.lab.example.com&type=TXT'
+
+    The output contains `"Status":3`. While Caddy obtains or renews a certificate, a TXT record
+    can appear here for a few minutes.
+
+4. In the Cloudflare dashboard, open the zone `example.com` and its **DNS** > **Records** page.
+
+    No record exists for `chat`, `llm`, `models`, `mcp` or `search` under the lab domain.
+
+5. If step 1 or step 2 returned an address, a wildcard of the public zone answers for the lab
+   names. Remove the wildcard, or, if the zone needs it, add one marker record at the lab domain:
+   on the zone's **DNS** > **Records** page, click **Add record**, select **Type** `TXT`, enter the
+   name `lab` and any text as its content, for example `no public records below this name`, and
+   click **Save**. Then repeat steps 1 and 2.
+
+    The marker carries no address. Once `lab.example.com` exists as a name, the wildcard no longer
+    answers for names below it. If the lab domain is the zone itself (`example.com`), a marker does
+    not help: remove the wildcard.
+
+#### Results
+
+Public DNS answers `NXDOMAIN` for every lab name, and only your local DNS knows them.
+
+!!! note
+    `dig chat.lab.example.com A @1.1.1.1` asks the same resolver over plain DNS. On a workstation
+    inside a UniFi Content Filter or Ad Blocking policy, the gateway answers that query with
+    `192.0.2.10` instead; that is harmless for the workstation, but it hides the public answer.
+    Use the HTTPS lookups above.
+
+### Browsers and DNS over HTTPS
+
+Command-line clients (OpenCode, Claude Code, `curl`, Python) use the resolver of the operating
+system, so they get the local records. Browsers can send their DNS queries over HTTPS (DoH) to a
+public service instead; the public zone has no lab records, so such a query returns
+`NXDOMAIN`. Whether a browser then falls back to the system resolver depends on its setting.
+
+Table: Browsers and secure DNS
+
+| Browser | Setting | Lab names |
+|---|---|---|
+| Chrome | **Use secure DNS** on with your current service provider (the default), or off | Work: the gateway offers no secure DNS, so Chrome sends its queries to it |
+| Chrome | **Use secure DNS** with a provider chosen from the list, or a custom provider | Fail: Chrome uses only that provider and does not fall back |
+| Microsoft Edge | **Use current service provider** (the default), or off | Work, as in Chrome |
+| Microsoft Edge | A chosen provider | Fail, as in Chrome |
+| Firefox | The default protection level, which uses Cloudflare's DoH service | Work: a lookup that fails, `NXDOMAIN` included, falls back to the system resolver |
+| Firefox | A level without fallback (in recent versions, **Custom** with "Always warn me if secure DNS isn't available") | Fail, unless the lab domain is in **Manage exceptions** |
+| Safari with iCloud Private Relay | On | Work: Private Relay sends a name that is not public directly to the local network |
+| Android | **Private DNS** set to automatic | Work; a named Private DNS provider has no fallback and fails |
+
+Firefox's setting labels differ between releases; the task names the setting area and
+**Manage exceptions**, which exist in every current release. Windows 11 uses DoH only for DNS
+servers in its own list, and the gateway is not one of them.
+
+### Check the secure DNS setting of each browser
+
+#### About this task
+
+Check the setting in each browser on each client that opens `chat.lab.example.com`. Browsers that
+an organization manages take the setting from a policy instead: in Chrome and Edge, the policy
+`DnsOverHttpsMode` set to `automatic` or `off`; in Firefox, the policy `DNSOverHTTPS` with the lab
+domain in `ExcludedDomains`.
+
+#### Steps
+
+1. In Chrome, open **Settings** > **Privacy and security** > **Security**, and find
+   **Use secure DNS** under **Advanced**.
+
+    Leave it off, or on with your current service provider. If a provider is selected from the
+    drop-down list, select your current service provider instead.
+
+2. In Microsoft Edge, open **Settings** and search for `secure DNS`.
+
+    **Use secure DNS to specify how to lookup the network address for websites** is off, or set
+    to **Use current service provider**. If a provider is chosen, select
+    **Use current service provider**.
+
+3. In Firefox, open **Settings** > **Privacy & Security** and scroll to the DNS over HTTPS
+   settings.
+
+    Keep the default. If a setting without fallback is in use, click **Manage exceptions**, add
+    `lab.example.com`, and save. An exception covers the domain and every name below it.
+
+4. In Safari, change nothing. iCloud Private Relay sends the lab names to the local network.
+
+#### Results
+
+Every browser sends the lab names to the gateway, or falls back to it.
+[Open a host name in each browser](#open-a-host-name-in-each-browser) confirms this once the
+edge app serves the production certificate.
+
+!!! note
+    The Edge labels come from a third-party guide and were not verified. Chrome's and Firefox's
+    behaviour was checked in their source code and documentation.
+
+### Turn off Firefox's automatic DNS over HTTPS
+
+#### About this task
+
+This task is optional. Firefox's automatic rollout turns on DNS over HTTPS by itself unless the
+network tells it not to: Firefox looks up `use-application-dns.net` through the system resolver and
+stays with the system resolver when that name returns no public address. One record on the gateway
+makes the name return no address for the whole network. The lab names work without it, because
+Firefox's default falls back to the system resolver; the record saves that extra round trip and
+keeps Firefox's lookups on the gateway. It does not change a setting that a user chose.
+
+#### Steps
+
+1. In the UniFi Network application, go to **Settings** > **Policy Table**, click
+   **Create New Policy** and select **DNS**.
+
+2. Enter the following values:
+
+    - **Type**: **Alias (CNAME)**
+    - **Alias Domain Name**: `use-application-dns.net`
+    - **Target Domain Name**: `NXDOMAIN`
+
+3. Click **Add**.
+
+4. On the workstation, check the answer of the gateway:
+
+        dig +short @192.0.2.1 use-application-dns.net A
+
+    The output contains no IPv4 address: it is empty or shows only the alias target `NXDOMAIN.`.
+
+#### Results
+
+Firefox's automatic DNS over HTTPS stays off on the networks that use the gateway. To undo it,
+delete the policy.
+
+!!! note
+    The labels of the alias record and the use of `NXDOMAIN` as its target come from a third-party
+    guide for UniFi Network 9.5.21, which uses the same record to turn off iCloud Private Relay;
+    they are assumed for later versions. Do not create such a record for `mask.icloud.com` or
+    `mask-h2.icloud.com` unless you want to turn off iCloud Private Relay on the network.
 
 ## Create the Cloudflare API token
 
@@ -863,11 +1272,14 @@ application data; losing it only means that Caddy obtains a new certificate.
 
 #### Prerequisites
 
-- The TrueNAS web interface is on ports 8080 and 8443, and ports 80 and 443 are free
-  ([Move the TrueNAS web UI to ports 8080 and 8443](#move-the-truenas-web-ui-to-ports-8080-and-8443)).
+- The port inventory reports ports 80/tcp, 443/tcp and 443/udp as `free`
+  ([Run the port inventory](#run-the-port-inventory)). The TrueNAS web interface keeps its own
+  ports, `<ui-https-port>` and `<ui-http-port>`.
 - The network `ai-net` exists ([Create the ai-net network](#create-the-ai-net-network)).
 - The repository is cloned at the release tag in `/mnt/tank/ai/stacks/local-agent-stack`.
-- The host names resolve to `192.0.2.10` ([Create the local DNS records](#create-the-local-dns-records)).
+- The host names resolve to `192.0.2.10` ([Create the local DNS records](#create-the-local-dns-records)),
+  and no UniFi Content Filter or Ad Blocking policy covers the TrueNAS server
+  ([Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection)).
 - `edge.env` is complete and set for staging, and the Caddy image validated it
   ([Check the Caddy image on TrueNAS](#check-the-caddy-image-on-truenas)).
 - The Caddy data directories exist ([Prepare the Caddy data directories](#prepare-the-caddy-data-directories)).
@@ -950,9 +1362,39 @@ the verification.
 
     The output includes `caddy` and `gpu-exporter`, next to the containers of `ai-inference`.
 
+5. Run the port inventory again:
+
+        sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh
+
+    The section `Ports the stack needs on this server` now reads:
+
+        Ports the stack needs on this server (Caddy, app ai-edge)
+          80/tcp    ours: container caddy (app ai-edge)
+          443/tcp   ours: container caddy (app ai-edge)
+          443/udp   ours: container caddy (app ai-edge)
+
+    The result line ends with `(exit 0)`. A line that reads `used by` names something else that
+    also holds the port.
+
+6. Check that the gateway does not answer the queries that Caddy sends to the public resolvers:
+
+        sudo docker exec caddy nslookup chat.lab.example.com 1.1.1.1
+
+    The output reports that the name does not exist, with `NXDOMAIN`, for example
+    `** server can't find chat.lab.example.com: NXDOMAIN`. If it shows the address `192.0.2.10`
+    instead, the gateway answers DNS queries that the server sends to `1.1.1.1`: a Content Filter
+    or Ad Blocking policy covers the server
+    ([Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection)), and
+    certificate renewal would fail.
+
+    The `caddy` image is based on Alpine Linux, whose BusyBox provides `nslookup`, as it provides
+    the `wget` of [Read the GPU metrics](#read-the-gpu-metrics); this check has not yet been run
+    on the server.
+
 #### Results
 
-Both containers run, Caddy publishes ports 80 and 443 and keeps its data on the dataset.
+Both containers run, Caddy publishes ports 80 and 443 and keeps its data on the dataset, and its
+DNS queries reach the public resolvers.
 
 ## Obtain the certificates
 
@@ -1081,7 +1523,7 @@ Table: Certificate issuance errors
 | Message in the Caddy log or at start-up | Cause | Action |
 |---|---|---|
 | `expected 1 zone, got 0` | The challenge lookup got an answer from a local zone for the lab domain | Keep public resolvers in `ACME_RESOLVERS`; check that the server can send DNS queries to them |
-| `timed out waiting for record to fully propagate` | The resolvers in `ACME_RESOLVERS` do not see the public zone, or DNS to the internet is blocked | As above; check the zone's name servers with `dig +short NS example.com @1.1.1.1` |
+| `timed out waiting for record to fully propagate` | The resolvers in `ACME_RESOLVERS` do not see the public zone, DNS to the internet is blocked, or the gateway answers the server's queries to them (a UniFi Content Filter or Ad Blocking policy covers the server) | As above; check the zone's name servers with `dig +short NS example.com @1.1.1.1`, and run step 6 of [Verify the edge containers](#verify-the-edge-containers) |
 | `File to import not found: dns-<name>` | `DNS_PROVIDER` names a provider that is not in the image | Set one of the eight provider names |
 | Caddy refuses the token at start-up | `DNS_PROVIDER_TOKEN` is a placeholder or not a Cloudflare token | Store the token from [Create a zone-scoped API token](#create-a-zone-scoped-api-token) |
 | An authentication or permission error from the Cloudflare API | The token is revoked, expired, or lacks a permission or the zone | Repeat [Verify the API token](#verify-the-api-token); create a new token if needed |
@@ -1170,7 +1612,30 @@ Chapter 6 checks the remaining names again after it installs the apps.
 
 #### Results
 
-Caddy adds the security headers of the edge app to every response. The next topic describes them.
+Caddy adds the security headers of the edge app to every response.
+[Container hardening and response headers](#container-hardening-and-response-headers) describes
+them.
+
+### Open a host name in each browser
+
+#### About this task
+
+This task checks that each browser resolves the lab names through the local DNS, with the setting
+of [Check the secure DNS setting of each browser](#check-the-secure-dns-setting-of-each-browser).
+It needs the production certificate; browsers do not trust the staging one.
+
+#### Steps
+
+1. On each client, open `https://models.lab.example.com/health` in each browser that you use with
+   the stack.
+
+    The page shows `OK`, without a certificate warning.
+
+#### Results
+
+Every browser reaches the stack by name. A browser that reports that the server cannot be found
+uses a public secure DNS service without fallback: correct its setting as in
+[Check the secure DNS setting of each browser](#check-the-secure-dns-setting-of-each-browser).
 
 ## The GPU exporter
 
@@ -1266,7 +1731,7 @@ Table: Network exposure of the server
 | 443/tcp, 443/udp | `caddy` | Every network that reaches `EDGE_BIND_IP` | TLS; connections from outside `EDGE_ALLOWED_CIDRS` and for unlisted names are closed; each service has its own login |
 | 2019/tcp | Caddy admin API | Inside the `caddy` container only | Not published |
 | 9835/tcp | `gpu-exporter` | Containers on `ai-net` | Not published; no authentication |
-| 8443/tcp, 8080/tcp | TrueNAS web interface | The LAN | TrueNAS login; not behind Caddy |
+| `<ui-https-port>`/tcp, `<ui-http-port>`/tcp (444 and 81 in this guide's examples) | TrueNAS web interface | The LAN | TrueNAS login; not behind Caddy |
 
 Table: Authentication behind each host name
 
@@ -1278,9 +1743,10 @@ Table: Authentication behind each host name
 | `mcp.lab.example.com` | The MCP hub bearer token (`MCP_HUB_TOKEN`) |
 | `search.lab.example.com` | Nothing: SearXNG has no login, so every client inside `EDGE_ALLOWED_CIDRS` can search |
 
-The TrueNAS web interface is served by TrueNAS itself on ports 8443 and 8080, with its own
-certificate, at `https://192.0.2.10:8443`. Caddy does not proxy it, and the LAN-only guard does not
-apply to it. A host name such as `truenas.lab.example.com` on port 443 reaches Caddy, which closes
+The TrueNAS web interface is served by TrueNAS itself on its own ports, `<ui-https-port>` and
+`<ui-http-port>`, with its own certificate, at `https://192.0.2.10:<ui-https-port>`
+(`https://192.0.2.10:444` in this guide's examples). Caddy does not proxy it, and the LAN-only
+guard does not apply to it. A host name such as `truenas.lab.example.com` on port 443 reaches Caddy, which closes
 the connection because the name is not in the `Caddyfile`.
 
 ### LAN-only access guard

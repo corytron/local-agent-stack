@@ -95,6 +95,8 @@ Table: Support matrix
 | Workstation: Ubuntu 24.04 LTS or later, x86_64 or arm64 | Yes | Not tested; needs Node.js from outside the archive on 24.04 |
 | Workstation: macOS, Apple silicon or Intel | Yes, through the macOS path of `clients/install.sh` | The macOS path has not been run on a Mac |
 | Workstation: Windows | Only over SSH to a Linux workstation, and a browser | `clients/install.sh` does not run on Windows |
+| Local DNS: UniFi gateway (UDM-Pro SE), UniFi Network 9.4 or later | Yes; the worked example of Chapter 5 | Labels checked against UniFi Network 9.4; the same path assumed for 10.6 and 11.0 |
+| Local DNS: another router or DNS server that can hold A records | Yes | The same five records; Chapter 5 gives the rules, not the menus |
 | OpenCode 2.3.0 | Yes; the primary coding agent | Not yet run against the gateway |
 | Claude Code 2.1.325 | Optional; Anthropic does not support it with non-Claude models | Not yet run against the gateway |
 
@@ -287,7 +289,8 @@ affected because it runs entirely on the GPU.
 ## Network, DNS names and ports
 
 The stack is reached only on the LAN. Every service has a host name under your domain; the names
-resolve to the TrueNAS server through your local DNS, and Caddy serves them all on port 443.
+resolve to the TrueNAS server through your local DNS, and Caddy serves them all on port 443. The
+TrueNAS web interface keeps ports of its own.
 
 ### Placeholder values
 
@@ -300,7 +303,9 @@ Table: Placeholder values
 |---|---|
 | `192.0.2.10` | LAN address of the TrueNAS server (`truenas.lab.example.com`) |
 | `192.0.2.20` | LAN address of the workstation `c4dev` |
-| `lab.example.com` | Your domain, a zone at your DNS provider (`LAB_DOMAIN`) |
+| `192.0.2.1` | LAN address of the gateway and local DNS server, a UniFi Dream Machine Pro SE in the worked example |
+| `<ui-https-port>`, `<ui-http-port>` | The HTTPS and HTTP ports of the TrueNAS web interface; `444` and `81` in this guide's examples |
+| `lab.example.com` | Your lab domain (`LAB_DOMAIN`), in a zone at your DNS provider (`example.com`) |
 | `tank` | The ZFS pool that holds the apps, the models and the stack's datasets |
 | `sk-local-...` | An API key; the real values are generated during deployment |
 
@@ -316,11 +321,36 @@ Table: Host names
 | `mcp.lab.example.com` | `mcp-hub:8096` | OpenCode, Open WebUI |
 | `search.lab.example.com` | `searxng:8080` | Administrators (optional) |
 
-Chapter 5 adds an A record for each name in your local DNS server or router, pointing to
-`192.0.2.10` ([Add the host names to local DNS](#add-the-host-names-to-local-dns)). The names do not need public DNS records: Caddy obtains the certificates through the
-DNS-01 challenge, which only needs an API token for the zone at your DNS provider.
+The names use split-horizon DNS: they resolve on the LAN only, and the public zone does not know
+them. Chapter 5 sets them up ([Create the local DNS records](#create-the-local-dns-records)):
+
+- **Local records.** Your local DNS server holds one A record per name, five in all, each pointing
+  to `192.0.2.10`. In the worked example, the server is a UniFi Dream Machine Pro SE (UDM-Pro SE),
+  where each record is a **Host (A)** DNS policy in the UniFi Network application
+  (**Settings** > **Policy Table**). UniFi has no wildcard records, so each name needs its own.
+- **A fixed address for TrueNAS.** The records point to one address, so the server keeps it: a
+  fixed IP address in UniFi, or a DHCP reservation in another DNS server.
+- **Clients ask the local DNS server.** Every network hands out the gateway as its DNS server, which
+  is the UniFi default. Browsers keep a secure DNS setting that falls back to it
+  ([Browsers and DNS over HTTPS](#browsers-and-dns-over-https)), and the TrueNAS server stays out of
+  every UniFi Content Filter and Ad Blocking policy, which would redirect the DNS queries of the
+  certificate checks ([Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection)).
+- **No public records.** The public zone at your DNS provider holds no record for the lab names.
+  Caddy obtains the certificates through the DNS-01 challenge, which only needs an API token for
+  the zone and writes a temporary TXT record under `_acme-challenge`. If the zone has a wildcard
+  record, one marker record at the lab domain keeps it from answering for the lab names
+  ([Check the public zone](#check-the-public-zone)).
+- **IPv4 only.** The names get no AAAA records, so clients with IPv6 connect over IPv4.
 
 ### Server ports
+
+The stack needs three ports on the server, all for Caddy: 80/tcp, 443/tcp and 443/udp. Nothing else
+may hold them. The TrueNAS web interface and the other services of the server keep their own
+ports. Before anything is installed, Chapter 3 runs `tools/port-inventory.sh`, which lists every
+listening port, the ports that containers publish and the web interface's ports, and says whether
+the three ports are free ([Check the ports for the edge proxy](#check-the-ports-for-the-edge-proxy)).
+The web interface moves only if it holds port 80 or 443, as it does after a new TrueNAS
+installation.
 
 Table: Ports published on the TrueNAS server
 
@@ -329,7 +359,7 @@ Table: Ports published on the TrueNAS server
 | 443/tcp | `caddy` (`ai-edge`) | HTTPS for every host name |
 | 443/udp | `caddy` (`ai-edge`) | HTTP/3 for every host name |
 | 80/tcp | `caddy` (`ai-edge`) | Redirects to HTTPS |
-| 8443/tcp, 8080/tcp | TrueNAS web interface | Moved from 443 and 80 in Chapter 3 ([Change the web interface ports](#change-the-web-interface-ports)) |
+| `<ui-https-port>`/tcp, `<ui-http-port>`/tcp | TrueNAS web interface | Its own ports, other than 80 and 443: `444` and `81` in this guide's examples ([Change the web interface ports](#change-the-web-interface-ports), only if it holds 80 or 443) |
 | 22/tcp | SSH | Administration and deployment from the workstation |
 | 445/tcp | SMB | The `rag-docs` document share |
 
@@ -381,7 +411,7 @@ Table: Outbound connections
 | Hugging Face and the servers it redirects downloads to | TrueNAS | 443/tcp | Downloading the model files |
 | GitHub (`github.com`) | TrueNAS and the workstation | 443/tcp | Cloning and updating the repository; release assets |
 | Your DNS provider's API and the ACME certificate authority | `caddy` | 443/tcp | Issuing and renewing certificates (DNS-01) |
-| Public DNS resolvers `1.1.1.1` and `1.0.0.1`, or the ones you set in `ACME_RESOLVERS` | `caddy` | 53/udp and 53/tcp | Checking the challenge record during DNS-01. A firewall that blocks or redirects outbound DNS to these addresses breaks certificate issuance |
+| Public DNS resolvers `1.1.1.1` and `1.0.0.1`, or the ones you set in `ACME_RESOLVERS` | `caddy` | 53/udp and 53/tcp | Checking the challenge record during DNS-01. A firewall that blocks or redirects outbound DNS to these addresses breaks certificate issuance, and so does a UniFi Content Filter or Ad Blocking policy that covers the server |
 | Public search engines | `searxng` | 443/tcp | Web search |
 | Any public web server whose page a tool is asked to read | `mcp-hub` (its `fetch` and `web_url_read` tools) and `open-webui` on TrueNAS; OpenCode's `webfetch` on the workstation | 443/tcp, and 80/tcp for `http://` addresses | Reading web pages and remote documents for the models |
 | npm registry (`registry.npmjs.org`) | The workstation | 443/tcp | Installing OpenCode, `ssh-mcp` and, optionally, Qwen Code |
@@ -400,6 +430,7 @@ Table: Accounts and credentials you provide
 | A domain at a supported DNS provider | Host names and certificates (`LAB_DOMAIN`, `DNS_PROVIDER`) | The edge image includes the modules `cloudflare`, `route53`, `digitalocean`, `porkbun`, `namecheap`, `duckdns`, `desec` and `ovh` |
 | An API token for that DNS zone | DNS-01 challenge (`DNS_PROVIDER_TOKEN`) | Scope it to the one zone. Some providers need more than one credential; Chapter 5 names the variables ([Credentials by DNS provider](#credentials-by-dns-provider)) |
 | An email address | ACME account of the certificates (`ACME_EMAIL`) | |
+| An administrator login to the UniFi Network application, or to your local DNS server | The local DNS records, the server's fixed address and the Content Filter check (Chapter 5) | |
 | The TrueNAS administrator `truenas_admin`, with the workstation's SSH public key | Shell access and deployment over SSH | **Credentials** > **Users**: **Public SSH Key** and **SSH Access** |
 | An SMB user | Copying documents to the `rag-docs` share | An SMB share cannot be reached as `root` or a built-in user |
 | Two TrueNAS API keys, roles READONLY_ADMIN and FULL_ADMIN | `tools/deploy.py`: the read-only key for plan, drift and status; the full key only for apply | Created in Chapter 3 ([Create TrueNAS API keys for deploy.py](#create-truenas-api-keys-for-deploypy)) and stored in `~/.config/local-agent-stack/` on the workstation; Chapter 10 configures `deploy.py` with them |
@@ -467,8 +498,9 @@ the exposure and the credentials; the linked sections give the details and the p
 - Caddy closes every connection from an address outside `EDGE_ALLOWED_CIDRS`, by default the
   private address ranges ([LAN-only access guard](#lan-only-access-guard)). TrueNAS has no host
   firewall in its web interface, so do not forward any port from your router to the server.
-- The TrueNAS web interface (8443 and 8080), SSH (22) and SMB (445) are TrueNAS's own services.
-  Caddy does not proxy them, and its guard does not apply to them.
+- The TrueNAS web interface (`<ui-https-port>` and `<ui-http-port>`, 444 and 81 in this guide's
+  examples), SSH (22) and SMB (445) are TrueNAS's own services. Caddy does not proxy them, and its
+  guard does not apply to them.
 - The containers reach each other by name on `ai-net`; their ports are not published.
 - The connections that leave the LAN are listed in [Outbound connections](#outbound-connections).
 
@@ -511,9 +543,13 @@ Table: Pre-deployment checklist
 | The apps pool is on SSD or NVMe | **Apps** > **Configuration** > **Choose Pool** | ☐ |
 | The apps pool has at least 36 GB free for models, plus room for images | **Storage** | ☐ |
 | SSH from the workstation to `truenas_admin` works with a key | `ssh truenas_admin@192.0.2.10` from `c4dev`, or set it up in Chapter 3 ([Enable SSH access to TrueNAS](#enable-ssh-access-to-truenas)) | ☐ |
-| Ports 80 and 443 on the server can be given to Caddy | Chapter 3 moves the TrueNAS web interface to 8080 and 8443 ([Move the TrueNAS web UI to ports 8080 and 8443](#move-the-truenas-web-ui-to-ports-8080-and-8443)) | ☐ |
+| Ports 80/tcp, 443/tcp and 443/udp on the server are free for Caddy | Chapter 3 runs the port inventory ([Run the port inventory](#run-the-port-inventory)); the TrueNAS web interface keeps its own ports and moves only if it holds 80 or 443 | ☐ |
 | The Docker address pool does not overlap your LAN | **Apps** > **Installed** > **Configuration** > **Settings** | ☐ |
-| You can add A records in your local DNS server or router | Your router or DNS server | ☐ |
+| You can add A records in your local DNS server | UniFi Network 9.4 or later: **Settings** > **Control Plane** > **Updates** shows the version, and the records go in **Settings** > **Policy Table**; or your DNS server (Chapter 5, [Add the host names to local DNS](#add-the-host-names-to-local-dns)) | ☐ |
+| The TrueNAS server has a fixed LAN address | UniFi: **Client Devices** > the server > **Settings** > **Fixed IP Address** (Chapter 5, [Give the TrueNAS server a fixed IP address](#give-the-truenas-server-a-fixed-ip-address)) | ☐ |
+| The clients' networks hand out the gateway as DNS server | UniFi: **Settings** > **Networks** > **DNS Server** at its default (Chapter 5, [Check the DNS server of each network](#check-the-dns-server-of-each-network)) | ☐ |
+| No UniFi Content Filter or Ad Blocking policy covers the TrueNAS server | **Settings** > **CyberSecure** > **Content Filter**, the **Source** of each policy (Chapter 5, [Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection)) | ☐ |
+| The public zone holds no record for the lab names, and no wildcard answers for them | Chapter 5, [Check the public zone](#check-the-public-zone) | ☐ |
 | Your domain is at a supported DNS provider, with an API token for the zone | Your DNS provider | ☐ |
 | The server can reach the internet for images, models and certificates, including DNS to `1.1.1.1` and `1.0.0.1` on port 53 | [Outbound connections](#outbound-connections) | ☐ |
 | The workstation has Git, the OpenSSH client, `curl`, `tar`, `openssl` and Python 3.11 or later with `venv` | `git --version`, `ssh -V`, `python3 --version` on the workstation ([Workstation requirements](#workstation-requirements)) | ☐ |
