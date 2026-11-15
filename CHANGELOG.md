@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `tools/port-inventory.sh`: a read-only check, run on TrueNAS, that ports 80/tcp, 443/tcp and 443/udp are free for Caddy; the guide keeps the TrueNAS web interface on its own ports (444 in the examples) (#31).
+
 ## v1.1 (2026-11-15)
 
 - MCP hub: the knowledge-base server's zod is lifted to 4.6.7, fixing a memory-exhaustion advisory (high) in zod 3.x (#25).

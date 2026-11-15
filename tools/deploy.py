@@ -117,10 +117,13 @@ not detected (redeploy those apps by hand); the env files are not read, and stat
 and `env -`. Turning the hashes back on makes every app an update once, which records them.
 
 The workstation's connection settings (~/.config/local-agent-stack/truenas.toml, mode 0600, never
-in the repository; the TrueNAS web interface and its API move to port 8443 in the guide's
-chapter 3):
+in the repository). The API is served by the TrueNAS web interface, so the port in uri is the web
+interface's HTTPS port: System > General Settings > GUI > Settings > Web Interface HTTPS Port
+(`midclt call system.general.config` shows it as ui_httpsport, and tools/port-inventory.sh prints
+it). Caddy needs 443, so it is another port: 444 in the guide's examples. deploy.py assumes no port;
+it connects to the uri as written.
 
-  uri = "wss://192.0.2.10:8443/api/current" # wss:// only: a key sent over ws:// is revoked
+  uri = "wss://192.0.2.10:444/api/current"  # wss:// only: a key sent over ws:// is revoked
   read_user = "deploy-read"                 # a user whose group's privilege is READONLY_ADMIN
   read_key_file = "truenas-read.key"        # relative to the config file's folder, mode 0600
   apply_user = "deploy-apply"               # a user whose group's privilege is FULL_ADMIN
@@ -514,7 +517,10 @@ def connect(args, role, client_factory=default_client_factory):
     except ConfigError:
         raise
     except Exception as error:
-        raise DeployError(f"cannot connect to the NAS: {error}") from error
+        raise DeployError(
+            f"cannot connect to the NAS: {error} (uri {settings.uri}: its port must be the TrueNAS web interface's"
+            " HTTPS port, System > General Settings > GUI)"
+        ) from error
     session = Session(client)
     try:
         answer = session.call(
