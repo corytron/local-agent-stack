@@ -11,6 +11,7 @@ chapters:
   - chapters/01-introduction.md
   - chapters/02-planning.md
   - chapters/03-truenas.md
+  - chapters/05-edge.md
   - chapters/06-rag-web.md
   - chapters/08-workflow.md
   - chapters/a-backup.md
