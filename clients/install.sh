@@ -302,7 +302,7 @@ install_ssh_mcp() {
 	say "ssh-mcp $SSH_MCP_VERSION (SSH tool, stdio, started by OpenCode per session)"
 	local node_version
 	if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-		note "skipped: Node.js $NODE_MIN or newer and npm are needed (on Ubuntu: sudo apt install nodejs npm)"
+		note "skipped: Node.js $NODE_MIN or newer and npm are needed (Ubuntu 26.04: sudo apt install nodejs npm; Ubuntu 24.04 ships Node 18, see guide chapter 7)"
 		return
 	fi
 	node_version=$(node --version)
