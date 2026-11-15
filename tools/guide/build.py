@@ -70,9 +70,34 @@ def nest_fences(text: str) -> str:
 	return "\n".join(out)
 
 
+INCLUDE = re.compile(r"^( *)\{\{\s*include\s+(\S+)(?:\s+lines=(\d+)-(\d+))?\s*\}\}\s*$", re.M)
+
+
+def expand_includes(text: str, path: str) -> str:
+	"""Replace `{{ include <repo-relative path> [lines=A-B] }}` with a fenced copy of that file.
+
+	The guide quotes stack/ and clients/ files this way, so the printed text is always the file
+	that ships (docs/guide-style.md). A missing file or line range fails the build.
+	"""
+	def repl(m: re.Match) -> str:
+		indent, rel = m.group(1), m.group(2)
+		src = ROOT / rel
+		if not src.is_file():
+			raise SystemExit(f"{path}: include of missing file {rel}")
+		lines = src.read_text(encoding="utf-8").rstrip("\n").split("\n")
+		if m.group(3):
+			a, b = int(m.group(3)), int(m.group(4))
+			if not 1 <= a <= b <= len(lines):
+				raise SystemExit(f"{path}: include {rel} lines={a}-{b} out of range (1-{len(lines)})")
+			lines = lines[a - 1:b]
+		body = "\n".join(indent + ln if ln else "" for ln in lines)
+		return f"{indent}```\n{body}\n{indent}```"
+	return INCLUDE.sub(repl, text)
+
+
 def render_chapter(path: str) -> dict:
 	"""Markdown -> {title, kind, html, headings[(level, id, text)]}; runs in a worker process."""
-	text = nest_fences(Path(path).read_text(encoding="utf-8"))
+	text = nest_fences(expand_includes(Path(path).read_text(encoding="utf-8"), path))
 	md = markdown.Markdown(extensions=EXTENSIONS, extension_configs=EXT_CONFIG)
 	body = md.convert(text)
 	meta = {k: " ".join(v) for k, v in md.Meta.items()}

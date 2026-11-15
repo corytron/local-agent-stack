@@ -78,6 +78,8 @@ needs more than one credential, the guide says which variables.
 | `tank/ai` | `/mnt/tank/ai` | parent | — |
 | `tank/ai/models` | `/mnt/tank/ai/models` | recordsize 1M, lz4, atime off, `primarycache=metadata`, no snapshots | `gguf/*.gguf` |
 | `tank/ai/appdata` | `/mnt/tank/ai/appdata/<service>` | Apps preset | per-service state |
+| `tank/ai/appdata/{litellm-db,pgvector}` | child datasets | Apps preset, recordsize 32K | PostgreSQL data (`PGDATA` = `<mount>/pgdata`) |
+| `tank/ai/appdata/{oikb,open-webui,caddy}` | child datasets | Apps preset | service state |
 | `tank/ai/rag-docs` | `/mnt/tank/ai/rag-docs` | SMB preset, share `rag-docs` | documents to index (mounted read-only) |
 | `tank/ai/stacks` | `/mnt/tank/ai/stacks/local-agent-stack` | default | git clone of this repo (release tag) |
 | `tank/ai/secrets` | `/mnt/tank/ai/secrets` | mode 0700 root | `<app>.env` files, never in git |
@@ -188,4 +190,5 @@ secret (stdlib `secrets`), leaving the reader-provided ones as placeholders.
 - `b-profiles.md` (appendix) Model profiles, alternatives and the memory upgrade
 - `c-parity.md` (appendix) Feature parity with Claude Code
 - `d-internal-ca.md` (appendix) TLS with an internal CA instead of DNS-01
-- `e-references.md` (appendix) References
+- `e-config-files.md` (appendix) Configuration file reference (every file the reader installs, via include)
+- `f-references.md` (appendix) References

@@ -10,7 +10,11 @@ legal: "Local Agent Stack is a personal project. Product names mentioned in this
 chapters:
   - chapters/01-introduction.md
   - chapters/02-planning.md
+  - chapters/03-truenas.md
   - chapters/08-workflow.md
+  - chapters/a-backup.md
   - chapters/b-profiles.md
   - chapters/c-parity.md
-  - chapters/e-references.md
+  - chapters/d-internal-ca.md
+  - chapters/e-config-files.md
+  - chapters/f-references.md

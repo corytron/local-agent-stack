@@ -149,6 +149,9 @@ services:
       POSTGRES_USER: litellm
       POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:?set LITELLM_DB_PASSWORD in inference.env}
       POSTGRES_DB: litellm
+      # One level below the mount, as pgvector in stack/rag does: initdb gets a directory it
+      # creates itself, whatever the dataset's ACL and hidden entries are.
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       # Dataset tank/ai/appdata/litellm-db (Apps preset; record size 32K suits PostgreSQL,
       # e-truenas §4). PostgreSQL 16 keeps its data in the image's VOLUME /var/lib/postgresql/data.

@@ -398,7 +398,7 @@ usage statistics until you turn them off.
 
 Qwen Code runs against the gateway with telemetry off. Project hooks go in `.qwen/settings.json`
 and run only after you approve them; subagents go in `.qwen/agents/<name>.md`. To add the MCP hub's
-servers, follow the Qwen Code MCP documentation (Appendix E).
+servers, follow the Qwen Code MCP documentation (Appendix F).
 
 ### Claude Code through the LiteLLM gateway
 
