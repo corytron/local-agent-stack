@@ -32,6 +32,12 @@ where those notes differ. Owner decisions: #7, #8.
 
 ## 2. TrueNAS apps, networks and services
 
+**Everything runs on TrueNAS** (owner, 2026-11-15). Workstations (c4dev, the Mac, the Windows VM)
+run only clients that the owner starts and stops: the OpenCode or Claude Code CLI, a browser, and
+the stdio MCP children (such as `ssh-mcp`) that the CLI spawns for a session. No service, daemon,
+container or timer of this stack runs on a workstation. Build agents may run short local tests
+(a `docker build`, `compose config`) and must remove what they create.
+
 All apps join the external Docker network **`ai-net`** (created once: `docker network create ai-net`
 from **System > Shell**; the guide gives the exact step). Container names are fixed so other apps
 reach them by name on `ai-net`.
@@ -58,7 +64,7 @@ first (guide chapter 3).
 
 DNS: the reader adds A records (local DNS / router) for these names → `192.0.2.10`. Certificates
 via DNS-01 with an API token scoped to the zone. Caddy env: `ACME_EMAIL`, `DNS_PROVIDER_TOKEN`,
-`LAB_DOMAIN` (e.g. `lab.example.com`); the Caddyfile uses `{$LAB_DOMAIN}` so no file edits.
+`LAB_DOMAIN` (e.g. `lab.example.com`); the owner uses **Cloudflare** (#8), so it is the default and the guide's worked example; the Caddyfile uses `{$LAB_DOMAIN}` so no file edits.
 The edge image `ghcr.io/corytron/local-agent-stack-caddy:<caddy-version>` is built by
 `.github/workflows/caddy-image.yml` with modules for: cloudflare, route53, digitalocean,
 porkbun, namecheap, duckdns, desec, ovh (names verified against caddy-dns org). The Caddyfile
@@ -138,6 +144,7 @@ secret (stdlib `secrets`), leaving the reader-provided ones as placeholders.
 - `clients/ssh-mcp/policy.example.*`: deny-by-default policy, one host allowed as an example.
 - `clients/templates/AGENTS.md` and `CLAUDE.md`: the project-memory template that reproduces the
   owner's working style (contracts, parallel agents capped at 2–3 on one GPU, GitHub flow).
+- No `opencode serve` daemon: the Mac runs its own CLI against `llm.lab.example.com`, or SSHes in.
 - `clients/install.sh`: installs/updates OpenCode at the pinned version and links the configs
   (idempotent; `--dry-run`).
 
@@ -158,7 +165,7 @@ secret (stdlib `secrets`), leaving the reader-provided ones as placeholders.
 - `renovate.json` (images incl. `server-cuda-bNNNN` style tags; CUDA ≤ 13.0 rule as a comment),
   `.github/dependabot.yml` (actions, pip), `.github/labels.json`.
 - `tools/deploy.py validate|plan|apply|drift|status` against `deploy/truenas.toml`
-  (desired release tag + apps), keys from `~/.config/local-agent-stack/` (READONLY_ADMIN for
+  (desired release tag + apps; `drift` runs on demand and after every `apply`, or from a TrueNAS cron job, never a workstation timer), keys from `~/.config/local-agent-stack/` (READONLY_ADMIN for
   plan/drift/status, FULL_ADMIN only for apply). `tools/bench.sh` (llama-bench sweep, run on the
   NAS shell) and `tools/smoke.py` (end-to-end checks of every endpoint from the workstation).
 

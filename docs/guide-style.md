@@ -66,10 +66,12 @@ Callouts (indented four spaces under the line):
 Tables: a paragraph `Table: <Title>` directly above a pipe table; the build numbers tables
 across the guide ("Table 7. Port assignments"). Keep tables to 2-5 columns.
 
-Code: fenced blocks with no language tag needed. Long lines wrap in print; prefer breaking
+Code: fenced blocks with no language tag needed, also inside numbered steps (indent the fence
+with the step; the build nests it). Long lines wrap in print; prefer breaking
 commands with `\`.
 
 Figures: `<figure markdown><img src="../figures/x.svg"><figcaption>Figure: ...</figcaption></figure>`
+(the build numbers them "Figure N." and resolves `../figures/` to `guide/figures/`)
 (only when a diagram genuinely helps; inline SVG under `guide/figures/`).
 
 ## Accuracy

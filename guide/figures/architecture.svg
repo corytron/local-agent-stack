@@ -1,0 +1,201 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" width="960" height="640" role="img" aria-labelledby="title desc">
+<title id="title">Local Agent Stack architecture</title>
+<desc id="desc">LAN clients reach Caddy on the TrueNAS server over HTTPS. Caddy forwards to four TrueNAS custom apps on the external Docker network ai-net: ai-edge, ai-inference, ai-web and ai-rag. Only llama-swap uses the GPU. The workstation runs OpenCode and ssh-mcp, which reaches remote hosts over SSH.</desc>
+<defs>
+<style>
+text { font-family: Lato, "Liberation Sans", "DejaVu Sans", Arial, sans-serif; fill: #000; }
+.b { font-weight: 700; }
+.s11 { font-size: 11px; }
+.s12 { font-size: 12px; }
+.s13 { font-size: 13px; }
+.s14 { font-size: 14px; }
+.blue { fill: #0672cb; }
+.white { fill: #fff; }
+.muted { fill: #444; }
+.app { fill: #e8f2fb; stroke: #0672cb; stroke-width: 1.5; }
+.svc { fill: #fff; stroke: #0b5394; stroke-width: 1; }
+.host { fill: #fff; stroke: #444; stroke-width: 1.3; }
+.store { fill: #f4f4f4; stroke: #444; stroke-width: 1.3; }
+.ln { stroke: #0672cb; stroke-width: 1.8; fill: none; }
+.dash { stroke-dasharray: 5 4; }
+.gray { stroke: #444; }
+</style>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" fill="#0672cb"/>
+</marker>
+<marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" fill="#444"/>
+</marker>
+</defs>
+
+<!-- internet (outbound only) -->
+<rect x="262" y="8" width="690" height="34" rx="3" fill="none" stroke="#444" stroke-width="1.3" class="dash"/>
+<text x="607" y="30" text-anchor="middle" class="s13">Internet (outbound only): search engines, DNS provider API (DNS-01), image and model downloads</text>
+<path d="M607,60 V44" class="ln dash gray" marker-end="url(#arrow-gray)"/>
+
+<!-- LAN clients -->
+<text x="10" y="79" class="s14 b blue">LAN clients</text>
+
+<rect x="10" y="104" width="195" height="150" class="host"/>
+<text x="18" y="122" class="s13 b">Workstation c4dev</text>
+<text x="18" y="138" class="s12">192.0.2.20 (Ubuntu)</text>
+<rect x="20" y="148" width="175" height="28" class="svc"/>
+<text x="28" y="166" class="s12 b">OpenCode 2.3.0 (primary)</text>
+<rect x="20" y="182" width="175" height="28" class="svc dash"/>
+<text x="28" y="200" class="s12">Claude Code (optional)</text>
+<rect x="20" y="216" width="175" height="28" class="svc"/>
+<text x="28" y="234" class="s12">ssh-mcp 2.26.0 (stdio)</text>
+
+<rect x="10" y="272" width="195" height="62" class="host"/>
+<text x="18" y="290" class="s13 b">Mac</text>
+<text x="18" y="306" class="s12">SSH to c4dev, or OpenCode</text>
+<text x="18" y="322" class="s12">client over an SSH tunnel</text>
+<path d="M108,272 V257" class="ln" marker-end="url(#arrow)"/>
+<text x="116" y="268" class="s11 muted">SSH</text>
+
+<rect x="10" y="352" width="195" height="50" class="host"/>
+<text x="18" y="370" class="s13 b">Browsers</text>
+<text x="18" y="386" class="s12">Open WebUI, admin pages</text>
+
+<rect x="10" y="470" width="195" height="62" class="host"/>
+<text x="18" y="488" class="s13 b">Remote hosts</text>
+<text x="18" y="504" class="s12">restricted agent user,</text>
+<text x="18" y="520" class="s12">reached only by ssh-mcp</text>
+<path d="M20,230 H6 V501 H9" class="ln" marker-end="url(#arrow)"/>
+
+<rect x="10" y="556" width="195" height="62" class="store"/>
+<text x="18" y="574" class="s13 b">Local DNS (router)</text>
+<text x="18" y="590" class="s12">chat. llm. mcp. models.</text>
+<text x="18" y="606" class="s12">search. → 192.0.2.10</text>
+
+<!-- HTTPS from clients to caddy -->
+<path d="M205,162 H287" class="ln" marker-end="url(#arrow)"/>
+<text x="209" y="156" class="s11 muted">HTTPS</text>
+<path d="M205,377 H240 V190 H287" class="ln" marker-end="url(#arrow)"/>
+<text x="207" y="371" class="s11 muted">HTTPS</text>
+
+<!-- TrueNAS server -->
+<rect x="262" y="60" width="690" height="570" fill="#fff" stroke="#0672cb" stroke-width="2"/>
+<rect x="262" y="60" width="690" height="28" fill="#0672cb"/>
+<text x="274" y="79" class="s14 b white">TrueNAS SCALE 25.10.8  ·  192.0.2.10  ·  truenas.lab.example.com</text>
+
+<!-- ai-edge -->
+<rect x="278" y="104" width="140" height="150" class="app"/>
+<text x="286" y="122" class="s14 b blue">ai-edge</text>
+<rect x="288" y="130" width="120" height="72" class="svc"/>
+<text x="296" y="147" class="s13 b">caddy</text>
+<text x="296" y="163" class="s12">:443, :80</text>
+<text x="296" y="178" class="s12">chat. llm. mcp.</text>
+<text x="296" y="193" class="s12">models. search.</text>
+<rect x="288" y="210" width="120" height="36" class="svc"/>
+<text x="296" y="225" class="s13 b">gpu-exporter</text>
+<text x="296" y="240" class="s12">:9835</text>
+
+<!-- GPU -->
+<rect x="278" y="262" width="140" height="56" fill="#0672cb"/>
+<text x="286" y="283" class="s13 b white">RTX 4080 16 GB</text>
+<text x="286" y="301" class="s12 white">driver 580.173.02</text>
+<path d="M418,274 H552 V257" class="ln dash" marker-end="url(#arrow)"/>
+
+<!-- host services -->
+<rect x="278" y="332" width="140" height="96" class="host"/>
+<text x="286" y="350" class="s13 b">TrueNAS host</text>
+<text x="286" y="367" class="s12">Web UI :8080, :8443</text>
+<text x="286" y="383" class="s12">SSH :22</text>
+<text x="286" y="399" class="s12">SMB :445</text>
+<text x="286" y="415" class="s12">System &gt; Shell</text>
+
+<!-- storage -->
+<rect x="278" y="442" width="140" height="176" class="store"/>
+<text x="286" y="460" class="s13 b">Pool tank (ZFS)</text>
+<text x="286" y="478" class="s12">ai/models (GGUF)</text>
+<text x="286" y="494" class="s12">ai/appdata</text>
+<text x="286" y="510" class="s12">ai/rag-docs (SMB)</text>
+<text x="286" y="526" class="s12">ai/stacks (git)</text>
+<text x="286" y="542" class="s12">ai/secrets (.env)</text>
+<text x="286" y="566" class="s11 muted">bind-mounted into</text>
+<text x="286" y="580" class="s11 muted">the apps</text>
+
+<!-- ai-net bus -->
+<rect x="432" y="104" width="16" height="514" fill="#b6b6b6"/>
+<text transform="translate(444,361) rotate(-90)" text-anchor="middle" class="s12 b">ai-net (external Docker network)</text>
+<line x1="408" y1="158" x2="432" y2="158" class="ln"/>
+<line x1="408" y1="228" x2="432" y2="228" class="ln"/>
+<path d="M448,184 H461" class="ln" marker-end="url(#arrow)"/>
+<path d="M448,341 H461" class="ln" marker-end="url(#arrow)"/>
+<path d="M448,473 H461" class="ln" marker-end="url(#arrow)"/>
+
+<!-- ai-inference -->
+<rect x="462" y="104" width="480" height="160" class="app"/>
+<text x="470" y="122" class="s14 b blue">ai-inference</text>
+<rect x="472" y="130" width="160" height="124" class="svc"/>
+<text x="480" y="148" class="s13 b">llama-swap</text>
+<text x="480" y="164" class="s12">:8080</text>
+<text x="480" y="180" class="s12">llama.cpp b12407</text>
+<text x="480" y="196" class="s12">GPU, one at a time:</text>
+<text x="480" y="212" class="s12">coder | coder-moe</text>
+<text x="480" y="228" class="s12">CPU: embed | rerank</text>
+<rect x="642" y="130" width="160" height="124" class="svc"/>
+<text x="650" y="148" class="s13 b">litellm</text>
+<text x="650" y="164" class="s12">:4000</text>
+<text x="650" y="180" class="s12">OpenAI /v1</text>
+<text x="650" y="196" class="s12">Anthropic /v1/messages</text>
+<text x="650" y="212" class="s12">virtual keys,</text>
+<text x="650" y="228" class="s12">spend logs</text>
+<rect x="812" y="130" width="120" height="124" class="svc"/>
+<text x="820" y="148" class="s13 b">litellm-db</text>
+<text x="820" y="164" class="s12">:5432</text>
+<text x="820" y="180" class="s12">PostgreSQL 16.13</text>
+<path d="M642,214 H633" class="ln" marker-end="url(#arrow)"/>
+<path d="M802,214 H811" class="ln" marker-end="url(#arrow)"/>
+
+<!-- ai-web -->
+<rect x="462" y="284" width="480" height="114" class="app"/>
+<text x="470" y="302" class="s14 b blue">ai-web</text>
+<rect x="472" y="310" width="160" height="80" class="svc"/>
+<text x="480" y="327" class="s13 b">open-webui</text>
+<text x="480" y="343" class="s12">:8080</text>
+<text x="480" y="359" class="s12">Open WebUI v0.13.3</text>
+<text x="480" y="375" class="s12">chat, RAG, MCP client</text>
+<rect x="642" y="310" width="130" height="80" class="svc"/>
+<text x="650" y="327" class="s13 b">searxng</text>
+<text x="650" y="343" class="s12">:8080</text>
+<text x="650" y="359" class="s12">metasearch, JSON</text>
+<rect x="782" y="310" width="150" height="80" class="svc"/>
+<text x="790" y="327" class="s13 b">mcp-hub</text>
+<text x="790" y="343" class="s12">:8096</text>
+<text x="790" y="359" class="s12">mcp-proxy v0.15.0</text>
+<text x="790" y="375" class="s12">searxng, fetch, kb</text>
+
+<!-- ai-rag -->
+<rect x="462" y="414" width="480" height="118" class="app"/>
+<text x="470" y="432" class="s14 b blue">ai-rag</text>
+<rect x="472" y="440" width="160" height="82" class="svc"/>
+<text x="480" y="457" class="s13 b">pgvector</text>
+<text x="480" y="473" class="s12">:5432</text>
+<text x="480" y="489" class="s12">pgvector 0.8.7, pg17</text>
+<text x="480" y="505" class="s12">Open WebUI DB, vectors</text>
+<rect x="642" y="440" width="130" height="82" class="svc"/>
+<text x="650" y="457" class="s13 b">docling</text>
+<text x="650" y="473" class="s12">:5001</text>
+<text x="650" y="489" class="s12">docling-serve-cpu</text>
+<text x="650" y="505" class="s12">v1.38.2</text>
+<rect x="782" y="440" width="150" height="82" class="svc"/>
+<text x="790" y="457" class="s13 b">oikb</text>
+<text x="790" y="473" class="s12">sync daemon 0.6.0</text>
+<text x="790" y="489" class="s12">rag-docs (read-only)</text>
+<text x="790" y="505" class="s12">to knowledge bases</text>
+
+<!-- legend -->
+<rect x="462" y="548" width="480" height="70" fill="none" stroke="#b6b6b6" stroke-width="1"/>
+<rect x="472" y="561" width="22" height="14" class="app"/>
+<text x="500" y="573" class="s12">TrueNAS custom app</text>
+<rect x="632" y="561" width="22" height="14" class="svc"/>
+<text x="660" y="573" class="s12">container, port on ai-net</text>
+<rect x="822" y="561" width="22" height="14" fill="#b6b6b6"/>
+<text x="850" y="573" class="s12">Docker network</text>
+<path d="M472,598 H494" class="ln" marker-end="url(#arrow)"/>
+<text x="500" y="602" class="s12">request path</text>
+<path d="M632,598 H654" class="ln dash" marker-end="url(#arrow)"/>
+<text x="660" y="602" class="s12">GPU use, outbound traffic</text>
+</svg>

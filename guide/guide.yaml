@@ -9,3 +9,5 @@ wordmark: "<b>LOCAL</b>AgentStack"
 legal: "Local Agent Stack is a personal project. Product names mentioned in this guide are trademarks of their respective owners and are used for identification only; no affiliation or endorsement is implied."
 chapters:
   - chapters/01-introduction.md
+  - chapters/02-planning.md
+  - chapters/c-parity.md
