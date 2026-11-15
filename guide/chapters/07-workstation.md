@@ -596,6 +596,22 @@ Table: Models in the OpenCode configuration
   nothing. `local-coder-moe` swaps the GPU model for every client. Use it for a whole session that
   starts no subagents: the four agent definitions name `local/local-coder`, and each subagent
   request would load `coder` back.
+- All three models declare image input (`"input": ["text", "image"]` under `capabilities`). The
+  server's models read images through their vision projectors on the CPU, about 11 seconds per
+  image (estimate). Without the list, OpenCode would assume text and image input for a model it
+  does not know; the list states it and leaves out PDF.
+- **Images in a session.** OpenCode sends PNG, JPEG, GIF and WebP images that you attach (in the
+  terminal: type `@` and pick the file; in the desktop and web clients: attach the file, paste it
+  or drag it into the window), and images that its read tool opens. It first scales each image
+  down to fit 2,000 x 2,000 pixels and 5 MiB of base64, its defaults, which the configuration
+  keeps. One image token covers 32 x 32 pixels, so a full-size image takes up to 4,096 tokens of
+  the 64K window. When the images of a session add up to more than 25 MiB, OpenCode replaces the
+  oldest with a note that the image was removed.
+- **No PDF.** `llama-server` accepts no PDF input. Because the models do not declare `pdf`,
+  OpenCode replaces an attached PDF with the error text
+  `Cannot read "<file>" (this model does not support pdf input)` for the model, which tells you,
+  instead of failing the request. Convert the PDF to text first, or put it in the knowledge base
+  (Chapter 6).
 - `"websearch": false` and the `websearch.use` policy remove OpenCode's built-in web search, which
   supports paid providers only. Web search goes through the SearXNG tool on the hub.
 - `"update": "disable"` turns off update checks, and `"share": "disabled"` turns off session
@@ -1224,6 +1240,53 @@ indexed (Chapter 6).
 
 The agent searches the web through SearXNG, reads pages and queries the same index as Open WebUI.
 
+### Send an image to OpenCode
+
+#### Prerequisites
+
+- [Check the vision projector](#check-the-vision-projector) in Chapter 4 passed.
+- The clone at `~/local-agent-stack` holds the release's test image, `evals/images/maple-74.png`
+  (640 x 160 pixels, the text `MAPLE 74` in black capital letters).
+
+#### About this task
+
+The terminal client attaches a file when you type `@` and pick it from the list; the desktop and
+web clients attach a file through their attach button, by pasting an image, or by dragging it into
+the window. The model also sees an image when the agent opens one with its read tool, for example
+a screenshot that a test wrote.
+
+#### Steps
+
+1. Start OpenCode in the clone:
+
+        cd ~/local-agent-stack
+        opencode
+
+2. In the message box, type `@evals/images/maple` and select `evals/images/maple-74.png` in the
+   list that appears.
+
+    The file is attached to the message.
+
+3. Complete the message and send it:
+
+        What text does this image show? Reply with the text only.
+
+    The answer is `MAPLE 74`. It takes several seconds longer than a text answer, because the
+    server's CPU encodes the image first.
+
+4. Exit OpenCode, start `opencode` again in the clone for a new session, and let the agent open the
+   image with its read tool:
+
+        Read the file evals/images/maple-74.png and tell me the text it shows.
+
+    The session shows a call to the read tool, and the answer is `MAPLE 74`.
+
+#### Results
+
+OpenCode sends images to the local models, both as attachments and through its read tool. An
+answer that says the model cannot read images means that the model was started without its
+projector; check it with [Check the vision projector](#check-the-vision-projector).
+
 ### Test the SSH tool in a session
 
 #### Prerequisites
@@ -1390,7 +1453,8 @@ The Mac runs its own OpenCode against `https://llm.lab.example.com`, with the sa
 `unsupported OS`. The Windows VM therefore uses the agent in one of these ways:
 
 - Log in to `c4dev` over SSH and run `opencode` there (next task).
-- Use Open WebUI at `https://chat.lab.example.com` in a browser for chat, retrieval and web search.
+- Use Open WebUI at `https://chat.lab.example.com` in a browser for chat, retrieval, web search and
+  images.
 
 Running the installer inside the Windows Subsystem for Linux is not covered: the files of this
 release neither detect nor document it, and it has not been tested.
@@ -1484,8 +1548,8 @@ Table: Limits of Claude Code with the local gateway
 | Context | 65,536 tokens against 200,000 or more on Claude. Claude Code's first request alone carries 11,375 tokens (5,340 for OpenCode), so expect frequent compaction |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Do not set it. It accepts only 100,000 to 1,000,000 tokens, so it cannot describe a 65,536-token window, although LiteLLM's Claude Code tutorial suggests it. `CLAUDE_CODE_MAX_CONTEXT_TOKENS` sets the window instead |
 | Prompt caching | `cache_control` markers have no effect. llama-server reuses the unchanged start of the prompt by itself, from its slot and its prompt cache in host RAM; `CLAUDE_CODE_ATTRIBUTION_HEADER=0` keeps that start unchanged. Appendix C compares it with OpenCode ([Agent loop and context window](#agent-loop-and-context-window)) |
-| Images and screenshots | Not available: the stack's models run without a vision projector (`--no-mmproj`), so they cannot read images ([Images and PDF reading](#images-and-pdf-reading)) |
-| PDF documents | Not verified: whether llama.cpp accepts the PDF `document` blocks that Claude Code sends is unknown. Convert a PDF to text first, or put it in the knowledge base (Chapter 6) |
+| Images and screenshots | Available on all three model names: drag an image into the terminal, paste it with Ctrl+V, or name its path in the prompt. The server's CPU encodes each image, about 11 seconds per image (estimate), and an image takes up to 4,096 tokens of the window ([Send an image to Claude Code](#send-an-image-to-claude-code); [Images and PDF reading](#images-and-pdf-reading)) |
+| PDF documents | Not available: Claude Code sends a PDF as a `document` block, which `llama-server` drops without an error, so the PDF never reaches the model and the answer cannot draw on it. Convert a PDF to text first, or put it in the knowledge base (Chapter 6) |
 | Tool use | Weaker than on Claude: malformed arguments and loops are more common |
 | `/cost` | Meaningless; LiteLLM's usage logs record tokens and durations per key |
 | Subagents | Run two at a time, or three when one is a short read-only researcher; one GPU serves every agent ([Concurrency on one 16 GB GPU](#concurrency-on-one-16-gb-gpu)) |
@@ -1536,6 +1600,52 @@ Table: Limits of Claude Code with the local gateway
 
 Claude Code runs against the local gateway when you start it with `claude-local`, and against
 Anthropic when you start it with `claude`.
+
+### Send an image to Claude Code
+
+#### Prerequisites
+
+- [Check the vision projector](#check-the-vision-projector) in Chapter 4 passed; its Anthropic
+  format step sends an image the way Claude Code does.
+- `claude-local` works ([Start Claude Code with claude-local](#start-claude-code-with-claude-local)).
+
+#### About this task
+
+Claude Code needs no setting for images. Its documentation names three ways to give it one: drag
+the image file into the terminal window, paste an image from the clipboard with Ctrl+V (also on
+macOS), or name the image's path in the prompt. It sends the image to `/v1/messages` as an image
+block, which LiteLLM passes to `llama-server` unchanged.
+
+!!! note
+    Images through `claude-local` were not tested for this release. That Claude Code sends images
+    to a model name it does not know is assumed: its source is not public, and none of its
+    documented settings ties images to a model.
+
+#### Steps
+
+1. Start Claude Code in the clone:
+
+        cd ~/local-agent-stack
+        claude-local
+
+2. Enter a prompt that names the release's test image by its path:
+
+        What text does the image evals/images/maple-74.png show? Reply with the text only.
+
+    Claude Code reads the file and sends it to the model. The answer is `MAPLE 74`, several seconds
+    later than a text answer, because the server's CPU encodes the image first.
+
+3. Optionally, copy a screenshot to the clipboard, press Ctrl+V in the prompt, ask what the
+   screenshot shows, and send the prompt.
+
+    The answer describes the screenshot.
+
+#### Results
+
+Claude Code sends images to the local model through the gateway. If the model answers that it
+cannot see an image, check the projector with
+[Check the vision projector](#check-the-vision-projector). PDFs are not read
+([Limits of Claude Code on local models](#limits-of-claude-code-on-local-models)).
 
 ### Add the hub tools to Claude Code
 

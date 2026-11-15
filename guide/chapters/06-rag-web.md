@@ -43,6 +43,7 @@ Table: Order of the tasks in this chapter
 | 4 | Create the administrator account and check the settings | `ai-edge` running with a certificate (Chapter 5) |
 | 5 | Create the service users, the knowledge base and their keys; redeploy both apps | Steps 2 to 4 |
 | 6 | Add documents; verify web search and the MCP hub | Step 5 |
+| 7 | Check images, chat files and memory in Open WebUI | Step 4; the vision projector checked in Chapter 4 |
 
 ### Containers of the RAG and web apps
 
@@ -93,11 +94,14 @@ Table: Open WebUI variables by when they are read
 | First start: retrieval | Every `RAG_*` and `CHUNK_*` variable, `ENABLE_RAG_HYBRID_SEARCH`, `ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER` | **Admin Panel** > **Settings** > **Documents** |
 | First start: extraction | `CONTENT_EXTRACTION_ENGINE`, `DOCLING_SERVER_URL`, `DOCLING_API_KEY` | **Admin Panel** > **Settings** > **Documents** |
 | First start: web search | `ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE`, `SEARXNG_QUERY_URL`, `WEB_SEARCH_RESULT_COUNT` | **Admin Panel** > **Settings** > **Web Search** |
+| First start: memory | `ENABLE_MEMORIES`, `ENABLE_MEMORY_SYSTEM_CONTEXT`, `ENABLE_MEMORY_BACKGROUND_REVIEW` | **Admin Panel** > **Settings** > **General** for the first two; the third has no switch in the **Admin Panel**, so its first-start value, off, stays |
 
 The environment of the `open-webui` service in `stack/web/compose.yaml` holds both groups. The
-first block is read at every start; the second block seeds the database once:
+first block is read at every start; the second block seeds the database once. The memory values
+and the comments on chat attachments at its end are explained in
+[Images and memory in Open WebUI](#images-and-memory-in-open-webui):
 
-{{ include stack/web/compose.yaml lines=41-122 }}
+{{ include stack/web/compose.yaml lines=41-144 }}
 
 Some of these values come from `web.env`. The following table shows what each variable of the file
 feeds and what it must hold before the first start of `ai-web`.
@@ -530,7 +534,7 @@ Compose pulls the image when it installs the app. This task pulls it first, so t
 here and not as a failed installation. If the pull fails, build the image on the server instead
 with [Build the MCP hub image on TrueNAS](#build-the-mcp-hub-image-on-truenas).
 
-{{ include stack/web/compose.yaml lines=166-206 }}
+{{ include stack/web/compose.yaml lines=188-228 }}
 
 !!! note
     If the `image:` line of `mcp-hub` in `stack/web/compose.yaml` of your clone names the tag
@@ -1484,6 +1488,258 @@ The hub's tools are available in chats; the model sees them as `<server id>_<too
     reports that it failed to connect while its function name filter list is empty, enter a single
     comma (`,`) in that list.
 
+## Images and memory in Open WebUI
+
+Open WebUI sends images to every chat model whose **Vision** capability is on, and keeps a memory
+of notes for each user that reaches the model in every chat. Both work after the first start
+without a click: the chat models read images through the vision projectors of Chapter 4, and every
+memory setting except the background review is on by default. A file dropped into a chat stays
+with that chat and never joins a knowledge base by itself. This topic explains the settings and
+checks each feature.
+
+!!! note
+    The labels in this topic (**Memories**, **Memory System Context**, **Personalization**,
+    **Memory**, **Add Memory**, **Manage**, **Capabilities**, **Vision**, **Model Defaults**,
+    **Model Capabilities**, **Image Compression Width**, **Image Compression Height**, **More**,
+    **Upload Files**, **Function Calling**, **Native** and **Legacy**) were read from the Open WebUI 0.13.3 source and its English texts, not
+    clicked in a running Open WebUI. That clicking a model on the **Models** page opens its editor,
+    and where the **More** button sits in the message box, were also read from the source. If a
+    label differs, look for the setting with the same meaning on the same page.
+
+### Images and files in a chat
+
+Open WebUI offers image upload for a model when the model's **Vision** capability is on. A model
+without saved settings counts as able to read images, and the `local-*` models arrive from the
+LiteLLM connection without saved settings, so images work at once. The capability is set per
+model (**Admin Panel** > **Settings** > **Models**, the model, **Capabilities**), and the default
+for every model under **Model Defaults** > **Model Capabilities** on the same page; a model's own
+setting wins over the default.
+
+Table: What happens to a file dropped into a chat
+
+| File | What Open WebUI does | Where it is used |
+|---|---|---|
+| An image | Stores it as a file of the chat without text extraction. Before it calls the model, it replaces the image's address with the image itself (a base64 `data:` URL), so `llama-server` never fetches anything | Sent to the model with the message, as an image |
+| A document (PDF, Word, text and the other formats that docling reads) | Extracts the text with docling and embeds it into a vector collection of its own, `file-<id>` | Searched for that chat only |
+
+- **Speed.** The model reads an image after the CPU projector has encoded it: about 11 seconds per
+  image (estimate), more for a large photo. `local-coder` then thinks before it answers;
+  `local-fast` answers at once.
+- **Image size.** To shorten that time for large photos, **Admin Panel** > **Settings** >
+  **Documents** > **Image Compression Width** and **Image Compression Height** make the browser
+  shrink images before the upload (`FILE_IMAGE_COMPRESSION_WIDTH` and
+  `FILE_IMAGE_COMPRESSION_HEIGHT`, which the stack does not set).
+- **Vision off.** For a model whose **Vision** is off, attaching an image fails at once with
+  `Selected model(s) do not support image inputs`.
+- **Knowledge bases.** A dropped file is never added to a knowledge base: Open WebUI links an
+  upload to a knowledge base only when the upload is made in that knowledge base, under
+  **Workspace** > **Knowledge**. Documents meant for every chat go into the `rag-docs` share
+  ([Index the rag-docs share](#index-the-rag-docs-share)) or into a knowledge base under
+  **Workspace** > **Knowledge**.
+- **PDF pages are text here.** A PDF reaches the model as the text that docling extracted, never as
+  pictures of its pages.
+
+### Memory levels in Open WebUI
+
+Open WebUI's Memory feature keeps notes for each user, such as "I prefer tabs in shell scripts", in
+its database (PostgreSQL in `pgvector`, so the database backups of Appendix A include them). The
+notes that match the conversation reach the model at every turn. The stack sets the three memory
+variables to Open WebUI's own defaults in `stack/web/compose.yaml`; they seed the settings once, at
+the first start.
+
+Table: Memory settings of Open WebUI
+
+| Level | Where | Default | Effect |
+|---|---|---|---|
+| Server | **Admin Panel** > **Settings** > **General** > **Memories** (`ENABLE_MEMORIES`) | On | Memory exists at all. Off, Open WebUI refuses every memory request and hides the user switch |
+| Server | **Admin Panel** > **Settings** > **General** > **Memory System Context** (`ENABLE_MEMORY_SYSTEM_CONTEXT`) | On | The user's matching memories go to the model at each turn |
+| Server | `ENABLE_MEMORY_BACKGROUND_REVIEW`, no switch in the **Admin Panel** | Off | On, every tenth user turn would send one more request to the chat's model, `local-coder` with thinking, to decide what to save. Its first-start value stays |
+| Group | **Admin Panel** > **Users** > **Groups**, the group's permissions or **Default permissions** > **Memories** | On | Whether the users of that group may use memory; administrators always may |
+| Model | **Admin Panel** > **Settings** > **Models**, the model, **Capabilities** > **Memory** | On, for a model without saved settings | Whether the model gets the memory tools |
+| User | **Settings** > **Personalization** > **Memory**, marked as experimental | Follows **Memories** until the user changes it | The user's own switch. **Add Memory** and **Manage** add, list, edit and delete the user's memories |
+
+Memories are written in two ways: by the user, with **Add Memory**, and by the model. While a
+model's **Function Calling** is **Native**, Open WebUI 0.13.3's default, the model gets eight memory
+tools (search, list paths, read a path, list, update, add, replace content and delete), and the
+matching memories reach it as a tool result at the start of each turn. A model set to **Legacy**
+gets no memory tools, and the matching memories are appended to the user's message instead. So
+"remember that I prefer tabs" in a chat lets `local-coder` save a memory, if it calls the tool.
+
+!!! note
+    The eight memory tools are part of every chat request while memory is on. They take room in the
+    64K context and give a local model more tools to choose from. A user who does not want that
+    turns off their own **Memory** switch.
+
+### Check the Vision capability of the chat models
+
+#### About this task
+
+This task confirms that the three chat models accept images. No change is expected; if a box is
+cleared, check it and save the model.
+
+#### Steps
+
+1. Open the **Admin Panel** and click **Settings** > **Models**.
+
+2. Click `local-coder`.
+
+    The model's editor opens.
+
+3. In the section **Capabilities**, confirm that **Vision** ("Model accepts image inputs") is
+   checked. If it is not, check it and save the model.
+
+4. Repeat steps 2 and 3 for `local-fast` and `local-coder-moe`.
+
+5. Back on the **Models** page, open **Model Defaults** at the top and confirm that **Vision** is
+   checked under **Model Capabilities**. This is the default for every model without its own
+   settings.
+
+#### Results
+
+`local-coder`, `local-fast` and `local-coder-moe` accept images, and so does any model added later
+without its own settings. `local-embed` and `local-rerank` serve retrieval only; their capabilities
+do not matter.
+
+### Send an image in an Open WebUI chat
+
+#### Prerequisites
+
+- [Check the vision projector](#check-the-vision-projector) in Chapter 4 passed.
+- An image on the computer that runs the browser, for example a screenshot, or the test image of
+  the release, `evals/images/maple-74.png` in the clone (`~/local-agent-stack` on `c4dev`), which
+  shows the text `MAPLE 74`.
+
+#### Steps
+
+1. Start a new chat and select `local-fast` in the model selector.
+
+    `local-fast` answers without thinking first. `local-coder` reads images the same way.
+
+2. Add the image to the message in one of three ways: drag the file onto the chat, paste an image
+   from the clipboard into the message box, or click the message box's **More** button, then
+   **Upload Files**, and select the file.
+
+    The image appears in the message box.
+
+3. Enter the following message and send it:
+
+        What text does this image show? Reply with the text only.
+
+    The answer starts after the projector on the server has encoded the image.
+
+4. On TrueNAS, confirm that the model received an image:
+
+        sudo docker logs --since 5m llama-swap 2>&1 | grep 'image decoded'
+
+    The output has an `image decoded` line with the time in milliseconds.
+
+#### Results
+
+The answer reads the image: `MAPLE 74` for the test image. The image stays with the chat and
+appears in its history.
+
+If attaching the image fails at once with `Selected model(s) do not support image inputs`, the
+model's **Vision** capability is off: use
+[Check the Vision capability of the chat models](#check-the-vision-capability-of-the-chat-models).
+If the model answers that it cannot see an image, and step 4 prints nothing, check the projector
+with [Check the vision projector](#check-the-vision-projector).
+
+### Attach a document to one chat
+
+#### About this task
+
+A document dropped into a chat is extracted by docling and searched for that chat only. This task
+shows that it does not reach the `rag-docs` knowledge base.
+
+#### Steps
+
+1. Start a new chat with `local-coder`.
+
+2. Drag a PDF or Word document onto the chat, or click **More** > **Upload Files** and select it.
+
+    The document appears in the message box once docling has extracted it. A large scanned PDF can
+    take minutes.
+
+3. Ask a question that the document answers, and send it.
+
+    The answer draws on the document.
+
+4. Open **Workspace** > **Knowledge** > `rag-docs`.
+
+    The document is not in the list.
+
+#### Results
+
+The document serves this chat only. To make it available to every chat and to the coding agent,
+copy it to the `rag-docs` share ([Copy documents to the rag-docs share](#copy-documents-to-the-rag-docs-share)).
+
+### Check the memory settings of the server
+
+#### About this task
+
+Memory works without a click. This task confirms the settings that Open WebUI seeded, and shows
+where to turn memory off for the whole server, a group or a model.
+
+#### Steps
+
+1. Open the **Admin Panel** and click **Settings** > **General**.
+
+2. Confirm that **Memories** and **Memory System Context** are on.
+
+    To turn memory off for every user, turn **Memories** off and save the page.
+
+3. Click **Users** > **Groups**, open **Default permissions** on that page, and confirm that
+   **Memories** is on.
+
+    To keep a group from using memory, turn **Memories** off in that group's permissions.
+    Administrators can always use memory.
+
+4. Click **Settings** > **Models**, click `local-coder`, and confirm that **Memory** is checked in
+   the section **Capabilities**.
+
+    To keep a model from writing memories, clear **Memory** for that model and save it.
+
+#### Results
+
+Memory is available to every user and model, and you know where to restrict it. The background
+review stays off: it has no switch in the **Admin Panel**.
+
+### Add and manage your memories
+
+#### About this task
+
+Each user manages their own memories in their settings. This task adds a memory, checks that the
+model uses it, and deletes it again.
+
+#### Steps
+
+1. Click your account name, then **Settings** > **Personalization**.
+
+2. Confirm that the **Memory** switch is on.
+
+    Turn it off if you do not want memory in your chats, for example to keep the eight memory tools
+    out of your requests.
+
+3. Click **Manage**, then **Add Memory**, enter the following text, and save it:
+
+        I prefer tabs for indentation in shell scripts.
+
+    The memory appears in the list of **Manage**.
+
+4. Start a new chat with `local-coder` and send:
+
+        Which indentation do I prefer in shell scripts?
+
+    The answer names tabs.
+
+5. Open **Settings** > **Personalization** > **Manage** again, and delete the memory of step 3.
+
+#### Results
+
+Your memories reach the model in every chat, and you can add, edit and delete them. A memory that
+the model saves by itself, after a request such as "remember that my test host is lab-vm", appears
+in the same list.
+
 ## Change keys and settings after the first start
 
 The settings that Open WebUI seeded from `web.env` live in its database, so a key change there is
@@ -1651,7 +1907,7 @@ no effect.
 
 1. In Open WebUI, open the **Admin Panel** page that holds the setting: **Settings** >
    **Connections** for models, **Settings** > **Documents** for extraction, embeddings, reranking
-   and chunking, **Settings** > **Web Search** for search.
+   and chunking, **Settings** > **Web Search** for search, **Settings** > **General** for memory.
 
 2. Change the value and click **Save**.
 
@@ -1691,7 +1947,13 @@ Open WebUI uses the new setting at once, and keeps it across restarts and redepl
   downloads and the installation of Python packages that plugins request. A plugin whose Python
   requirements are not already in the image does not work.
 - **Seeded settings.** After the first start, the settings in the first-start groups change only in
-  the **Admin Panel**.
+  the **Admin Panel**. The memory background review has no switch there and stays off.
+- **Images are read on the CPU.** Each image takes about 11 seconds (estimate) before the model
+  starts its answer, and a large image takes up to 4,096 tokens of the 64K context.
+- **Memory costs context.** While memory is on, the eight memory tools travel with every chat
+  request. Each user can turn memory off in **Settings** > **Personalization**.
+- **Chat files stay in their chat.** A file dropped into a chat is not added to any knowledge base
+  and is not visible to the coding agent's `kb` tools.
 - **The MCP hub image comes from this project.** This repository's own workflow builds and
   publishes it, and each release pins its digest. An image built on the server with
   [Build the MCP hub image on TrueNAS](#build-the-mcp-hub-image-on-truenas) is not rebuilt by a
