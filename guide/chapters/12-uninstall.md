@@ -66,6 +66,11 @@ database passwords must match the data.
 
     The listing starts with `rag-docs/`, `appdata/pg-dumps/` or `secrets/` entries.
 
+#### Results
+
+The TrueNAS configuration file, fresh dumps of both databases and, if you need them off the server,
+the documents, dumps and secrets files are saved.
+
 !!! warning
     The archive and the configuration file contain keys and password hashes. Keep them in encrypted
     storage, never in a repository or a shared folder.
@@ -116,15 +121,22 @@ back keys that clients still hold.
 
     The response lists the deleted keys under `deleted_keys`.
 
-2. Delete the key of Open WebUI, whose value is in `web.env`:
+2. Delete the key of Open WebUI, whose value is in `web.env`. The key reaches the command on
+   standard input, so it never appears on a command line or in the process list:
 
-        K=$(sudo sed -n 's/^LITELLM_WEBUI_KEY=//p' /mnt/tank/ai/secrets/web.env)
-        sudo docker exec litellm python3 -c "import json, os, sys, urllib.request as u; body = json.dumps({'keys': [sys.argv[1]]}).encode(); req = u.Request('http://127.0.0.1:4000/key/delete', data=body, headers={'Authorization': 'Bearer ' + os.environ['LITELLM_MASTER_KEY'], 'Content-Type': 'application/json'}); print(u.urlopen(req).read().decode())" "$K"
-        unset K
+        sudo sed -n 's/^LITELLM_WEBUI_KEY=//p' /mnt/tank/ai/secrets/web.env |
+          sudo docker exec -i litellm python3 -c "import json, os, sys, urllib.request as u; body = json.dumps({'keys': [sys.stdin.read().strip()]}).encode(); req = u.Request('http://127.0.0.1:4000/key/delete', data=body, headers={'Authorization': 'Bearer ' + os.environ['LITELLM_MASTER_KEY'], 'Content-Type': 'application/json'}); print(u.urlopen(req).read().decode())"
+
+    The response lists the deleted key under `deleted_keys`.
 
 3. In Open WebUI, sign in as the administrator and delete the service users `indexer` and
    `kb-reader` in **Admin Panel** > **Users**. Their API keys, `OIKB_TOKEN` and `KB_READER_TOKEN`,
    stop working with them.
+
+#### Results
+
+The kept databases hold no key that a client still uses: the workstation keys, the key of Open WebUI
+and the service users are gone.
 
 !!! note
     The `/key/delete` endpoint was not checked against LiteLLM 1.108.8 for this guide. If a deleted
@@ -214,6 +226,10 @@ The stack's images are removed.
         sudo docker network ls --filter name=ai-net
 
     The output shows only the header line.
+
+#### Results
+
+The `ai-net` network is gone from the Docker host.
 
 ## Removing the data
 
@@ -318,6 +334,10 @@ No API key of the stack exists any more on the server or the workstation.
 
     The command prints nothing.
 
+#### Results
+
+The DNS provider token no longer works, and the lab host names no longer resolve.
+
 !!! note
     The Cloudflare dashboard labels were not verified for this guide. Certificates that Caddy
     obtained stay valid until they expire; with the private keys gone from the `caddy` dataset,
@@ -341,6 +361,17 @@ No API key of the stack exists any more on the server or the workstation.
 
         rm -f ~/.ssh/agent_ed25519 ~/.ssh/agent_ed25519.pub
 
+5. Verify on the workstation:
+
+        ls ~/.ssh/agent_ed25519* 2>/dev/null
+
+    The command prints nothing.
+
+#### Results
+
+The agent's key exists nowhere, and the workstation reaches TrueNAS over SSH only if you kept its
+key on purpose.
+
 ## Restoring TrueNAS settings
 
 These tasks undo the settings of Chapter 3. Keep any setting that another app or workload still
@@ -357,6 +388,11 @@ needs, such as the NVIDIA driver for another GPU app.
     Persistence mode and any power limit stay in effect until the next restart, then return to the
     defaults.
 
+#### Results
+
+The command no longer runs at boot. [Restart and verify the server](#restart-and-verify-the-server)
+confirms it after the restart.
+
 ### Remove the ARC tunable
 
 #### Steps
@@ -366,6 +402,11 @@ needs, such as the NVIDIA driver for another GPU app.
 2. On the **Sysctl** card, delete the entry `zfs_arc_max`.
 
     The cap is lifted at the next restart.
+
+#### Results
+
+The tunable is gone from the configuration. [Restart and verify the server](#restart-and-verify-the-server)
+confirms that the cap is lifted.
 
 ### Turn off the NVIDIA driver
 
@@ -386,6 +427,10 @@ Docker, and every installed app restarts with it.
 
     The output contains `"nvidia": false`.
 
+#### Results
+
+The Apps service runs without the NVIDIA driver.
+
 ### Return the web interface to ports 80 and 443
 
 #### About this task
@@ -403,6 +448,36 @@ This task is optional. Ports 80 and 443 are free again now that `caddy` is gone.
 
 4. Open `https://192.0.2.10` and update your bookmarks.
 
+    The TrueNAS sign-in page opens.
+
+#### Results
+
+The web interface answers on ports 80 and 443 again.
+
+### Remove the stack's files from the truenas_admin home
+
+#### About this task
+
+Some tasks of this guide leave files in the home directory of `truenas_admin`, which the datasets of
+the stack do not hold: the diagnostics of Chapter 11 and the root certificate exported in
+Appendix D.
+
+#### Steps
+
+1. In **System** > **Shell**, delete them:
+
+        rm -rf ~/diag-* ~/caddy-root.crt
+
+2. Verify:
+
+        ls -d ~/diag-* ~/caddy-root.crt 2>/dev/null
+
+    The command prints nothing.
+
+#### Results
+
+The home directory of `truenas_admin` holds no file of the stack.
+
 ### Restart and verify the server
 
 #### Steps
@@ -419,11 +494,22 @@ This task is optional. Ports 80 and 443 are free again now that `caddy` is gone.
    Scripts**, **Sysctl** and **Cron Jobs** cards of **System** > **Advanced Settings** list no entry
    of the stack.
 
+4. Check persistence mode, if the NVIDIA driver is still on:
+
+        nvidia-smi -q | grep -i 'persistence mode'
+
+    The line reads `Disabled`.
+
+#### Results
+
+The server runs without the settings of Chapter 3 that you removed.
+
 ## Cleaning up the workstation
 
 `clients/install.sh` has no uninstall option. The tasks below remove what it created, the
-`deploy.py` environment and the stack's files on the workstation. Repeat them on every workstation
-that ran the clients, such as the Mac.
+`deploy.py` environment, the check tools of `tools/setup-checks.sh` and their links, the stack's
+entries in your projects, and the stack's files on the workstation. Repeat them on every
+workstation that ran the clients, such as the Mac.
 
 ### Remove OpenCode and the links
 
@@ -451,15 +537,44 @@ that ran the clients, such as the Mac.
 
     If you use OpenCode for other work, keep the binary and remove only the links.
 
-5. Remove ssh-mcp, the `deploy.py` environment and the check tools:
+5. If you ran `tools/setup-checks.sh` (Chapter 8), remove the links it created in `~/.local/bin`
+   for the check tools. They point into its tool directory, which the next step deletes:
 
-        rm -rf ~/.local/share/local-agent-stack
+        find ~/.local/bin -maxdepth 1 -type l -lname '*/local-agent-stack/check-tools/*' -print -delete
 
-6. Remove the SSH tool's policy file and its audit log:
+    The command prints each link it removes, for example `ruff`, `zizmor`, `yamllint`,
+    `pymarkdown`, `actionlint` and `gitleaks`, and `shellcheck` if no other `shellcheck` was
+    installed. The script never replaced a command of another program, so nothing else is removed.
+    If you set `LAS_TOOLS_DIR`, use that directory's path in the pattern instead.
+
+6. Remove ssh-mcp, the `deploy.py` environment and the check tools with their virtual environment,
+   and the cache of the `python` check:
+
+        rm -rf ~/.local/share/local-agent-stack ~/.cache/local-agent-stack
+
+    If you set `LAS_TOOLS_DIR`, delete that directory too; if you set `XDG_DATA_HOME` or
+    `XDG_CACHE_HOME`, delete the `local-agent-stack` directories there.
+
+7. Remove the SSH tool's policy file and its audit log:
 
         rm -rf ~/.config/ssh-mcp ~/.local/share/ssh-mcp
 
     On macOS, the policy file is in `~/Library/Application Support/ssh-mcp/`.
+
+8. If you installed the Docker client and the Compose plugin only for `deploy.py`
+   ([Install the TrueNAS API client on the workstation](#install-the-truenas-api-client-on-the-workstation)),
+   remove them and Docker's apt repository:
+
+        sudo apt remove docker-ce-cli docker-compose-plugin
+        sudo rm /etc/apt/sources.list.d/docker.sources /etc/apt/keyrings/docker.asc
+        sudo apt update
+
+    Keep them if another program on the workstation uses Docker.
+
+#### Results
+
+OpenCode's links to the clone, the launchers, the check tools and their links, ssh-mcp, the
+`deploy.py` environment and the SSH tool's policy are gone.
 
 ### Remove the shell profile block
 
@@ -485,6 +600,38 @@ on `PATH`. The block reads:
 
 3. Open a new terminal.
 
+#### Results
+
+New shells no longer load `client.env` or add the stack's directories to `PATH`.
+
+### Remove the stack's entries from your projects
+
+#### About this task
+
+Chapters 7 and 8 have you add files to your own projects that refer to the stack: `.mcp.json` for
+the hub tools in Claude Code, the `ssh` entry in a project's `opencode.jsonc`, and the memory files
+`AGENTS.md` and `CLAUDE.md`. Without the stack, the first two point at servers that no longer
+exist. The memory files hold your project's rules and work without the stack; keep them.
+
+#### Steps
+
+1. In each project that used the hub tools with Claude Code, delete `.mcp.json`, or remove its
+   `searxng`, `fetch` and `kb` entries if it holds other servers too. Remove the `.mcp.json` line
+   from the project's `.gitignore` if you added it only for this file.
+
+2. In each project that enabled the SSH tool, remove the `ssh` entry under `mcp.servers` from the
+   project's `opencode.jsonc`, or delete the file if it held only that entry.
+
+3. Verify in each project:
+
+        grep -rl -e 'mcp.lab.example.com' -e 'ssh-mcp-stdio' --include=.mcp.json --include=opencode.jsonc .
+
+    Replace `lab.example.com` with your domain. The command prints nothing.
+
+#### Results
+
+No project refers to the hub or to the SSH tool any more.
+
 ### Remove the stack's files from the workstation
 
 #### Steps
@@ -499,9 +646,11 @@ on `PATH`. The block reads:
     `~/.config/local-agent-stack/secrets/` with the copies of the four environment files and the
     stored workstation keys `litellm-c4dev.key` and `litellm-mac.key`.
 
-2. Delete the release downloads and the diagnostics, if you created them:
+2. Delete the release downloads and the diagnostics of Chapter 11, if you created them: the
+   workstation's `~/diag-*` files, and the server's `diag-<date>.tar.gz` with its unpacked
+   directory, wherever you copied them:
 
-        rm -rf ~/releases ~/diag-*.txt
+        rm -rf ~/releases ~/diag-*
 
 3. Delete the clone of the repository, after you saved any work in it. Your evaluation results
    and baselines of Chapter 9 are in its `evals/results/` and `evals/baselines/` directories; copy
@@ -512,6 +661,16 @@ on `PATH`. The block reads:
 4. If you kept raw model answers with `--save-responses`, delete that directory too, for example:
 
         rm -rf /tmp/eval-responses
+
+5. Keep `~/las-final.tar.gz` from [Take a final backup](#take-a-final-backup) only in encrypted
+   storage. It holds the secrets files; delete the copy in your home directory once it is stored
+   there:
+
+        rm -f ~/las-final.tar.gz
+
+#### Results
+
+The workstation holds no setting, key, copy of a secrets file, clone or download of the stack.
 
 ### Remove the internal root certificate
 
@@ -545,6 +704,16 @@ root still works for anyone who holds a copy of `root.key`.
 
         rm -f ~/caddy-root.crt
 
+6. On Ubuntu, verify that the system store no longer lists the root:
+
+        ls /etc/ssl/certs | grep -i caddy
+
+    The command prints nothing.
+
+#### Results
+
+No client trusts the stack's internal root any more.
+
 ### Verify the workstation cleanup
 
 #### Steps
@@ -555,13 +724,20 @@ root still works for anyone who holds a copy of `root.key`.
 
     The command prints nothing.
 
-2. Check that no link into the old clone remains:
+2. Check that no link into the old clone or the removed tool directory remains:
 
-        find ~/.config/opencode -xtype l
+        find ~/.config/opencode ~/.local/bin -xtype l
+
+    The command prints nothing. A broken link of another program can appear here too; check
+    where it points with `ls -l` before you delete it.
+
+3. Check that the stack's directories are gone:
+
+        ls -d ~/.config/local-agent-stack ~/.local/share/local-agent-stack ~/.cache/local-agent-stack ~/local-agent-stack 2>/dev/null
 
     The command prints nothing.
 
-3. Check that no variable of the stack is set:
+4. Check that no variable of the stack is set:
 
         env | grep -E '^(LAB_DOMAIN|LOCAL_LLM_KEY|MCP_HUB_TOKEN|EVAL_KB_ID|EVAL_KB_KEY)='
 

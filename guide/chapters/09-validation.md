@@ -255,6 +255,11 @@ set -a; . ~/.config/local-agent-stack/client.env; set +a
 
     The output is `401`.
 
+#### Results
+
+LiteLLM is alive and reaches its database, your key lists the eight names, both API formats
+answer, embeddings and reranking work, and an invalid key is refused.
+
 !!! warning
     Do not call `https://llm.lab.example.com/health` without a model parameter. It sends a real
     request to every model, which loads `coder-moe` and swaps `coder` out of the GPU for every
@@ -394,8 +399,15 @@ returns a structured tool call with valid JSON arguments, not text.
 
     If the message's `content` or `reasoning_content` holds a `<tool_call>` text, the model wrote
     the call into its text, a known llama.cpp problem with Qwen models (llama.cpp issue 20837,
-    closed on 14 November 2026; whether the fix covers these models was not confirmed). Follow
-    [Tool calls fail or loop](#tool-calls-fail-or-loop).
+    closed on 14 November 2026 by commit `3c31179`). The llama.cpp build of the stack, `b12407`,
+    contains that commit (checked in the llama.cpp repository), but the commit changes only the
+    Ministral-3 parser and the chat tests, so whether it ends the problem for these models is not
+    confirmed. Follow [Tool calls fail or loop](#tool-calls-fail-or-loop).
+
+#### Results
+
+`local-coder` and `local-fast` return a structured `get_weather` call with valid JSON arguments on
+the OpenAI route in every run.
 
 ### Test tool calls on the Anthropic route
 
@@ -506,6 +518,10 @@ that Open WebUI and the coding agent retrieve it. It exercises the whole retriev
 
     The knowledge base lists `rag-sanity-check.md`.
 
+#### Results
+
+The test document is indexed in the `rag-docs` knowledge base.
+
 ### Retrieve the test document
 
 #### Steps
@@ -524,6 +540,10 @@ that Open WebUI and the coding agent retrieve it. It exercises the whole retriev
 
     The session shows a call to `search_knowledge_base`, and the answer is `ORCHID-4417` from
     `rag-sanity-check.md`.
+
+#### Results
+
+Open WebUI and OpenCode both answer from the planted document and name it as the source.
 
 ### Remove the test document
 
@@ -744,7 +764,7 @@ Two sets select the cases: `smoke`, a fixed subset of 15 cases from every suite,
 44 cases. Each case has a fixed ID, such as `tools-005`, that never changes. The suites are the
 files `evals/suites/<suite>.jsonl`, the sets are defined in `evals/sets.toml`, and the sample
 documents of the `rag` suite are `evals/rag-docs/eval-*.md`; Appendix E prints the set and gate
-files.
+files and the sample documents.
 
 How `eval.py` runs:
 
@@ -759,8 +779,12 @@ How `eval.py` runs:
 - **One request at a time.** The server has one slot, so parallel requests only queue and distort
   the timings. A warm-up request per route comes first, so a model swap is not measured.
 - **Sampling.** The server's production settings are used unless you pass `--temperature` or
-  `--seed`. At the default temperature the answers vary from run to run, so a single case can
-  pass in one run and fail in the next.
+  `--seed` (the seed applies to the OpenAI route only). At the default temperature the answers vary
+  from run to run, so a single case can pass in one run and fail in the next.
+- **Parallel tool calls.** The OpenAI-route cases `tools-005` and `tools-006` ask for several calls
+  in one answer and send `"parallel_tool_calls": true`, because the sources disagree on whether
+  llama-server allows parallel calls without it. The Anthropic route has no such field; its parallel
+  case is `tools-015`.
 - **Coding tests.** The tests run on the workstation, on all cores, each in a temporary directory
   with a 10-second limit (`--test-timeout`); the test process may not open network connections,
   start processes or write outside its directory. The first output line names the protection as
@@ -774,6 +798,49 @@ How `eval.py` runs:
 - **Exit codes.** `0` when the results file was written (and, with `--baseline`, the gate passed),
   `1` when the run stopped or the gate failed, `2` for a usage error, such as a missing
   `LOCAL_LLM_KEY`.
+
+!!! note
+    `tools/eval.py` has not yet been run against a deployed stack. It was tested only against a fake
+    gateway on the loopback address, with its unit tests. Three behaviours of the real gateway are
+    assumed, not verified: that LiteLLM passes `seed` and `parallel_tool_calls` on to llama-server
+    on the `openai/` route, and that it passes llama-server's `timings` back. If `seed` does not
+    arrive, `--seed` has no effect and two runs with the same seed differ. If `parallel_tool_calls`
+    does not arrive, `tools-005` and `tools-006` can fail with `expected 2 call(s) ..., got 1`. If
+    `timings` do not arrive, the results file has no `server_tokens_per_s`; the gate does not use
+    that figure. [Evaluation issues](#evaluation-issues) lists what to do in each case. Report any
+    other problem to the project as an issue, with the output of the run and the results file,
+    which holds no key, prompt or answer.
+
+Table: Options of eval.py run
+
+| Option | Meaning |
+|---|---|
+| `--suite <set>` | The set to run, `smoke` or `full` (required) |
+| `--model <name>` | The model of the OpenAI-route cases; default `local-coder` |
+| `--anthropic-model <name>` | The model of the Anthropic-route cases; default `local-sonnet` for `local-coder`, `local-haiku` for `local-fast`, otherwise the `--model` name |
+| `--case <id>` | Run only this case; repeat it for several. The run is partial and its file goes to `build/evals/` |
+| `--baseline <file>` | After the run, compare with this results file; the exit code is the gate's |
+| `--gate <file>` | The gate thresholds; default `evals/gate.toml` |
+| `--out <file>` | The results file; default `evals/results/<UTC time>-<model>-<set>.json` |
+| `--temperature <t>`, `--seed <n>` | Sampling; default the server's settings. The seed applies to the OpenAI route only |
+| `--max-tokens <n>` | `max_tokens` of every case; default per suite, 4096, and 8192 for `coding` |
+| `--timeout <s>` | Seconds per request; default 600 |
+| `--test-timeout <s>` | Seconds per run of a coding case's tests; default 10 |
+| `--rag-source <source>` | `bundled` (default): the sample documents in the request; `openwebui`: the passages Open WebUI retrieves ([Evaluate retrieval through Open WebUI](#evaluate-retrieval-through-open-webui)) |
+| `--kb-k <n>` | Passages to retrieve with `openwebui`; default 5 |
+| `--base-url <url>` | The gateway; default `https://llm.<LAB_DOMAIN>`. Only `https://` is accepted, or `http://` on the loopback address |
+| `--webui-url <url>` | Open WebUI, for `openwebui` retrieval; default `https://chat.<LAB_DOMAIN>` |
+| `--cafile <file>` | A CA certificate to trust, for the internal CA of Appendix D |
+| `--env-file <file>` | A `KEY=value` file read after the environment; default `~/.config/local-agent-stack/client.env` |
+| `--no-warmup` | Skip the warm-up request of each route; the first case then can include a model swap in its time |
+| `--save-responses <dir>` | Save every raw answer in this directory, for debugging |
+| `--jobs <n>` | Coding tests run at the same time; default the `JOBS` environment variable, otherwise the number of cores |
+| `--root <dir>` | The repository root; default the clone that holds `eval.py` |
+
+The other commands take fewer options. `compare <baseline> <result>` takes `--gate <file>`;
+`verify [<file> ...]` takes `--current` and `--jobs <n>`; `config-hash` takes `--files`; `suites`
+takes `--jobs <n>` and `--test-timeout <s>`. Every command takes `--root <dir>`, and
+`python3 tools/eval.py <command> --help` lists the options of each.
 
 ### Run the smoke evaluation
 
@@ -1008,7 +1075,8 @@ of `evals/rag-docs/` are fictional and are named `eval-*.md`.
 #### Steps
 
 1. Copy the four files `evals/rag-docs/eval-*.md` from the clone to the `rag-docs` share, as in
-   [Copy documents to the rag-docs share](#copy-documents-to-the-rag-docs-share).
+   [Copy documents to the rag-docs share](#copy-documents-to-the-rag-docs-share). Appendix E prints
+   them ([Evaluation files](#evaluation-files)).
 
 2. Start a sync and wait for its result, as in [Follow the oikb sync](#follow-the-oikb-sync).
 

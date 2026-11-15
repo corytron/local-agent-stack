@@ -98,6 +98,10 @@ server or router. If that is not possible, add the names to the hosts file of ea
 
     Each command returns `192.0.2.10`.
 
+#### Results
+
+Every client resolves the five lab host names to the TrueNAS server.
+
 ### Set the edge environment for the internal CA
 
 #### About this task
@@ -136,6 +140,11 @@ its **Admin Panel**. `client.env` copies the value from `web.env` when Chapter 7
         sudo grep -E '^(LAB_DOMAIN|ACME_EMAIL|DNS_PROVIDER_TOKEN)=' /mnt/tank/ai/secrets/edge.env
 
     The output shows the three values from step 1.
+
+#### Results
+
+`edge.env` on the server and your workstation copy hold the internal CA's lab domain and the two
+placeholder values that the compose file requires.
 
 ### Create the internal CA Caddyfile
 
@@ -252,7 +261,7 @@ Compose merges them before it includes the result. TrueNAS validates the YAML wi
     hashes, and keeps the override. Check what `deploy.py` plans for the app:
 
         cd ~/local-agent-stack
-        python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml plan --app ai-edge
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml plan --app ai-edge
 
     The output shows `override: /mnt/tank/ai/appdata/caddy/internal-ca.override.yaml` under
     `ai-edge`.
@@ -325,6 +334,10 @@ the value from step 4; the commands are in the tasks that follow.
 
     The command prints an HTTP status code, for example `200`, and no certificate error.
 
+#### Results
+
+Ubuntu and the programs that use its system store trust the internal root.
+
 ### Trust the root certificate on macOS
 
 #### Steps
@@ -349,6 +362,10 @@ the value from step 4; the commands are in the tasks that follow.
 
     The page opens without a certificate warning.
 
+#### Results
+
+macOS and the programs that use its System keychain trust the internal root.
+
 ### Trust the root certificate on Windows
 
 #### Steps
@@ -372,6 +389,10 @@ the value from step 4; the commands are in the tasks that follow.
 5. Open `https://chat.lab.home.arpa` in Microsoft Edge.
 
     The page opens without a certificate warning.
+
+#### Results
+
+Windows and the programs that use its computer store trust the internal root.
 
 ### Trust the root certificate in browsers and tools with their own store
 
@@ -414,7 +435,7 @@ Test each tool against `https://llm.lab.home.arpa` before you rely on it.
     - With `tools/deploy.py`: remove the `overrides` line from the `[apps.ai-edge]` table of
       `~/.config/local-agent-stack/desired.toml`, then run, from the workstation clone:
 
-            python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml apply --app ai-edge
+            ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml apply --app ai-edge
 
     - In the web interface: go to **Apps** > **Installed**, select `ai-edge`, click **Edit**,
       replace **Custom Config** with the four lines of `stack/edge/truenas-app.yaml`, and click

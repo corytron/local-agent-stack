@@ -161,13 +161,13 @@ Table: Model loading and memory
 | Symptom | Cause | Resolution |
 |---|---|---|
 | `coder` does not load; the `llama-swap` log shows an out-of-memory or allocation error | The weights, the 64K KV cache and the MTP draft do not fit, or another process holds VRAM | See [The model runs out of GPU memory at load](#the-model-runs-out-of-gpu-memory-at-load) |
-| `coder-moe` does not load with an out-of-memory error | Too many expert layers stay on the GPU | Raise `--n-cpu-moe` by 2 (from 16 to 18) in `stack/inference/llama-swap/config.yaml`. With 14, the model overflowed VRAM in the published measurement |
+| `coder-moe` does not load with an out-of-memory error | Too many expert layers stay on the GPU | Raise `--n-cpu-moe` by 2 (from 16 to 18): on the server with the override copy that the Results of [Tune and record the fast profile](#tune-and-record-the-fast-profile) describe, and for good in `stack/inference/llama-swap/config.yaml` through a pull request. With 14, the model overflowed VRAM in the published measurement |
 | `llama-swap` does not start; its log reports a configuration error | `LLAMA_SWAP_API_KEY` is not set (the configuration refers to it), or `config.yaml` has a YAML error | Check `/mnt/tank/ai/secrets/inference.env`, and that the TrueNAS clone has no local changes (`git status --porcelain`) |
 | The log says the model file cannot be opened | The file is missing from `/mnt/tank/ai/models/gguf/` or its name differs | Compare `ls -l /mnt/tank/ai/models/gguf/` with the `-m` lines of the configuration; download the file as in [Download a model file](#download-a-model-file) |
 | A model never becomes ready, and requests fail after about ten minutes | Loading took longer than `healthCheckTimeout` (600 seconds), or `llama-server` stopped during start-up | Read the `llama-swap` log for the `llama-server` error. A first load from a cold disk cache is the slowest |
 | The first request after a restart takes a minute or more | `llama-swap` loads `coder` from disk at start | Wait. The `/running` command of [Monitor the model server](#monitor-the-model-server) shows `ready` when the model is loaded |
 | A request for `local-coder-moe` takes tens of seconds, and the next request of another client is slow too | The two GPU models share the `llm` group: each switch unloads one and loads the other | Switch profiles for a whole working session, not per request |
-| `llama-swap` restarts under load, and `sudo docker inspect --format '{{.State.OOMKilled}}' llama-swap` prints `true` | The container reached its 32 GiB memory limit. The peak of about 18 GiB for `coder-moe` is an estimate | Lower `--cache-ram` of the model, or raise the limit in `stack/inference/compose.yaml` within the system RAM budget |
+| `llama-swap` restarts under load, and `sudo docker inspect --format '{{.State.OOMKilled}}' llama-swap` prints `true` | The container reached its 32 GiB memory limit. The peak of about 18 GiB for `coder-moe` is an estimate | Lower `--cache-ram` of the model, or raise the limit in `stack/inference/compose.yaml` within the system RAM budget, through a pull request |
 
 Table: Generation speed
 
@@ -194,12 +194,14 @@ Table: LiteLLM problems
 
 | Symptom | Cause | Resolution |
 |---|---|---|
+| `litellm-db` stops on its first start with a permission error on its data directory, and `litellm` never starts | The PostgreSQL entrypoint changes the mode of `PGDATA` to 0700, which the NFSv4 ACL of the **Apps** preset may refuse (not verified); `litellm` waits for a healthy database | While the dataset holds no data, follow [Recreate the litellm-db dataset with the Generic preset](#recreate-the-litellm-db-dataset-with-the-generic-preset) |
+| Every client fails, and `curl -sS https://llm.lab.example.com/health/liveliness` does not print `"I'm alive!"`, while `llama-swap` is healthy | `litellm` or `litellm-db` is down | Read their logs and find the cause in this table. The stack has no fallback route for clients: llama-swap at `https://models.lab.example.com` serves the OpenAI `/v1` routes and the Anthropic `/v1/messages` route itself, but only with `LLAMA_SWAP_API_KEY`, the administrator key, and without per-key model lists, budgets or usage logs. Never give that key to a client; use the host only to check that the models answer, as in step 3 of [Check the chat, models, MCP and search host names](#check-the-chat-models-mcp-and-search-host-names) |
 | `coder-moe` loads although nobody asked for it, and `coder` is swapped out | Something calls `GET /health` on LiteLLM | See [LiteLLM health checks swap the GPU model](#litellm-health-checks-swap-the-gpu-model) |
 | Requests fail with HTTP 401 | The key is missing, wrong or deleted | Use a LiteLLM virtual key for the client (`LOCAL_LLM_KEY` on the workstation), never the master key |
 | Requests for one model name fail while others work | The key's model list does not include the name | Add the name to the key, as in [Make the model available to clients](#make-the-model-available-to-clients) |
 | A key stops working after heavy use | Its budget is used up. Each GPU model costs 0.0001 per second of request time, so the budget is a GPU-time quota | Raise the key's budget or create a new key |
 | `litellm` does not start, and the log names the master key | `LITELLM_MASTER_KEY` is empty or a known unsafe value | Set a generated value in `inference.env` and redeploy `ai-inference` |
-| `litellm` does not start with a database authentication error | `LITELLM_DB_PASSWORD` differs from the password `litellm-db` was created with; PostgreSQL uses the variable only when it creates the database | Put the original value back from the `tank/ai/secrets` snapshots (Appendix A), or set the role's password to the value in `inference.env`: `sudo docker exec -it litellm-db psql -U litellm -d litellm -c "ALTER ROLE litellm PASSWORD '<value>'"` |
+| `litellm` does not start with a database authentication error | `LITELLM_DB_PASSWORD` differs from the password `litellm-db` was created with; PostgreSQL uses the variable only when it creates the database | Put the original value back from the `tank/ai/secrets` snapshots (Appendix A), or set the role's password to the value in `inference.env`, as in [Set the LiteLLM database password again](#set-the-litellm-database-password-again) |
 | LiteLLM cannot read credentials it stored earlier | `LITELLM_SALT_KEY` changed | Put the original value back from the `tank/ai/secrets` snapshots. Never change this key |
 | `litellm` is unhealthy for up to two minutes on its first start | It runs its database migrations | Wait; the health check allows 120 seconds |
 | A streamed answer ends with an error event although the request returned status 200 | LiteLLM sends keep-alive comments every 30 seconds, so the status is 200 before the model answers; a later failure arrives inside the stream | Read the `litellm` and `llama-swap` logs for the error |
@@ -223,7 +225,7 @@ Table: Docling problems
 | Symptom | Cause | Resolution |
 |---|---|---|
 | A large PDF never appears in the knowledge base; the `docling` log shows a time-out | The conversion on the CPU took longer than `DOCLING_SERVE_MAX_SYNC_WAIT` (600 seconds) | Split the document, or raise the value in `stack/rag/compose.yaml` through a pull request |
-| `docling` restarts during large conversions | It reached its 8 GB memory limit with two workers | On a 32 GB server, use a 4 GB limit and one worker (`DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "1"`) |
+| `docling` restarts during large conversions | It reached its 8 GB memory limit with two workers | Split the document, or copy large documents to the share one at a time. The limit and the two workers are sized for the 64 GB minimum of Chapter 2 ([System RAM budget](#system-ram-budget)); raise the limit only within that budget, through a pull request |
 | Uploads fail, and the `docling` log shows rejected requests without a valid key | Open WebUI sends another `DOCLING_API_KEY` than `docling` expects. Open WebUI stored the key on its first start | Enter the value from `rag.env` in Open WebUI's **Documents** settings; see [Open WebUI ignores changed environment variables](#open-webui-ignores-changed-environment-variables) |
 
 Table: Knowledge sync problems
@@ -272,7 +274,7 @@ Table: MCP hub problems
 | The `kb` tools fail with an authentication error | `KB_READER_TOKEN` is empty or wrong | Create the `kb-reader` key in Open WebUI, put it into `web.env`, and redeploy `ai-web` |
 | The `mcp-hub` log shows "Failed to parse JSONRPC message" | The `kb` server prints start-up lines; the image moves them to standard error | None, as long as the health check prints `ok: fetch, kb, searxng` |
 | The `fetch` tool refuses an address | It refuses private, loopback and link-local addresses and honours `robots.txt` | None; this is by design |
-| Installing `ai-web` fails at `mcp-hub` | The image `ghcr.io/corytron/local-agent-stack-mcp-hub` could not be pulled, and building it from `stack/web/mcp-hub/` on TrueNAS failed (that build was not tested on TrueNAS) | Read `/var/log/app_lifecycle.log` for the pull or build error |
+| Installing `ai-web` fails at `mcp-hub` | The image `ghcr.io/corytron/local-agent-stack-mcp-hub` could not be pulled, and building it from `stack/web/mcp-hub/` on TrueNAS failed (that build was not tested on TrueNAS) | Read `/var/log/app_lifecycle.log` for the pull or build error, then follow [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image) |
 
 ### Edge app issues
 
@@ -359,10 +361,11 @@ Table: deploy.py problems
 | `cannot connect to the NAS:` followed by a certificate error | `truenas-ca.pem` is not the certificate the web interface presents, or the certificate does not name the address in `uri` | Repeat [Create the connection settings](#create-the-connection-settings). If the certificate names only a host name, set `uri` to that name and make it resolve to `192.0.2.10`; or run `deploy.py --local` on TrueNAS, which needs no certificate |
 | `the NAS reports TrueNAS '...', deploy/truenas.toml says '...'` | TrueNAS was updated | Read the release notes for API changes, then set `truenas_version` in your desired-state file |
 | `note: files not compared: tag ... is not in this clone (git fetch --tags)`, and the same for the images | The clone lacks the release tag | Run `git -C ~/local-agent-stack fetch --tags` |
-| `note: images not compared: cannot run docker: ...` or `docker compose config failed` | The Docker CLI with the Compose plugin is missing on the machine that runs `deploy.py` | Install it, or accept that the images are not compared; the YAML, the hashes and the app states still are |
+| `note: images not compared: cannot run docker: ...` or `docker compose config failed` | The Docker CLI with the Compose plugin is missing on the machine that runs `deploy.py` | Install it as in steps 1 to 4 of [Install the TrueNAS API client on the workstation](#install-the-truenas-api-client-on-the-workstation). Without it, `plan` and `drift` never see an image update; the YAML, the hashes and the app states are still compared |
 | `note: env file not compared: cannot read ~/.config/local-agent-stack/secrets/<stack>.env` | Your copy of the environment file is missing, or `env_dir` names another folder | Restore the copy from the server's file, or correct `env_dir` in your desired-state file |
 | `note: env file not compared: env_dir is not set in the desired state` | Your desired-state file has no `env_dir` line | Add `env_dir = "~/.config/local-agent-stack/secrets"`, as in [Create your desired-state file](#create-your-desired-state-file) |
 | `plan` reports `update (RUNNING) no hash of the files of stack/<stack>/ recorded (installed by hand?)` | The app was installed by hand from `truenas-app.yaml` and has no content hashes yet | [Record the content hashes](#record-the-content-hashes) |
+| `apply` reports `<app>: FAILED: app.update:` with `Invalid compose configuration` for every app | The Compose version of TrueNAS refused the `x-local-agent-stack` block that holds the content hashes; nothing changed on the server | Do not repeat the apply; follow [Update the apps without content hashes](#update-the-apps-without-content-hashes) |
 | `plan` reports `update ... its env file differs from the one hashed at the last apply`, and you changed nothing | Your copy of the environment file differs from the one hashed at the last apply, or (with `--local`) the server's file differs from the copy that the workstation hashed | Compare the checksums of both copies as in steps 1 and 2 of [Record the content hashes](#record-the-content-hashes), make them identical, then run `apply` |
 | `plan` reports `update ... its YAML differs from the include wrapper` for `ai-edge` or `ai-inference` | The app runs with an override file that your desired-state file does not list: the internal CA of Appendix D, or the `coder` fallback of Chapter 4 | Add an `overrides` line to the app's table, as in [Create your desired-state file](#create-your-desired-state-file). Do not run `apply` before: it would replace the YAML and drop the override |
 | `validate` reports `apps.<app>.overrides ...` | An `overrides` entry is not an absolute path, is not in a list, or is listed twice | Write `overrides = ["/mnt/tank/ai/appdata/..."]` with each path once |
@@ -389,6 +392,11 @@ Table: Evaluation problems
 | `verify --current` prints `FAIL no results file in evals/results/ for configuration <hash>` | No evaluation was run since the configuration changed, or the clone is not at the configuration that the server runs | Check out the tag or branch that the server runs, then run the evaluation ([Check the configuration checksum](#check-the-configuration-checksum)) |
 | `eval.py suites` prints `FAIL` for a suite | A file under `evals/` was changed in the clone | Restore it with `git -C ~/local-agent-stack checkout -- evals/suites evals/sets.toml evals/rag-docs` |
 | `--rag-source openwebui` aborts with `HTTP 401 from Open WebUI` or `HTTP 403 from Open WebUI` | `EVAL_KB_KEY` is wrong, or the `kb-reader` user cannot read the knowledge base | Repeat step 3 of [Evaluate retrieval through Open WebUI](#evaluate-retrieval-through-open-webui) |
+| `tools-005` and `tools-006` fail with `expected 2 call(s) ..., got 1`, while the other `tools` cases pass | The model made one call where two were expected, or LiteLLM does not pass `parallel_tool_calls` on to llama-server (assumed, not verified) | If `tools-015`, the parallel case of the Anthropic route, passes, report the two failures to the project as an issue. Otherwise see step 5 of [Tool calls fail or loop](#tool-calls-fail-or-loop) |
+| Cases end with `error` and `HTTP 400:` followed by a message that names `seed` or `parallel_tool_calls` | The gateway refused a field that `eval.py` sends | Run again without `--seed`. If the message names `parallel_tool_calls`, report it to the project as an issue with the message |
+| Two runs with the same `--seed` and `--temperature` differ | LiteLLM does not pass `seed` on, or llama-server does not apply it (assumed, not verified) | Treat the runs as unseeded: run the full set again before you act on a single case, and report it as an issue |
+| The results file has no `server_tokens_per_s` | LiteLLM does not pass llama-server's `timings` through (assumed, not verified) | None; the gate uses the speed that `eval.py` measures itself |
+| A run fails in a way that this table and Chapter 9 do not describe | `eval.py` has not yet been run against a deployed stack (see the note in [Evaluation suites](#evaluation-suites)) | Report it to the project as an issue, with the output of the run and the results file, which holds no key, prompt or answer |
 
 ## Common problems and solutions
 
@@ -428,6 +436,10 @@ fails with an out-of-memory error in the `llama-swap` log.
 
     `memory.used` is roughly 14,000 to 15,500 MiB.
 
+#### Results
+
+`coder` loads, with or without a fallback, and stays below the card's memory.
+
 ### Every turn re-processes the whole prompt
 
 #### About this task
@@ -454,6 +466,12 @@ for 30,000 tokens (estimate).
 
 5. Keep `--cache-ram` above 0 in the model's command; the stack sets 6,144 MiB.
 
+6. After the next session, count the events again as in step 1.
+
+#### Results
+
+The count stays at a few events per session, and a turn costs only the time of its new tokens.
+
 ### Tool calls fail or loop
 
 #### About this task
@@ -466,9 +484,12 @@ and parser problems add malformed calls. Check the causes in this order.
 1. Confirm that the model runs with `--jinja` and a KV cache of at least `q8_0`.
 
 2. If generation stops without a call and the call appears in the reasoning text: this is a known
-   llama.cpp problem with Qwen3.5 and Qwen3.6 (llama.cpp issue 20837, closed on 2026-11-14; whether
-   the fix covers Qwen was not confirmed). Retry the request. Take newer llama.cpp builds through
-   the image updates and test them with [Pass the evaluation gate](#pass-the-evaluation-gate).
+   llama.cpp problem with Qwen3.5 and Qwen3.6 (llama.cpp issue 20837, closed on 14 November 2026 by
+   commit `3c31179`). The stack's llama.cpp build, `b12407`, contains that commit (checked in the
+   llama.cpp repository), but the commit changes only the Ministral-3 parser and the chat tests,
+   so whether it ends the problem for Qwen models is not confirmed. Retry the request. Take newer
+   llama.cpp builds through the image updates and test them with
+   [Pass the evaluation gate](#pass-the-evaluation-gate).
 
 3. If calls carry malformed arguments (JSON written as a string), or requests with several system
    messages or empty thinking blocks in the history fail: the official Qwen 3.5, 3.6 and 3.8 chat
@@ -481,8 +502,40 @@ and parser problems add malformed calls. Check the causes in this order.
    `medium`. For `coder-moe`, a Qwen3.6 loop was reported fixed with `--swa-full`; test that flag
    through the evaluation gate.
 
-5. In OpenCode, check that the model is declared with `"tools": true` in its capabilities, as the
+5. If the failures concern answers with several tool calls at once: local models make parallel
+   calls less reliably than single calls. The sources disagree on whether llama-server allows them
+   without the request field `parallel_tool_calls`, and whether OpenCode and Claude Code send that
+   field was not checked; the stack has no setting that turns parallel calls off. Compare the
+   evaluation cases `tools-005` and `tools-006` (OpenAI route) and `tools-015` (Anthropic route), and
+   if they fail, ask for one tool call per step in the project's `AGENTS.md`.
+
+6. In OpenCode, check that the model is declared with `"tools": true` in its capabilities, as the
    stack ships it.
+
+7. To see the requests and answers of a failing session in llama-swap's web interface
+   (`https://models.lab.example.com/ui`, whose labels were not checked for this guide), let
+   llama-swap keep request and response bodies for a while. The release sets `captureBuffer: 0`,
+   so that no prompt stays in its memory; `5` keeps up to 5 MB. Raise it in an override copy, as in
+   [Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit), with this
+   command in place of that task's step 2:
+
+        sudo sed -e 's/^captureBuffer: 0$/captureBuffer: 5/' \
+          /mnt/tank/ai/stacks/local-agent-stack/stack/inference/llama-swap/config.yaml |
+          sudo tee /mnt/tank/ai/appdata/llama-swap/config.yaml > /dev/null
+
+    If a fallback copy is already in place, change that copy instead:
+    `sudo sed -i 's/^captureBuffer: 0$/captureBuffer: 5/' /mnt/tank/ai/appdata/llama-swap/config.yaml`.
+    Complete the remaining steps of that task, or redeploy `ai-inference` if the override is
+    already listed. The captured bodies hold prompts and answers: when you have what you need,
+    set the value back to `0` in the copy, or return to the release's configuration as the
+    Results of that task describe, and redeploy.
+
+8. Repeat [Test tool calling](#test-tool-calling).
+
+#### Results
+
+Tool calls come back structured, on both API formats, and a real session shows none of the failure
+signs.
 
 ### LiteLLM health checks swap the GPU model
 
@@ -514,6 +567,10 @@ swapping.
         sudo docker exec llama-swap sh -c 'curl -fsS -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/running'
 
     The list shows `coder`, `embed` and `rerank`.
+
+#### Results
+
+Nothing calls `/health` on LiteLLM without a model any more, and `coder` stays loaded.
 
 ### Open WebUI ignores changed environment variables
 
@@ -552,6 +609,11 @@ Table: Open WebUI settings by source
 4. Verify the change: for a key, send a chat message with `local-coder` and upload a small
    document to a knowledge base.
 
+#### Results
+
+The setting is changed in Open WebUI's database, where it takes effect, and `web.env` holds the
+same value for a future first start.
+
 !!! note
     `ENABLE_PERSISTENT_CONFIG=false` makes the environment win at every start, but then every
     change made in the Admin Panel, MCP connections included, lasts only until the next restart.
@@ -588,6 +650,12 @@ the release.
 
 4. Repeat step 1.
 
+    The output is `200`.
+
+#### Results
+
+SearXNG runs the release's settings and answers JSON requests.
+
 ### The MCP hub answers 401 or 421
 
 #### About this task
@@ -622,6 +690,10 @@ the second check.
         sudo docker exec mcp-hub mcp-hub-healthcheck
 
     The output is `ok: fetch, kb, searxng`.
+
+#### Results
+
+The hub accepts the client's token, and its three servers answer through Caddy.
 
 ### Certificates are not issued
 
@@ -670,55 +742,111 @@ split-horizon setup in a router, Pi-hole, dnsmasq or Unbound) hides the public z
     The subject is `CN = *.lab.example.com`, and the issuer is a Let's Encrypt production
     authority.
 
+#### Results
+
+Caddy holds a production certificate for every lab host name and renews it by itself.
+
 ### Change the Open WebUI database password
 
 #### About this task
 
 PostgreSQL uses `PG_PASSWORD` only when it creates the database on the first start. Changing the
-variable later does not change the password; change it inside the database, then in both secrets
-files.
+variable later does not change the password: set the new value in both secrets files, then change
+the password inside the database to the value of the server's file. The command builds the SQL
+statement from the file and passes it to `psql` on standard input, so the password appears neither
+on a command line nor in the shell history. The running containers keep the old value until their
+app is redeployed.
 
 #### Steps
 
-1. Change the password of the `openwebui` role. Use letters and digits only, because the password
-   goes into a URL:
+1. Create a new password. Use letters and digits only, because the password goes into a URL:
 
-        sudo docker exec -it pgvector psql -U openwebui -d openwebui -c "ALTER ROLE openwebui PASSWORD '<new>'"
-
-    The output is `ALTER ROLE`.
+        python3 -c 'import secrets, string; a = string.ascii_letters + string.digits; print("".join(secrets.choice(a) for _ in range(48)))'
 
 2. Set `PG_PASSWORD=<new>` in both `rag.env` and `web.env` in `~/.config/local-agent-stack/secrets/`
    on the workstation, and copy both files to the server as in
    [Copy the environment files to TrueNAS](#copy-the-environment-files-to-truenas).
 
-3. Redeploy `ai-rag`, wait until its containers are healthy, then redeploy `ai-web`:
+3. On TrueNAS, change the password of the `openwebui` role to the value of the server's `rag.env`:
+
+        sudo sed -n "s/^PG_PASSWORD=\(.*\)$/ALTER ROLE openwebui PASSWORD '\1';/p" /mnt/tank/ai/secrets/rag.env |
+          sudo docker exec -i pgvector psql -U openwebui -d openwebui
+
+    The output is `ALTER ROLE`.
+
+4. Redeploy `ai-rag`, wait until its containers are healthy, then redeploy `ai-web`:
 
         sudo midclt call -j app.redeploy ai-rag
         sudo midclt call -j app.redeploy ai-web
 
-4. Verify that Open WebUI answers:
+5. Verify that Open WebUI answers:
 
         sudo docker exec open-webui curl -s http://127.0.0.1:8080/health
 
     The output is `{"status":true}`.
+
+#### Results
+
+The database, both secrets files and the running containers use the new password.
+
+### Set the LiteLLM database password again
+
+#### About this task
+
+PostgreSQL uses `LITELLM_DB_PASSWORD` only when `litellm-db` creates its database on the first
+start. If the value in `inference.env` changed later, `litellm` cannot log in. Set the role's
+password to the value of the server's file. As in
+[Change the Open WebUI database password](#change-the-open-webui-database-password), the SQL
+statement goes to `psql` on standard input.
+
+#### Steps
+
+1. On TrueNAS, set the password of the `litellm` role:
+
+        sudo sed -n "s/^LITELLM_DB_PASSWORD=\(.*\)$/ALTER ROLE litellm PASSWORD '\1';/p" /mnt/tank/ai/secrets/inference.env |
+          sudo docker exec -i litellm-db psql -U litellm -d litellm
+
+    The output is `ALTER ROLE`.
+
+2. Redeploy `ai-inference`:
+
+        sudo midclt call -j app.redeploy ai-inference
+
+3. Check that LiteLLM reaches its database:
+
+        sudo docker exec litellm python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:4000/health/readiness').read().decode())"
+
+    The answer contains `"status":"healthy"` and `"db":"connected"`.
+
+#### Results
+
+The `litellm` role's password matches `inference.env`, and LiteLLM uses its database again.
 
 ### Start a knowledge sync now
 
 #### About this task
 
 `oikb` syncs every 15 minutes. To sync at once, call its sync route. The route needs
-`OIKB_API_KEY` from `rag.env` when that variable is set.
+`OIKB_API_KEY` when that variable is set; the command reads it from the container's own
+environment, so the key never appears on a command line.
 
 #### Steps
 
-1. Read the key and start the sync:
+1. Start the sync:
 
-        K=$(sudo sed -n 's/^OIKB_API_KEY=//p' /mnt/tank/ai/secrets/rag.env)
-        sudo docker exec oikb python -c "import sys, urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8080/sync/rag-docs', method='POST', headers={'Authorization': 'Bearer ' + sys.argv[1]}))" "$K"
-        unset K
+        sudo docker exec oikb python -c "import os, urllib.request as u; \
+        u.urlopen(u.Request('http://127.0.0.1:8080/sync/rag-docs', method='POST', \
+        headers={'Authorization': 'Bearer ' + os.environ['OIKB_API_KEY']}))"
+
+    The command returns without output. An `HTTP Error 401` means that the key in the request does
+    not match `OIKB_API_KEY`.
 
 2. Check the result:
 
         sudo docker exec oikb python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/health').read().decode())"
 
     The source `rag-docs` shows a new last-sync time, its file counts and no error.
+
+#### Results
+
+The `rag-docs` share is synced to the knowledge base without waiting for the schedule.

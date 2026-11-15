@@ -61,7 +61,7 @@ Table: How release changes take effect
 | `stack/<stack>/compose.yaml`, an `image:` line included | New containers or container settings | `deploy.py apply` updates the app, which recreates its containers; the file is part of the app's content hash |
 | A configuration file that the compose file mounts: `stack/inference/llama-swap/config.yaml`, `stack/inference/litellm/config.yaml`, `stack/rag/oikb/oikb.yaml`, the files under `stack/web/searxng/`, `stack/edge/Caddyfile` | New service configuration | `deploy.py apply` updates the app; these files are part of the app's content hash |
 | `stack/edge/Dockerfile` | A new Caddy image | With the published image, the release also pins the new image in `stack/edge/compose.yaml`, and `apply` updates the app. With the image built on the server, build it again and redeploy `ai-edge` by hand ([Apply the release](#apply-the-release)) |
-| The MCP hub files under `stack/web/mcp-hub/` | A new hub image | Build the image on TrueNAS, then redeploy `ai-web` by hand if `apply` did not update it ([Apply the release](#apply-the-release)); `deploy.py` does not hash build files |
+| The MCP hub files under `stack/web/mcp-hub/` | A new hub image | With the published image, the release also pins the new image in `stack/web/compose.yaml`, and `apply` updates the app. With the image built on the server, build it again and redeploy `ai-web` by hand ([Apply the release](#apply-the-release)); `deploy.py` does not hash build files |
 | `stack/<stack>/<stack>.env.example` | New or changed variables | Add the variables to your copy `~/.config/local-agent-stack/secrets/<stack>.env` and to `/mnt/tank/ai/secrets/<stack>.env`; `deploy.py apply` then updates the app, because its environment file changed |
 | Seed values of Open WebUI in `stack/web/compose.yaml` | Nothing on an existing installation | Open WebUI keeps these settings in its database after its first start; make the change in the Admin Panel when the release notes say so. `apply` still recreates the `ai-web` containers, because the file changed |
 | `clients/` | Workstation configuration | The links that `clients/install.sh` created point into the workstation clone, so they follow its checkout; run `clients/install.sh` again for a new OpenCode or ssh-mcp version |
@@ -115,8 +115,9 @@ variables.
 
     Each changed directory under `stack/` names an app that the update touches: `stack/inference`
     is `ai-inference`, `stack/rag` is `ai-rag`, `stack/web` is `ai-web` and `stack/edge` is
-    `ai-edge`. A changed file under `stack/web/mcp-hub/` means that the MCP hub image must be built
-    again.
+    `ai-edge`. A changed file under `stack/web/mcp-hub/` means a new MCP hub image, and a changed
+    `stack/edge/Dockerfile` a new Caddy image: the release pins each published image in its compose
+    file, and an image that you built on the server must be built again.
 
 6. Show the changes to the variables of the apps:
 
@@ -152,8 +153,9 @@ x-local-agent-stack:
 ```
 
 The first four lines are the file `stack/<stack>/truenas-app.yaml`, which Chapters 4 to 6 paste
-into TrueNAS by hand. Compose ignores top-level keys that start with `x-`, so the
-`x-local-agent-stack` block changes nothing in the app; it records what `apply` deployed:
+into TrueNAS by hand. The Compose Specification lets a file carry top-level keys that start with
+`x-` (extension fields), and Compose ignores them, so the `x-local-agent-stack` block changes
+nothing in the app; it records what `apply` deployed:
 
 - **`files`** is a SHA-256 checksum over the app's `compose.yaml` and the files under
   `stack/<stack>/` that it mounts: `llama-swap/config.yaml` and `litellm/config.yaml` for
@@ -169,6 +171,15 @@ into TrueNAS by hand. Compose ignores top-level keys that start with `x-`, so th
 Compose recreates a container when its definition changes, not when a file it mounts changes. The
 hashes make such a change visible: when one differs from the value the app's YAML records, `plan`
 reports `update`, and `apply` writes the new YAML, which recreates the app's containers.
+
+!!! note
+    The `x-local-agent-stack` block was accepted by `docker compose config` of Compose 5.6.0 on a
+    workstation, for both wrapper shapes. The Compose version that TrueNAS 25.10 bundles was not
+    tried. TrueNAS checks every custom app's YAML with `docker compose config` before it stores it,
+    so if that version refuses the block, the first `apply` that records the hashes fails for every
+    app, and each app keeps its previous YAML and its running containers.
+    [Update the apps without content hashes](#update-the-apps-without-content-hashes) describes the
+    symptom and how to keep operating the stack.
 
 An app that runs with compose override files, such as the internal CA of Appendix D or the `coder`
 fallback of Chapter 4, lists them in its `overrides` line in the desired-state file. Its `path`
@@ -217,8 +228,9 @@ Table: deploy.py plan actions
 listed as `unmanaged` and left alone. It computes the `files` hash and the release's images from
 `git archive <release>` and `docker compose config --images` on the machine where it runs; for that
 it needs `git`, the Docker CLI with the Compose plugin (no Docker daemon) and the release tag in the
-local clone. Without the tag, the files and images are reported as `not compared`; without Docker,
-the images. The `env` hash is `not compared` when the environment file cannot be read. A hash that
+local clone ([Install the TrueNAS API client on the workstation](#install-the-truenas-api-client-on-the-workstation)
+installs them). Without the tag, the files and images are reported as `not compared`; without
+Docker, the images, and `plan` then never sees an image update. The `env` hash is `not compared` when the environment file cannot be read. A hash that
 is not compared keeps the value that the server has recorded, so a run from a machine without git or
 without the environment files never undoes what another run recorded.
 
@@ -257,7 +269,9 @@ Admin), because TrueNAS 25.10 has no smaller predefined role that can write apps
 
 #### Prerequisites
 
-- Python 3.11 or later on the workstation (`python3 --version`).
+- An Ubuntu workstation (`c4dev`) with Python 3.11 or later (`python3 --version`) and `git`
+  (`git --version`), which the clone of Chapter 3 already needed. Chapter 2 lists the rest of the
+  workstation's software ([Workstation requirements](#workstation-requirements)).
 - The key files `~/.config/local-agent-stack/truenas-read.key` and `truenas-apply.key`, from
   [Create the API keys and store them on the workstation](#create-the-api-keys-and-store-them-on-the-workstation).
 
@@ -267,20 +281,54 @@ Admin), because TrueNAS 25.10 has no smaller predefined role that can write apps
 `TS-25.10.8`. Install it into its own virtual environment, so that it does not touch the system
 Python.
 
+`deploy.py` also runs `docker compose config --images` on the workstation to read the release's
+images, so the workstation needs the Docker command-line client with the Compose plugin. It needs
+no Docker daemon: install only the packages `docker-ce-cli` and `docker-compose-plugin` from
+Docker's apt repository, not `docker-ce`, which is the daemon. If `docker compose version` already
+works on the workstation, skip steps 1 to 4.
+
 #### Steps
 
-1. Create the virtual environment:
+1. Create the directory for Docker's signing key and download the key:
+
+        sudo install -m 0755 -d /etc/apt/keyrings
+        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+2. Add Docker's apt repository:
+
+        sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+        Types: deb
+        URIs: https://download.docker.com/linux/ubuntu
+        Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+        Components: stable
+        Architectures: $(dpkg --print-architecture)
+        Signed-By: /etc/apt/keyrings/docker.asc
+        EOF
+
+3. Install the client and the Compose plugin, without the daemon:
+
+        sudo apt update
+        sudo apt install docker-ce-cli docker-compose-plugin
+
+4. Verify the Compose plugin:
+
+        docker compose version
+
+    The output starts with `Docker Compose version`. The command works without a Docker daemon.
+
+5. Create the virtual environment:
 
         python3 -m venv ~/.local/share/local-agent-stack/deploy-venv
 
     If the command reports that `ensurepip` is not available, install the `python3-venv` package
     with `sudo apt install python3-venv` and repeat the command.
 
-2. Install the client:
+6. Install the client:
 
         ~/.local/share/local-agent-stack/deploy-venv/bin/pip install 'git+https://github.com/truenas/api_client.git@TS-25.10.8'
 
-3. Verify the installation:
+7. Verify the installation:
 
         ~/.local/share/local-agent-stack/deploy-venv/bin/python -c 'import truenas_api_client; print("ok")'
 
@@ -288,6 +336,7 @@ Python.
 
 #### Results
 
+The workstation has the TrueNAS API client, `git` and the Docker client with the Compose plugin.
 Run `deploy.py` with this environment's Python, for example
 `~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py status`, from the
 workstation clone.
@@ -338,6 +387,12 @@ certificate as `truenas-ca.pem` and compare its fingerprint with the one your br
 
     `truenas.toml`, `truenas-read.key` and `truenas-apply.key` show `-rw-------`. `deploy.py`
     refuses a key file that other users can read or that belongs to another user.
+
+#### Results
+
+The workstation holds the connection settings, the two key files and the server's certificate,
+readable only by you. [Check the connection with deploy.py status](#check-the-connection-with-deploypy-status)
+tests them.
 
 !!! note
     Whether the default certificate of the TrueNAS web interface names the server's IP address
@@ -412,6 +467,11 @@ at this release:
         python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml validate
 
     The output ends with `ok (4 apps, release v1.0, TrueNAS 25.10.8)`.
+
+#### Results
+
+Your desired-state file names the release and TrueNAS version that the server runs, the four apps
+and their override files, and passes `validate`.
 
 ### Check the connection with deploy.py status
 
@@ -511,6 +571,11 @@ show the results below.
     `<app>: update` and, once the app runs again, `<app>: RUNNING`. It ends with `after apply:` and
     a new plan, in which every app shows `none (RUNNING) in step`. The exit code is `0`.
 
+    If every app instead prints `<app>: FAILED: app.update:` followed by a validation error that
+    contains `Invalid compose configuration`, TrueNAS refused the `x-local-agent-stack` block.
+    Nothing changed on the server; do not repeat the apply, and continue with
+    [Update the apps without content hashes](#update-the-apps-without-content-hashes).
+
 6. Check for drift:
 
         ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml drift
@@ -522,6 +587,64 @@ show the results below.
 Every app's YAML records the hashes of its files and its environment file, and `status` shows
 `files match, env match` for each app. From now on, `plan` reports `update` for an app whose
 release files or environment file change.
+
+### Update the apps without content hashes
+
+#### About this task
+
+Use this task only if TrueNAS refused the content hashes in
+[Record the content hashes](#record-the-content-hashes). The Compose version that TrueNAS 25.10
+bundles was not tested with the `x-local-agent-stack` block. TrueNAS validates a custom app's YAML
+with `docker compose config` before it stores the YAML or touches a container (checked in the
+TrueNAS middleware source at tag `TS-25.10.8`), so a refused apply leaves every app with the
+four-line wrapper of `stack/<stack>/truenas-app.yaml` and its containers running.
+
+The apps then work, but `deploy.py` cannot record which release files and environment file each
+app runs. `plan` reports every app as `update` with the reason
+`no hash of the files of stack/<stack>/ recorded`, `apply` fails for each of them in the same way,
+and `drift` always reports drift. `status`, the app states and the image comparison stay correct.
+Until a release of this repository changes this, operate the stack as follows.
+
+#### Steps
+
+1. Confirm that nothing changed on the server:
+
+        cd ~/local-agent-stack
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml status
+
+    Every app shows `state RUNNING, YAML matches, files not recorded, env not recorded, images match`.
+    If an app shows another state, read `/var/log/app_lifecycle.log` on TrueNAS.
+
+2. Report the problem to the project as an issue. Include the TrueNAS version and the `FAILED`
+   lines of the apply, with your domain and addresses replaced by the guide's placeholders.
+
+3. Do not run `deploy.py apply`, and do not create the cron job of
+   [Scheduled drift checks on TrueNAS](#scheduled-drift-checks-on-truenas): it would report drift
+   every day. Use `deploy.py status` and `plan` to read the server, and ignore `files not recorded`,
+   `env not recorded` and an `update` whose only reasons are hashes that are not recorded.
+
+4. For each release update, follow [Updating to a new release](#updating-to-a-new-release), but
+   replace the `plan` and `apply` steps of [Apply the release](#apply-the-release) with a redeploy
+   by hand of every app that the release or your environment files touch: the apps whose folder
+   under `stack/` changed (step 5 of
+   [Check a release before you install it](#check-a-release-before-you-install-it)) and the apps
+   whose environment file you changed. Redeploy them one at a time, in the order `ai-inference`,
+   `ai-rag`, `ai-web`, `ai-edge`, as in [Redeploy one app](#redeploy-one-app). A redeploy reads the
+   compose file, the mounted files and the environment file again, and pulls images that the
+   server lacks.
+
+5. After the redeploys, check the images:
+
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml status
+
+    Every app shows `images match`. An app that shows `images differ` still runs the old images;
+    redeploy it again.
+
+#### Results
+
+The apps run the release with the four-line wrapper, and `deploy.py status` confirms their states
+and images. Changes of the release files and the environment files reach the server through a
+redeploy by hand, because the server records no hashes of them.
 
 ## Updating to a new release
 
@@ -635,6 +758,12 @@ You can return to the current state with
    the release changed `stack/edge/Dockerfile`; step 1 of [Apply the release](#apply-the-release)
    covers it.
 
+#### Results
+
+Both clones are at `<new-tag>`, your desired-state file names it, and the override copies follow
+the new release. The apps still run the old release until
+[Apply the release](#apply-the-release).
+
 ### Add new variables to the secrets files
 
 #### About this task
@@ -697,23 +826,20 @@ the next task applies it.
 `apply` updates every app whose release files or environment file changed, and redeploys every app
 whose running images differ from the release's. It works one app at a time, in the order of the
 desired-state file (`ai-inference`, `ai-rag`, `ai-web`, `ai-edge`), and waits until each app runs
-before it moves to the next. Some changes remain manual, because `deploy.py` does not detect them: a
-new MCP hub image, a new build of the local Caddy image, and an override copy that you refreshed in
-[Update the clones](#update-the-clones). With the local Caddy image, name the other apps with
+before it moves to the next. A new published image reaches the server this way too: the release
+pins it in the compose file, which changes the app's `files` hash. Some changes remain manual,
+because `deploy.py` does not detect them: a new build of an image that you build on the server, and
+an override copy that you refreshed in [Update the clones](#update-the-clones). With the local Caddy image, name the other apps with
 `--app` in steps 2 to 4 (see the note in [How deploy.py works](#how-deploypy-works)).
 
 #### Steps
 
-1. If the release changed files under `stack/web/mcp-hub/`, build the hub image on TrueNAS first,
-   under the name that `stack/web/compose.yaml` gives it (`0.15.0` in this release), so that the
-   recreated `ai-web` uses it:
-
-        sudo docker build -t ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0 /mnt/tank/ai/stacks/local-agent-stack/stack/web/mcp-hub
-
-    If the release publishes the image, pull it instead, as in
-    [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image). If you run the Caddy image
-    built on the server and the release changed `stack/edge/Dockerfile`, build it again as in
-    steps 1 to 3 of [Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas).
+1. If you build an image on the server instead of pulling the published one, and the release
+   changed its files, build it again first: the MCP hub image as in
+   [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image) when files under
+   `stack/web/mcp-hub/` changed, and the Caddy image as in steps 1 to 3 of
+   [Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas) when
+   `stack/edge/Dockerfile` changed. With the published images, skip this step.
 
 2. On the workstation, change to the clone and show the plan:
 
@@ -741,8 +867,8 @@ new MCP hub image, a new build of the local Caddy image, and an override copy th
     `after apply:` and a new plan, in which every app shows `none`. The exit code is `0`.
 
 5. Redeploy by hand each app that `apply` did not change and that needs it: `ai-web` after a new
-   hub image from step 1, `ai-edge` after a new local Caddy image, and an app whose override copy
-   you refreshed. Do one app at a time, in the
+   hub image built in step 1, `ai-edge` after a new local Caddy image, and an app whose override
+   copy you refreshed. Do one app at a time, in the
    order `ai-inference`, `ai-rag`, `ai-web`, `ai-edge`:
 
         sudo midclt call -j app.redeploy <app>
@@ -793,6 +919,11 @@ of its environment file.
 4. Repeat steps 1 to 3 on every other machine that runs the clients, such as the Mac.
    [Update OpenCode and the SSH tool](#update-opencode-and-the-ssh-tool) describes the same task
    for one workstation.
+
+#### Results
+
+Every workstation runs the OpenCode version and client files of the new release, and its SSH tool
+policy carries the release's new settings.
 
 ### Verify the release update
 
@@ -856,11 +987,18 @@ roll back the database datasets to the snapshot of
 4. Check that every app of the stack runs. `deploy.py apply` does not start a stopped app.
 
 5. Run `deploy.py plan` and `deploy.py apply` as in [Apply the release](#apply-the-release).
-   `apply` updates every app whose files differ between the two tags. If the update built a new MCP
-   hub image under the same tag, build it again from the old tag's files first (step 1 of that
-   task), and redeploy `ai-web` by hand if `apply` did not update it.
+   `apply` updates every app whose files differ between the two tags, which includes the images
+   that the old tag pins. If you build an image on the server and the update built a new one, build
+   it again from the old tag's files first (step 1 of that task), and redeploy its app by hand if
+   `apply` did not update it.
 
 6. Run the verification of [Verify the release update](#verify-the-release-update).
+
+#### Results
+
+The clones and the apps run `<old-tag>` again, and the databases hold the state of the snapshot if
+you rolled them back. Delete the `before-<new-tag>` snapshots once you no longer need them, as in
+[Verify the release update](#verify-the-release-update).
 
 ## Scheduled drift checks on TrueNAS
 
@@ -912,6 +1050,11 @@ check it.
     The output has the same shape as on the workstation. If the files and images show
     `not compared`, git did not read the clone; the cron job in the next task passes git a setting
     for that.
+
+#### Results
+
+`deploy.py --local` reads the apps through the local middleware, without a key. If step 2 failed,
+keep the drift checks on the workstation and skip the next task.
 
 ### Create the drift cron job
 
@@ -966,10 +1109,17 @@ Error** is cleared.
 
 ## Updating container images
 
-The compose files pin every image by tag and digest. Image updates reach the server only through a
-release of this repository: they arrive in `main` as pull requests, and a release carries them to
-the server with [Updating to a new release](#updating-to-a-new-release). An update notice in the
-TrueNAS **Apps** screen does not change what an app runs, because the digest stays the same.
+The compose files pin every image by tag and digest, the stack's own Caddy and MCP hub images
+included. Image updates reach the server only through a release of this repository: they arrive in
+`main` as pull requests, and a release carries them to the server with
+[Updating to a new release](#updating-to-a-new-release). An update notice in the TrueNAS **Apps**
+screen does not change what an app runs, because the digest stays the same.
+
+The exception is an image that you build on the server instead of pulling the published one: the
+Caddy image of [Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas), or the MCP hub
+image when you build it as in [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image).
+Such an image changes only when you build it again, which
+[Apply the release](#apply-the-release) does when a release changes its files.
 
 ### How image updates arrive
 
@@ -1024,8 +1174,8 @@ inspection works for any image.
 1. Read the image's release notes, linked in the pull request, for breaking changes and new
    settings.
 
-2. On a machine with Docker (the TrueNAS server or the workstation), pull the proposed image by
-   the reference in the pull request:
+2. In **System** > **Shell** on TrueNAS, pull the proposed image by the reference in the pull
+   request:
 
         sudo docker pull <image>:<tag>@sha256:<digest>
 
@@ -1045,7 +1195,21 @@ inspection works for any image.
    directory of a new major version is not compatible. Plan a dump with `pg_dump` and a restore
    into the new version (Appendix A shows the commands).
 
-6. Let the checks of the pull request pass, merge it, and remove the image you pulled if you do not
+6. For a llama-swap update, optionally measure the proposed image before you merge it. `--oneoff`
+   runs the benchmark in a throwaway container of the image given with `--image`, with the model
+   files mounted from the server; it first unloads the GPU model of the running `llama-swap`, so
+   run it while no client works. From the TrueNAS clone:
+
+        cd /mnt/tank/ai/stacks/local-agent-stack
+        sudo bash tools/bench.sh --oneoff --image <image>:<tag>@sha256:<digest> \
+          -m Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf -c 0,16384,32768 -u 512 -r 5
+
+    Compare the table with your baseline as in
+    [Compare a new run with the baseline](#compare-a-new-run-with-the-baseline). The quality of the
+    answers is checked only after a release deploys the image, by the evaluation gate
+    ([Run the regression check](#run-the-regression-check)).
+
+7. Let the checks of the pull request pass, merge it, and remove the image you pulled if you do not
    keep it:
 
         sudo docker image rm <image>:<tag>@sha256:<digest>
@@ -1055,13 +1219,16 @@ inspection works for any image.
 The update is in `main` and reaches the server with the next release.
 
 !!! note
-    The edge image `ghcr.io/corytron/local-agent-stack-caddy` is built from `stack/edge/Dockerfile`
-    by the repository's **Caddy image** workflow when the Dockerfile changes on `main`. A Renovate
-    update of the `caddy` base image therefore produces a new edge image, whose tag is the Caddy
-    version; pin it in `stack/edge/compose.yaml` as `:<version>@sha256:<digest>` from the workflow
-    run's summary. GitHub creates a new container package as private: make it public once, in the
-    package's **Package settings** > **Danger Zone** > **Change visibility** > **Public**, so that
-    TrueNAS can pull it without credentials.
+    The stack's own images are built by the repository's workflows when their files change on
+    `main`: `ghcr.io/corytron/local-agent-stack-caddy` from `stack/edge/Dockerfile` by **Caddy
+    image**, tagged with the Caddy version, and `ghcr.io/corytron/local-agent-stack-mcp-hub` from
+    `stack/web/mcp-hub/` by **MCP hub image**, tagged with the mcp-proxy version. A Renovate update
+    of a base image in one of these Dockerfiles therefore produces a new image. Pin it through a
+    pull request, with the `image:` line that the workflow run's summary prints
+    (`<image>:<version>@sha256:<digest>`), in `stack/edge/compose.yaml` or `stack/web/compose.yaml`.
+    GitHub creates a new container package as private: make it public once, in the package's
+    **Package settings** > **Danger Zone** > **Change visibility** > **Public**, so that TrueNAS can
+    pull it without credentials.
 
 ### What a redeploy restarts
 
@@ -1086,7 +1253,7 @@ Table: Effect of a redeploy
 
 `deploy.py apply` updates an app whenever its release files, its environment file or its images
 change. Redeploy an app by hand for the changes that `deploy.py` does not detect: a changed override
-file or override copy, a rebuilt MCP hub image, and a branch deployed for testing.
+file or override copy, an image that you rebuilt on the server, and a branch deployed for testing.
 
 #### Steps
 
@@ -1105,6 +1272,11 @@ file or override copy, a rebuilt MCP hub image, and a branch deployed for testin
 3. If a container stays unhealthy or restarts, read its log as in
    [Read the logs of a container](#read-the-logs-of-a-container).
 
+#### Results
+
+The app's containers run again with the current compose file, mounted files, environment file and
+images.
+
 ## Changing or adding a model
 
 A model change touches several files of the inference app and every client that names models, so
@@ -1114,11 +1286,15 @@ LiteLLM names, so a model can be replaced behind an existing name without any cl
 
 ### Before you change a model
 
-The 16 GB card holds one generating model, and about 15.5 GiB of it is usable on a headless server
-(estimate). A model fits when its weights, its KV cache at the planned context, a compute buffer of
-about 0.7 GiB and any draft model stay below that. The current `coder` model needs about 14.3 GiB at
-64K. Appendix B lists the models that suit this server, the ones to avoid on two memory channels,
-and their sizes.
+The 16 GB card holds one generating model. A model fits when its weights, its KV cache at the
+planned context, a compute buffer of about 0.7 GiB and any draft model stay below the memory that
+remains after the CUDA context, about 15.5 GiB on a headless card (assumed). The current `coder`
+model needs about 14.3 GiB at 64K by that count (an estimate). Two kinds of figures appear in this
+guide: estimates count only the model's own allocations, as above; measurements, such as the
+**GPU MiB used / total** column of `tools/bench.sh --mode server` and the memory that `nvidia-smi`
+reports, count everything on the card, the CUDA context included. Compare a measurement with the
+card's total, not with 15.5 GiB. Appendix B lists the models that suit this server, the ones to
+avoid on two memory channels, and their sizes.
 
 Keep these rules for any new model:
 
@@ -1173,6 +1349,11 @@ need no Hugging Face account.
 
     The two values are identical. If they differ, delete the file and download it again.
 
+#### Results
+
+The model file is in `/mnt/tank/ai/models/gguf/` under its final name, with the checksum that
+Hugging Face publishes.
+
 ### Measure the model with bench.sh
 
 #### Prerequisites
@@ -1189,6 +1370,23 @@ them again on the next request. The `server` mode starts one `llama-server` per 
 size, records whether it starts, how much GPU memory it holds, and the prompt and generation speed
 of one request that fills 75% of the context. The `bench` mode runs `llama-bench` for prompt and
 generation speed at several context depths.
+
+Chapter 4 lists the main options ([How bench.sh works](#how-benchsh-works)). The following options
+change where and how the benchmark runs; `tools/bench.sh --help` lists them all.
+
+Table: Further options of bench.sh
+
+| Option | Meaning |
+|---|---|
+| `-p`, `--prompt N` | `bench`: prompt tokens per prompt-processing test; default 2048 |
+| `--container NAME` | The running container to use; default `llama-swap` |
+| `--oneoff` | Run in a throwaway container of `--image` instead of the running container; also works while `ai-inference` is stopped |
+| `--image REF` | The image for `--oneoff`; default the llama-swap image that the release pins |
+| `--models-dir DIR` | The host directory mounted at `/models` for `--oneoff`; default `/mnt/tank/ai/models` |
+| `--port N` | `server`: the loopback port of the test server inside the container; default 18080 |
+| `--timeout SEC` | `server`: seconds to wait for a test server to start; default 600 |
+| `DOCKER` (environment) | The Docker command; default `docker` |
+| `AI_ROOT` (environment) | The root of the stack's datasets, which sets the default of `--models-dir` (`<AI_ROOT>/models`); default `/mnt/tank/ai` |
 
 #### Steps
 
@@ -1264,6 +1462,12 @@ branch.
 
     Every check reports `ok`.
 
+#### Results
+
+The branch starts the model in llama-swap and gives it a client-facing name in LiteLLM. Nothing
+reaches the server until you deploy the branch in
+[Pass the evaluation gate](#pass-the-evaluation-gate).
+
 ### Make the model available to clients
 
 #### Steps
@@ -1284,6 +1488,11 @@ branch.
 
 4. Verify a key's names as in [Verify a LiteLLM key](#verify-a-litellm-key): the list includes the
    new name.
+
+#### Results
+
+Every client that should use the model has a key that allows its name, and OpenCode declares it
+with its real limits.
 
 ### Pass the evaluation gate
 
@@ -1369,19 +1578,29 @@ with the next release; after you install it, record a new baseline
 
 ### Change the embedding or reranker model
 
-The embedding model decides the vectors in the document index. After you change `local-embed` to
-another model:
+#### About this task
 
-1. Reindex in Open WebUI: **Admin Panel** > **Settings** > **Documents**, **Reindex Embedding
-   Data**. Files attached directly to chats keep their old vectors.
-2. Keep the vector size at 1,536 dimensions or fewer, the default maximum of the pgvector index
-   (`PGVECTOR_INITIALIZE_MAX_VECTOR_LENGTH`); `Qwen3-Embedding-0.6B` produces 1,024.
-3. Check the query prefix. Open WebUI sends the model card's instruction prefix with every query
-   (`RAG_EMBEDDING_QUERY_PREFIX`, seeded on the first start, then changed in **Documents**); a new
-   model can need another prefix or none.
+The embedding model decides the vectors in the document index, so a new `local-embed` model needs a
+new index. A reranker change needs no reindex. Keep each reranker input (the query plus one
+document) within the reranker's `-ub`, which is 4,096 tokens in the stack; longer inputs fail.
 
-A reranker change needs no reindex. Keep each input (the query plus one document) within the
-reranker's `-ub`, which is 4,096 tokens in the stack; longer inputs fail.
+#### Steps
+
+1. Before you change `local-embed`, check the new model's vector size: keep it at 1,536 dimensions
+   or fewer, the default maximum of the pgvector index (`PGVECTOR_INITIALIZE_MAX_VECTOR_LENGTH`).
+   `Qwen3-Embedding-0.6B` produces 1,024.
+2. After the release with the new embedding model is deployed, reindex in Open WebUI:
+   **Admin Panel** > **Settings** > **Documents**, **Reindex Embedding Data**. Files attached
+   directly to chats keep their old vectors.
+3. Check the query prefix in **Documents**. Open WebUI sends the model card's instruction prefix
+   with every query (`RAG_EMBEDDING_QUERY_PREFIX`, seeded on the first start, then changed in
+   **Documents**); a new model can need another prefix or none.
+4. Verify retrieval as in [Test retrieval over your documents](#test-retrieval-over-your-documents).
+
+#### Results
+
+The document index holds vectors of the new embedding model, and retrieval finds the planted test
+document.
 
 !!! note
     The Open WebUI field labels in this chapter were read from the source of v0.13.3; the captions
@@ -1389,11 +1608,21 @@ reranker's `-ub`, which is 4,096 tokens in the stack; longer inputs fail.
 
 ### Remove a model
 
+#### Steps
+
 1. In a branch, delete the model's entry and its group membership from the llama-swap file, its
-   names from the LiteLLM file, the OpenCode entry, and the name from the virtual keys.
-2. After the release that removes it is deployed, delete the file on TrueNAS:
+   names from the LiteLLM file and the OpenCode entry, and release the change.
+2. Remove the name from the virtual keys that allow it, as in
+   [Make the model available to clients](#make-the-model-available-to-clients).
+3. After the release that removes it is deployed, delete the file on TrueNAS:
 
         sudo rm /mnt/tank/ai/models/gguf/<file>
+
+4. Verify that no key lists the name any more, as in [Verify a LiteLLM key](#verify-a-litellm-key).
+
+#### Results
+
+No configuration, key or client names the model, and its file is gone from the models dataset.
 
 ## Monitoring the stack
 
@@ -1421,6 +1650,11 @@ container health checks.
 
 3. From the workstation, check the server with `deploy.py status` and run `python3 tools/smoke.py`.
 
+#### Results
+
+You know which containers are unhealthy or close to their memory limit, and whether the stack
+answers end to end.
+
 ### Monitor the GPU with nvidia-smi
 
 #### Steps
@@ -1446,6 +1680,13 @@ container health checks.
 
         nvidia-smi -q | grep -i 'persistence mode'
         nvidia-smi --query-gpu=power.limit,power.default_limit --format=csv
+
+    Persistence mode reads `Enabled`, and `power.limit` is the limit you set in Chapter 3.
+
+#### Results
+
+You know the GPU's load, memory, power and temperature, and that the settings of Chapter 3 are in
+effect.
 
 ### Read the gpu-exporter metrics
 
@@ -1484,6 +1725,11 @@ address must join `ai-net`; the stack does not include one.
 
     The lines include the requests in progress and the token counters of `llama-server`.
 
+#### Results
+
+You know which models are loaded, that the CPU models use the AMX kernels, and the load of the
+`coder` process.
+
 !!! note
     `llama-swap` also has a web UI at `https://models.lab.example.com`, which requires its API key.
     How a browser presents the key to it, and the metrics path `/upstream/<id>/metrics`, were not
@@ -1504,11 +1750,13 @@ sudo docker exec litellm python3 -c "import urllib.request; print(urllib.request
 
 The answer contains `"status":"healthy"` and `"db":"connected"`.
 
-Read the gateway's Prometheus metrics with the master key:
+Read the gateway's Prometheus metrics with the master key. The key is passed to `curl` on standard
+input, so it never appears in a command line or the process list:
 
 ```
 K=$(sudo sed -n 's/^LITELLM_MASTER_KEY=//p' /mnt/tank/ai/secrets/inference.env)
-sudo docker exec open-webui curl -s -H "Authorization: Bearer $K" http://litellm:4000/metrics | grep -m10 -i '^litellm'
+printf 'Authorization: Bearer %s\n' "$K" |
+  sudo docker exec -i llama-swap curl -sS -H @- http://litellm:4000/metrics | grep -m10 -i '^litellm'
 unset K
 ```
 
@@ -1592,6 +1840,11 @@ compose file sets no log options, so the Docker daemon's defaults apply to its t
 4. Show the app lifecycle log of TrueNAS:
 
         sudo tail -n 100 /var/log/app_lifecycle.log
+
+#### Results
+
+You have the log lines of the failing container or app, which the tables of the troubleshooting
+chapter match to their causes ([Troubleshooting deployment issues](#troubleshooting-deployment-issues)).
 
 ## TrueNAS updates
 
@@ -1696,6 +1949,11 @@ The server runs the new version, and `deploy.py` accepts it.
 
 7. From the workstation, run `python3 tools/smoke.py`. The last line starts with
    `smoke: 8 passed, 0 failed`.
+
+#### Results
+
+The driver, the Apps service, the ARC cap, persistence mode, the shared network and every
+container came through the update, and the stack answers end to end.
 
 ### Moving to TrueNAS 27
 

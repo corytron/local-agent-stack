@@ -3,7 +3,7 @@ kind: appendix
 
 # Configuration file reference
 
-This appendix prints every file that the deployment installs or that you copy and edit, exactly as it ships in release 1.0 of the repository. The chapters quote the parts they need; this appendix is the complete text, for review and for recovery without network access. Files that contain only lock data (package hashes) are not printed; they are in the repository next to the files below.
+This appendix prints every file that the deployment installs or that you copy and edit, exactly as it ships in release 1.0 of the repository. The chapters quote the parts they need; this appendix is the complete text, for review and for recovery without network access. Files that contain only lock data (package hashes) are not printed; they are in the repository next to the files below: `stack/web/mcp-hub/package-lock.json` and `stack/web/mcp-hub/requirements-fetch.txt`, which pin every package of the MCP hub image, and `tools/requirements-checks.txt`, which pins the check tools of Chapter 8.
 
 ## Inference app files
 
@@ -113,6 +113,10 @@ Table: Web app files
 | `stack/web/searxng/limiter.toml` | SearXNG limiter settings. |
 | `stack/web/mcp-hub/Dockerfile` | How the MCP hub image is built. |
 | `stack/web/mcp-hub/servers.json` | The tool servers the MCP hub serves. |
+| `stack/web/mcp-hub/healthcheck.py` | The MCP hub's container health check. |
+| `stack/web/mcp-hub/console-to-stderr.cjs` | Keeps the kb server's start-up lines off its JSON-RPC output. |
+| `stack/web/mcp-hub/package.json` | The Node.js MCP servers of the hub image and their versions. |
+| `stack/web/mcp-hub/requirements-fetch.in` | The Python fetch server of the hub image and its version. |
 | `stack/web/web.env.example` | Variables for /mnt/tank/ai/secrets/web.env. |
 | `stack/web/truenas-app.yaml` | The YAML of the ai-web custom app in TrueNAS (the include wrapper). |
 
@@ -145,6 +149,30 @@ How the MCP hub image is built.
 The tool servers the MCP hub serves.
 
 {{ include stack/web/mcp-hub/servers.json }}
+
+### web/mcp-hub/healthcheck.py
+
+The MCP hub's container health check.
+
+{{ include stack/web/mcp-hub/healthcheck.py }}
+
+### web/mcp-hub/console-to-stderr.cjs
+
+Keeps the kb server's start-up lines off its JSON-RPC output.
+
+{{ include stack/web/mcp-hub/console-to-stderr.cjs }}
+
+### web/mcp-hub/package.json
+
+The Node.js MCP servers of the hub image and their versions.
+
+{{ include stack/web/mcp-hub/package.json }}
+
+### web/mcp-hub/requirements-fetch.in
+
+The Python fetch server of the hub image and its version.
+
+{{ include stack/web/mcp-hub/requirements-fetch.in }}
 
 ### web/web.env.example
 
@@ -352,7 +380,9 @@ The desired state tools/deploy.py applies and checks.
 ## Evaluation files
 
 These files decide which evaluation cases `tools/eval.py` runs and when its regression gate fails
-(Chapter 9). They stay in the workstation's clone; nothing installs them on the server.
+(Chapter 9). They stay in the workstation's clone; nothing installs them on the server. The four
+sample documents of the `rag` suite are fictional; you copy them to the `rag-docs` share only for
+the optional retrieval evaluation of Chapter 9.
 
 Table: Evaluation files
 
@@ -360,6 +390,10 @@ Table: Evaluation files
 |---|---|
 | `evals/sets.toml` | The suite order and the run sets `smoke` and `full`. |
 | `evals/gate.toml` | The thresholds of the regression gate of tools/eval.py compare. |
+| `evals/rag-docs/eval-greenhouse-log.md` | Sample document of the rag suite: a greenhouse log. |
+| `evals/rag-docs/eval-heronsgate-backups.md` | Sample document of the rag suite: a backup plan. |
+| `evals/rag-docs/eval-heronsgate-handbook.md` | Sample document of the rag suite: an operations handbook. |
+| `evals/rag-docs/eval-quillmate-release-notes.md` | Sample document of the rag suite: release notes. |
 
 ### evals/sets.toml
 
@@ -372,3 +406,53 @@ The suite order and the run sets `smoke` and `full`.
 The thresholds of the regression gate of tools/eval.py compare.
 
 {{ include evals/gate.toml }}
+
+### evals/rag-docs/eval-greenhouse-log.md
+
+Sample document of the rag suite: a greenhouse log.
+
+{{ include evals/rag-docs/eval-greenhouse-log.md }}
+
+### evals/rag-docs/eval-heronsgate-backups.md
+
+Sample document of the rag suite: a backup plan.
+
+{{ include evals/rag-docs/eval-heronsgate-backups.md }}
+
+### evals/rag-docs/eval-heronsgate-handbook.md
+
+Sample document of the rag suite: an operations handbook.
+
+{{ include evals/rag-docs/eval-heronsgate-handbook.md }}
+
+### evals/rag-docs/eval-quillmate-release-notes.md
+
+Sample document of the rag suite: release notes.
+
+{{ include evals/rag-docs/eval-quillmate-release-notes.md }}
+
+## Repository tooling files
+
+These files of the repository act on your clone and your GitHub repository rather than on the
+server (Chapter 8). `tools/setup-checks.sh` activates the hook; the labels are the ones the issues
+and pull requests of the workflow use, among them `deploy`, which `tools/deploy.py drift --issue`
+needs, and `dependencies` and `stack`, which Renovate adds.
+
+Table: Repository tooling files
+
+| File | Purpose |
+|---|---|
+| `tools/hooks/pre-push` | The Git hook that refuses pushes to `main` and runs the fast checks before a push. |
+| `.github/labels.json` | The issue and pull request labels, with their colours and descriptions. |
+
+### tools/hooks/pre-push
+
+The Git hook that refuses pushes to `main` and runs the fast checks before a push.
+
+{{ include tools/hooks/pre-push }}
+
+### .github/labels.json
+
+The issue and pull request labels, with their colours and descriptions.
+
+{{ include .github/labels.json }}
