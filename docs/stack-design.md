@@ -94,7 +94,7 @@ include:
 services: {}
 ```
 
-`stack/<app>/<app>.env.example` documents every variable with a placeholder value, and `stack/<app>/truenas-app.yaml` holds exactly these four lines for the hand install. `tools/deploy.py apply` writes the same YAML plus a top-level `x-local-agent-stack` block (`files` and `env` content hashes) and, when `desired.toml` lists `overrides` for the app, includes them after the compose file (`path:` as a list).
+`stack/<app>/<app>.env.example` documents every variable with a placeholder value, and `stack/<app>/truenas-app.yaml` holds exactly these four lines for the hand install. `tools/deploy.py apply` writes the same YAML plus a top-level `x-local-agent-stack` block (`files` and `env` content hashes) and, when `desired.toml` lists `overrides` for the app, includes them after the compose file (`path:` as a list). `content_hashes = false` (or `--no-hashes`) makes it write the plain four lines.
 
 ## 5. Models, aliases and VRAM budget
 
