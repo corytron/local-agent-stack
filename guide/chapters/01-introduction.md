@@ -387,3 +387,4 @@ Table: Revision history
 | Revision | Date | Description |
 |---|---|---|
 | A00 | November 2026 | Initial release, for Local Agent Stack v1.0: planning, the four TrueNAS apps, the workstation clients, the project workflow with agents, validation, evaluation, operation, troubleshooting and removal, with six appendices. Written before the first run on the reference server ([Validation status and known issues](#validation-status-and-known-issues)). |
+| A01 | November 2026 | Local Agent Stack v1.1: the MCP hub image is rebuilt with zod 4.6.7 for its knowledge-base server (security advisory, high); no procedure changes. |
