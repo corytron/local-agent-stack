@@ -9,7 +9,7 @@ upgrade that changes the choice, and the coding agents that can stand in for Ope
 
 Figures marked "est." are estimates from the research notes' bandwidth model, calibrated on other
 machines; "measured" figures come from published runs on similar hardware. Measure on your own
-server before you rely on either (Chapter 9). The files in `stack/` are the authority for every
+server before you rely on either ([Record a benchmark baseline](#record-a-benchmark-baseline)). The files in `stack/` are the authority for every
 flag; this appendix explains the choices behind them.
 
 ## Model profiles compared
@@ -96,7 +96,8 @@ as `local-coder-moe`.
   anonymous memory that the kernel cannot evict and the ZFS ARC does not cache a second time. It
   starts from `-t 8 -tb 16`, because generation on two memory channels saturates at about 6 to 8
   threads. Sweep `-t` from 4 to 16 and `--n-cpu-moe` from 14 to 20 with the benchmark in
-  Chapter 9, and keep the fastest setting that fits.
+  Chapter 9 ([Tune and record the fast profile](#tune-and-record-the-fast-profile)), and keep the
+  fastest setting that fits.
 
 !!! caution
     llama-swap keeps one GPU model loaded at a time. While any client uses `local-coder-moe`, a
@@ -104,25 +105,31 @@ as `local-coder-moe`.
     fast-profile request swaps them again. Switch profiles for a whole working session, not per
     request.
 
+The installed `opencode.jsonc` already declares the model as `local/local-coder-moe` in the
+`local` provider, with the same 64K context and 16,384-token output limit as `local/local-coder`
+([Provider and models](#provider-and-models)). Nothing in the configuration changes; a session
+selects it by name. The four agent definitions name `local/local-coder`, so a session on the fast
+profile starts no subagents: each subagent request would load `coder` back.
+
 To use the fast profile from OpenCode:
 
-1. In `opencode.jsonc`, copy the `local-coder` entry of the `local` provider, rename the copy
-   `local-coder-moe` and keep its `limit` values; both models run with a 64K context.
-
-2. Run a task against it.
+1. Run a task against it.
 
         opencode run --model local/local-coder-moe "Reply with the single word OK."
 
     The answer is `OK`. The first request takes longer while llama-swap loads the model.
 
-3. In **System > Shell** on TrueNAS, check the GPU memory.
+2. In **System > Shell** on TrueNAS, check the GPU memory.
 
         nvidia-smi --query-gpu=memory.used --format=csv
 
     `memory.used` is about 16,000 MiB.
 
-4. When the session ends, send any request to `local-coder` so that the default model is loaded
-   for the other clients.
+3. Pass `--model local/local-coder-moe` to every `opencode run` of the working session.
+
+4. When the session ends, send any request to `local-coder`, for example
+   `opencode run "Reply with the single word OK."`, so that the default model is loaded for the
+   other clients.
 
 ### RAG-on-GPU profile
 

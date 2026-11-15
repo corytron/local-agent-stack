@@ -22,7 +22,7 @@ Table: Reference system
 | Memory | Two 32 GB DDR5-4800 RDIMMs (64 GB, 62.3 GiB usable) | Two of eight channels populated |
 | GPU | NVIDIA GeForce RTX 4080, 16 GB | Ada architecture, compute capability 8.9, 716.8 GB/s memory bandwidth, PCIe 4.0 x16, 320 W board power |
 | Storage | Pool `tank` on SSD or NVMe | Holds the apps, the models and the stack's datasets |
-| Workstation | `c4dev` (`192.0.2.20`), Ubuntu Linux | Runs the coding agent; a Mac or other client attaches to it over SSH |
+| Workstation | `c4dev` (`192.0.2.20`), Ubuntu Linux | Runs the coding agent while you use it; other clients log in to it over SSH, and a Mac can also run its own copy of the agent |
 
 ### Minimum requirements
 
@@ -47,7 +47,8 @@ Table: Minimum requirements
 The GPU memory (VRAM) decides which models and context lengths the stack can run. The system
 memory holds the ZFS cache, the services, the CPU models and, for the fast profile, part of the
 model weights. All figures in this section are estimates from the research notes unless they are
-marked as measured; Chapter 9 measures them on your system.
+marked as measured; Chapter 9 measures them on your system
+([Record a benchmark baseline](#record-a-benchmark-baseline)).
 
 ### Model files and disk space
 
@@ -108,7 +109,7 @@ Table: VRAM of the coder model by context length
     The estimates carry about ±0.5 GiB of uncertainty, and they include the weights of the MTP
     head but not any working memory that speculative decoding adds; Unsloth's documentation puts
     MTP's extra need at 1 to 2 GB. Chapter 4 checks the real usage with `nvidia-smi` after the model
-    loads. Loading the model's vision projector would add 0.59 GiB (`Q8_0`) or 0.87 GiB (`F16`), so
+    loads ([Check GPU memory and processes](#check-gpu-memory-and-processes)). Loading the model's vision projector would add 0.59 GiB (`Q8_0`) or 0.87 GiB (`F16`), so
     the default profile does not load it.
 
 !!! note
@@ -118,7 +119,8 @@ Table: VRAM of the coder model by context length
 ### System RAM budget
 
 The ZFS ARC, the services and the models share the system memory. Chapter 3 caps the ARC at
-12 GiB (`zfs_arc_max` = `12884901888`), which leaves room for the model processes.
+12 GiB (`zfs_arc_max` = `12884901888`, [Cap the ZFS ARC](#cap-the-zfs-arc)), which leaves room for
+the model processes.
 
 Table: System RAM budget (GiB, estimates)
 
@@ -243,8 +245,8 @@ Table: Host names
 | `mcp.lab.example.com` | `mcp-hub:8096` | OpenCode, Open WebUI |
 | `search.lab.example.com` | `searxng:8080` | Administrators (optional) |
 
-Chapter 6 adds an A record for each name in your local DNS server or router, pointing to
-`192.0.2.10`. The names do not need public DNS records: Caddy obtains the certificates through the
+Chapter 5 adds an A record for each name in your local DNS server or router, pointing to
+`192.0.2.10` ([Add the host names to local DNS](#add-the-host-names-to-local-dns)). The names do not need public DNS records: Caddy obtains the certificates through the
 DNS-01 challenge, which only needs an API token for the zone at your DNS provider.
 
 ### Server ports
@@ -255,7 +257,7 @@ Table: Ports published on the TrueNAS server
 |---|---|---|
 | 443/tcp | `caddy` (`ai-edge`) | HTTPS for every host name |
 | 80/tcp | `caddy` (`ai-edge`) | Redirects to HTTPS |
-| 8443/tcp, 8080/tcp | TrueNAS web interface | Moved from 443 and 80 in Chapter 3 |
+| 8443/tcp, 8080/tcp | TrueNAS web interface | Moved from 443 and 80 in Chapter 3 ([Change the web interface ports](#change-the-web-interface-ports)) |
 | 22/tcp | SSH | Administration and deployment from the workstation |
 | 445/tcp | SMB | The `rag-docs` document share |
 
@@ -277,8 +279,12 @@ Table: Container ports on ai-net (not published)
 Several containers use the same internal port. They do not conflict, because each container has
 its own address on `ai-net` and only `caddy` publishes ports on the server.
 
-On the workstation, the OpenCode service listens on `127.0.0.1:49374` by default. A Mac reaches it
-through an SSH tunnel to `c4dev` (Chapter 7).
+Nothing of the stack listens on a workstation. OpenCode, the SSH tool and `claude-local` run only
+while you use them, and `clients/install.sh` keeps OpenCode's background service disabled
+([Why the OpenCode service stays disabled](#why-the-opencode-service-stays-disabled)). A Mac
+either logs in to `c4dev` over SSH and runs OpenCode there, or runs its own OpenCode against the
+gateway ([Use OpenCode from the Mac](#use-opencode-from-the-mac)); the Windows VM logs in to
+`c4dev` over SSH ([Use the Windows VM](#use-the-windows-vm)).
 
 !!! warning
     TrueNAS 25.10 has no host firewall in its web interface, and with Apps enabled Docker forwards
@@ -316,11 +322,11 @@ Table: Accounts and credentials you provide
 | Item | Used for | Notes |
 |---|---|---|
 | A domain at a supported DNS provider | Host names and certificates (`LAB_DOMAIN`, `DNS_PROVIDER`) | The edge image includes the modules `cloudflare`, `route53`, `digitalocean`, `porkbun`, `namecheap`, `duckdns`, `desec` and `ovh` |
-| An API token for that DNS zone | DNS-01 challenge (`DNS_PROVIDER_TOKEN`) | Scope it to the one zone. Some providers need more than one credential; Chapter 6 names the variables |
+| An API token for that DNS zone | DNS-01 challenge (`DNS_PROVIDER_TOKEN`) | Scope it to the one zone. Some providers need more than one credential; Chapter 5 names the variables ([Credentials by DNS provider](#credentials-by-dns-provider)) |
 | An email address | ACME account of the certificates (`ACME_EMAIL`) | |
 | The TrueNAS administrator `truenas_admin`, with the workstation's SSH public key | Shell access and deployment over SSH | **Credentials** > **Users**: **Public SSH Key** and **SSH Access** |
 | An SMB user | Copying documents to the `rag-docs` share | An SMB share cannot be reached as `root` or a built-in user |
-| Two TrueNAS API keys, roles READONLY_ADMIN and FULL_ADMIN | `tools/deploy.py`: the read-only key for plan, drift and status; the full key only for apply | Stored in `~/.config/local-agent-stack/` on the workstation (Chapter 10) |
+| Two TrueNAS API keys, roles READONLY_ADMIN and FULL_ADMIN | `tools/deploy.py`: the read-only key for plan, drift and status; the full key only for apply | Created in Chapter 3 ([Create TrueNAS API keys for deploy.py](#create-truenas-api-keys-for-deploypy)) and stored in `~/.config/local-agent-stack/` on the workstation; Chapter 10 configures `deploy.py` with them |
 | A GitHub account | The project workflow in Chapter 8: issues, pull requests and CI | Not needed to clone the public repository |
 
 A Hugging Face account is not needed. The four model repositories are public and not gated
@@ -330,16 +336,34 @@ Table: Secrets created during deployment
 
 | File | Variables | Created by |
 |---|---|---|
-| `inference.env` | `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `LITELLM_DB_PASSWORD`, `LLAMA_SWAP_API_KEY` | `tools/secrets.py gen inference` |
-| `rag.env` | `PG_PASSWORD`, `DOCLING_API_KEY`, `OIKB_TOKEN` | `tools/secrets.py gen rag`; `OIKB_TOKEN` is an Open WebUI API key that exists only after Open WebUI first starts (Chapter 5) |
-| `web.env` | `WEBUI_SECRET_KEY`, `PG_PASSWORD` (the same value as in `rag.env`), `LITELLM_WEBUI_KEY`, `SEARXNG_SECRET`, `MCP_HUB_TOKEN` | `tools/secrets.py gen web` |
-| `edge.env` | `LAB_DOMAIN`, `ACME_EMAIL`, `DNS_PROVIDER`, `DNS_PROVIDER_TOKEN` | You, from the first table |
-| `~/.config/local-agent-stack/client.env` on the workstation | `LOCAL_LLM_KEY`, `MCP_HUB_TOKEN` | Chapter 7, from a LiteLLM key for the workstation and the hub token in `web.env` |
+| `inference.env` | `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `LITELLM_DB_PASSWORD`, `LLAMA_SWAP_API_KEY` | `tools/secrets.py gen inference` generates all four (Chapter 3) |
+| `rag.env` | `PG_PASSWORD`, `DOCLING_API_KEY`, `OIKB_API_KEY` (optional), `OIKB_TOKEN`, `OIKB_KB_ID` | `tools/secrets.py gen rag` generates the first three. `OIKB_TOKEN`, the API key of Open WebUI's `indexer` user, and `OIKB_KB_ID`, the ID of the knowledge base it fills (not secret), exist only after Open WebUI's first start (Chapter 6) |
+| `web.env` | `LAB_DOMAIN`, `WEBUI_SECRET_KEY`, `SEARXNG_SECRET`, `MCP_HUB_TOKEN`, `PG_PASSWORD`, `DOCLING_API_KEY`, `LITELLM_WEBUI_KEY`, `KB_READER_TOKEN`, `SEARXNG_CONTACT_URL` (optional) | `tools/secrets.py gen web --share rag.env` generates `WEBUI_SECRET_KEY`, `SEARXNG_SECRET` and `MCP_HUB_TOKEN` and copies `PG_PASSWORD` and `DOCLING_API_KEY` from `rag.env`. Before Open WebUI's first start you set `LAB_DOMAIN`, `SEARXNG_CONTACT_URL` and `LITELLM_WEBUI_KEY`, a LiteLLM virtual key created once `ai-inference` runs; after it, `KB_READER_TOKEN`, the API key of the `kb-reader` user (Chapter 6) |
+| `edge.env` | `LAB_DOMAIN`, `ACME_EMAIL`, `DNS_PROVIDER`, `DNS_PROVIDER_TOKEN`; optional `DNS_PROVIDER_KEY_ID`, `DNS_PROVIDER_CONSUMER_KEY`, `DNS_PROVIDER_ENDPOINT`, `ACME_RESOLVERS`, `ACME_CA`, `EDGE_ALLOWED_CIDRS`, `EDGE_BIND_IP` | `tools/secrets.py gen edge` writes the example file with its placeholders; you replace them with the values from the first table (Chapter 5) |
+| `~/.config/local-agent-stack/client.env` on the workstation | `LAB_DOMAIN`, `LOCAL_LLM_KEY`, `MCP_HUB_TOKEN` | `tools/secrets.py gen client --share web.env --ask LOCAL_LLM_KEY` copies `LAB_DOMAIN` and `MCP_HUB_TOKEN` from `web.env` and prompts for the workstation's LiteLLM key from Chapter 4 (Chapter 7) |
 
-`tools/secrets.py gen <app>` prints a new `<app>.env` with a random value for every secret it can
-generate, and leaves placeholders for the values that you provide or that a running service
-creates. Chapter 3 stores the files in the dataset `tank/ai/secrets` (`/mnt/tank/ai/secrets`,
-mode 0700, owned by root).
+Every server file can also set `AI_ROOT`, the root of the stack's datasets (default
+`/mnt/tank/ai`); change it only if every app uses the same other path.
+
+Some values must be identical in two or three files. `tools/secrets.py` copies them with
+`--share`, and the chapters that complete the files check them.
+
+Table: Values shared between files
+
+| Variable | Files |
+|---|---|
+| `PG_PASSWORD`, `DOCLING_API_KEY` | `rag.env` and `web.env` |
+| `LAB_DOMAIN` | `edge.env`, `web.env` and `client.env` |
+| `MCP_HUB_TOKEN` | `web.env` and `client.env` |
+
+`tools/secrets.py gen <app>`, where `<app>` is `inference`, `rag`, `web`, `edge` or `client`, fills
+in the app's example file: a new random value (48 letters and digits) for every secret it
+generates, the shared values copied from the file named with `--share`, a prompt without echo for
+each variable named with `--ask`, and the example's placeholder for every value that you provide or
+that a running service creates later. With `-o <file>` it writes a new file with mode 0600 and
+refuses to replace an existing one. Chapter 3 generates the four server files on the workstation
+and installs them in the dataset `tank/ai/secrets` (`/mnt/tank/ai/secrets`, mode 0700, owned by
+root).
 
 !!! caution
     Never change `LITELLM_SALT_KEY` after the first start of LiteLLM; it encrypts the credentials
@@ -366,7 +390,7 @@ Table: Pre-deployment checklist
 | The apps pool has at least 36 GB free for models, plus room for images | **Storage** | ☐ |
 | The memory modules are in two channels at 4800 MT/s | [Check the memory configuration](#check-the-memory-configuration) | ☐ |
 | SSH from the workstation to `truenas_admin` works with a key | `ssh truenas_admin@192.0.2.10` from `c4dev` | ☐ |
-| Ports 80 and 443 on the server are free for Caddy after the UI moves | Planned in Chapter 3 | ☐ |
+| Ports 80 and 443 on the server are free for Caddy after the UI moves | Planned in Chapter 3 ([Move the TrueNAS web UI to ports 8080 and 8443](#move-the-truenas-web-ui-to-ports-8080-and-8443)) | ☐ |
 | The Docker address pool does not overlap your LAN | **Apps** > **Installed** > **Configuration** > **Settings** | ☐ |
 | You can add A records in your local DNS server or router | Your router or DNS server | ☐ |
 | Your domain is at a supported DNS provider, with an API token for the zone | Your DNS provider | ☐ |

@@ -62,7 +62,7 @@ Follow AGENTS.md in the project. In short:
    search.
 6. When subagents report: read their files, fix the seams, run `tools/check.sh` (or the
    project's checks), and commit in small steps with clear messages.
-7. GitHub flow: issue first, a branch named `<type>/<issue>-<slug>` from main, a pull request
+7. GitHub flow: issue first, a branch named `<type>/<slug>-<issue>` from main, a pull request
    early with "Closes #N", a CHANGELOG.md line under "## Unreleased" for every change people
    would notice. Never push to main; push the branch by name.
 8. Facts only from primary sources (docs, release notes, `--help`). Mark anything you could not

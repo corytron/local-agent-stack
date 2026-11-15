@@ -88,8 +88,8 @@ Table: Where the standing rules are enforced
 |---|---|---|
 | Never push to `main` | `AGENTS.md` | `tools/hooks/pre-push`; the OpenCode plugin `clients/opencode/plugins/guard.ts`; a branch ruleset on GitHub |
 | No secrets or private data in files | `AGENTS.md` | `guard.ts`; the `secrets` check (gitleaks) in the pre-push hook and in CI |
-| Checks pass before a merge | `AGENTS.md` | `tools/check.sh`; the four required CI jobs |
-| Only the coordinator runs `git` and `gh` | `AGENTS.md` | Permission rules in the agent definitions under `clients/opencode/agents/` |
+| Checks pass before a merge | `AGENTS.md` | `tools/check.sh`; the four required CI jobs; for a change to the models or their configuration, the regression gate of `tools/eval.py`, run from the workstation |
+| Only the coordinator changes the repository with `git` and `gh` | `AGENTS.md` | Permission rules in the agent definitions under `clients/opencode/agents/`: the builder may run neither, the researcher and the reviewer only read-only commands |
 | One writer per file | Each brief | The coordinator's review of `git status` before every commit |
 | Contract before code | `AGENTS.md` | The pull request: the contract is its first commit |
 
@@ -203,8 +203,11 @@ the pull request, so every later commit can be reviewed against it.
 
 #### Steps
 
-1. Start OpenCode in the repository with `opencode` and switch to the **coordinator** agent (Tab
-   cycles the primary agents).
+1. Start OpenCode in the repository with `opencode`.
+
+    The session starts with the **coordinator**, the default agent (`default_agent` in
+    `opencode.jsonc`). If you switched to another primary agent, press Tab until the coordinator
+    is selected again.
 
 2. Ask for the contract. Replace `<N>` with the issue number and `<feature>` with a short name.
 
@@ -237,16 +240,17 @@ The contract is the first commit on the feature branch. Agents can now be briefe
 ### Agent roles
 
 The agent definitions in `clients/opencode/agents/` divide the work into four roles. Chapter 7
-installs them; the files themselves are the authority for their models and permission rules.
+installs them ([The four agents](#the-four-agents)); the files themselves are the authority for
+their models and permission rules.
 
 Table: Agent roles
 
-| Agent | Does | Writes | Runs git and gh |
+| Agent | Does | Writes | git and gh |
 |---|---|---|---|
-| coordinator | Writes contracts and briefs, launches the other agents, integrates, runs the checks, commits | Contracts, integration files, `CHANGELOG.md` | Yes |
-| researcher | Answers one question from code, docs and the web, citing sources | One file under `docs/research/` | No |
-| builder | Implements one brief | Only the files its brief names | No |
-| reviewer | Compares a diff with its contract and reports findings | Nothing | No |
+| coordinator | Writes contracts and briefs, launches the other agents, integrates, runs the checks, commits | Contracts, integration files, `CHANGELOG.md` | Yes; `git push` and other writes not listed in [Using gh from agents](#using-gh-from-agents) ask you first |
+| researcher | Answers one question from code, docs and the web, citing sources | The one file under `docs/` that its brief names, in this workflow under `docs/research/` | Read-only: `git log` and `git show`; every other shell command is denied |
+| builder | Implements one brief | Only the files its brief names | No: `git` and `gh` commands are denied |
+| reviewer | Compares a diff with its contract and reports findings | Nothing | Read-only: `git status`, `git diff`, `git log`, `git show`, `gh pr view`, `gh pr diff`; it also runs `tools/check.sh` |
 
 How OpenCode runs them:
 
@@ -255,9 +259,11 @@ How OpenCode runs them:
 - Nesting depth is 1 by default (`experimental.subagent_depth`), so only the coordinator
   launches agents.
 - The `subagent` permission action, with an agent ID as the resource, controls which agents an
-  agent may launch.
+  agent may launch. The three subagent files deny it for every agent; the coordinator's file allows
+  only `researcher`, `builder`, `reviewer` and OpenCode's built-in `explore`.
 - OpenCode documents no setting that limits how many subagents run at once. The cap below is a
-  rule in `AGENTS.md`, and the server enforces it by queuing requests.
+  rule in `AGENTS.md` and in the coordinator's prompt; the server does not enforce it, it only
+  queues the requests.
 
 ### Concurrency on one 16 GB GPU
 
@@ -465,6 +471,16 @@ The repository has a board, labels and Discussions, and `gh` can write to all th
 Every change starts as an issue, gets a branch named after it and a pull request opened early, so
 that each commit lands somewhere reviewable under the right title.
 
+In an OpenCode session, `/issue <N>` does steps 3 and 4 for an existing issue, on the coordinator:
+it shows the issue and stops if it is closed, switches to an up-to-date `main`, creates the branch
+`<type>/<slug>-<N>` with `git switch -c`, plans as `/plan` does, commits the contract with the
+message `Contract for #<N>: <title>` when more than one agent will work on the change, opens the
+pull request with `/pr`, and starts at most two subagents. `git switch -c` does not link the
+branch to the issue on GitHub as `gh issue develop` does; the `Closes #<N>` line of the pull
+request links them. `/pr` runs `tools/check.sh`, adds the `CHANGELOG.md` line if it is missing,
+pushes the branch by name (OpenCode asks you to approve the push) and opens a ready pull request,
+not a draft.
+
 #### Steps
 
 1. Create the issue.
@@ -479,7 +495,8 @@ that each commit lands somewhere reviewable under the right title.
           --url https://github.com/<owner>/<repo>/issues/<N>
 
 3. Create the branch from `main`, linked to the issue, and check it out. Name it
-   `<type>/<slug>-<N>`, for example `fix/smoke-timeout-12`.
+   `<type>/<slug>-<N>`, where `<type>` is `feat`, `fix`, `docs` or `chore`, for example
+   `fix/smoke-timeout-12`.
 
         gh issue develop <N> --base main --name <type>/<slug>-<N> --checkout
 
@@ -533,20 +550,25 @@ gone.
 
 ### Using gh from agents
 
-The coordinator runs `gh` through OpenCode's shell tool. Allow read-only commands without a
-prompt and keep writes on `ask`. In `opencode.jsonc` the last matching permission rule wins, so a
-general rule comes first and its exceptions after it:
+The coordinator runs `git` and `gh` through OpenCode's shell tool. Read-only commands run
+without a prompt, and writes ask you first. In `opencode.jsonc` the permission rules are ordered
+and the last matching rule wins; each agent's own rules are appended after the global ones. The
+installed configuration starts with `{ "action": "shell", "resource": "*", "effect": "ask" }`, so
+every shell command asks, and then allows these without a prompt:
 
-```
-"permissions": [
-  { "action": "shell", "resource": "gh *", "effect": "ask" },
-  { "action": "shell", "resource": "gh issue view *", "effect": "allow" },
-  { "action": "shell", "resource": "gh pr view *", "effect": "allow" }
-]
-```
+Table: Shell commands that run without a prompt
 
-Compare these with the rules installed from `clients/opencode/opencode.jsonc` before changing
-anything. Then keep the agent's reach small:
+| Rules | Commands |
+|---|---|
+| Global, in `opencode.jsonc` (the subagent files narrow them) | `git status`, `git diff`, `git log`, `git show`, `git branch --show-current`, `gh issue view`, `gh issue list`, `gh pr view`, `gh pr checks`, `tools/check.sh` |
+| The coordinator's own, in `coordinator.md` | `git add`, `git commit`, `git switch`, `git fetch`, `git pull --ff-only`, `gh issue create`, `gh pr create` |
+
+Every other command, such as `git push`, `gh pr merge` or `gh issue comment`, asks first. `sudo`
+is denied, and the `policies` of the configuration and the guard plugin refuse a push to `main` or
+`master` whatever you answer ([What the guard refuses](#what-the-guard-refuses)). To allow another
+read-only command, append a rule after the general one in the same form, for example
+`{ "action": "shell", "resource": "gh run list *", "effect": "allow" }`, and keep writes on
+`ask`. Then keep the agent's reach small:
 
 - **The account.** OpenCode has no OS sandbox; its shell runs with your user's authority. Run it
   as a dedicated unprivileged user whose `gh` token reaches only the repositories it works on.
@@ -675,6 +697,24 @@ Table: Required CI jobs
 
 The workflow file is the authority for which job runs which check. Actions in it are pinned by
 commit SHA, and CodeQL default setup scans the repository, because it is public.
+
+### Evaluations before a merge
+
+`tools/check.sh` and CI never run a model, because CI has no GPU; the `python` check tests
+`tools/eval.py` only against a fake gateway on the loopback address. The evaluations run from the
+workstation against your server, one request at a time: `tools/eval.py run` sends the pinned cases
+of the `evals/` suites (tool calling on both API formats, instruction following, small coding tasks
+and questions over sample documents) and writes a results file, and `tools/eval.py compare` is the
+regression gate between a baseline and a new result.
+
+Run them for every pull request that changes what the configuration hash of a results file
+covers: `stack/inference/llama-swap/config.yaml`, `stack/inference/litellm/config.yaml`,
+`stack/inference/compose.yaml`, `stack/inference/models.sha256`, `evals/sets.toml`, the suites
+under `evals/suites/` or the documents under `evals/rag-docs/`. Do not run them while agents
+work: an evaluation needs the GPU server to itself
+([Concurrency on one 16 GB GPU](#concurrency-on-one-16-gb-gpu)). Chapter 9 describes the suites,
+the run, the results files and the gate
+([Evaluations and the regression gate](#evaluations-and-the-regression-gate)).
 
 ### Protect the main branch with a ruleset
 
@@ -857,7 +897,8 @@ archived under **Announcements**.
 
 #### Next steps
 
-Install the release on the server as described in Chapter 10.
+Install the release on the server as described in Chapter 10
+([Updating to a new release](#updating-to-a-new-release)).
 
 ## Example: a feature from issue to release
 
@@ -880,7 +921,7 @@ illustrative; `tools/smoke.py` does not have that option.
 
         gh issue develop 42 --base main --name feat/fast-profile-smoke-42 --checkout
 
-3. Start `opencode`, switch to the **coordinator** agent and ask for the contract.
+3. Start `opencode`, which opens with the **coordinator** agent, and ask for the contract.
 
         Read issue #42 and docs/stack-design.md sections 5 and 8. Write the contract
         docs/fast-profile-smoke-design.md: Goal, Files and owners, Interfaces (the new

@@ -34,7 +34,7 @@ Table: Parity of the agent loop and context
 | Extended thinking and effort levels | Qwen3.8 reasoning effort (`low`, `medium`, `xhigh`); `local-fast` turns thinking off | Partial | No adaptive reasoning; `medium` is the recommended level for agents |
 | Prompt caching | llama.cpp prefix cache and prompt cache in host RAM | Partial | `cache_control` has no effect. Editing earlier history makes the hybrid model process the whole prompt again |
 
-### Project memory files
+### Project memory parity
 
 Table: Parity of project memory files
 
@@ -133,7 +133,7 @@ Table: Parity of SSH and remote use
 | Claude Code | This stack (component) | Parity | Notes |
 |---|---|---|---|
 | Commands on remote hosts through `ssh` in the shell tool, with permission prompts | `ssh-mcp` 2.26.0 on the workstation (stdio): policy, host-key pinning, approval prompts, audit log | Full | Stricter than plain `ssh`. Approval prompts need MCP elicitation in the harness; without it, `ssh-mcp` refuses destructive commands |
-| Remote Control: driving a session from another device | OpenCode service on `c4dev` with terminal, web or desktop clients over an SSH tunnel; or `ssh c4dev` | Full | Claude Code's Remote Control is turned off when it uses a non-Anthropic base URL |
+| Remote Control: driving a session from another device | `ssh c4dev` and OpenCode in that terminal, resumed with `opencode --continue` after a dropped connection; or OpenCode installed on the other device (Linux or macOS) against the same gateway | Partial | No background service: `clients/install.sh` keeps OpenCode's service disabled, because nothing of the stack runs on a workstation full time, so a session lives only as long as its terminal. Claude Code's Remote Control is turned off when it uses a non-Anthropic base URL |
 
 ### GitHub integration
 
@@ -177,7 +177,8 @@ Table: Parity of models and model roles
 Claude Code itself can use the gateway at `https://llm.lab.example.com` through LiteLLM's Anthropic
 route `/v1/messages`, with the model names `local-opus`, `local-sonnet` and `local-haiku`. This path
 keeps an existing `.claude/` setup unchanged. Anthropic does not support routing Claude Code to
-non-Claude models through a gateway, so treat it as a compatibility path. Chapter 7 configures it.
+non-Claude models through a gateway, so treat it as a compatibility path. Chapter 7 configures it
+([Use Claude Code against the local gateway](#use-claude-code-against-the-local-gateway)).
 
 Table: Claude Code with the local gateway
 
@@ -228,7 +229,7 @@ Table: Failure modes of local models and their mitigations
 | Prompt processing time | A 30,000-token first prompt takes 20 to 35 seconds; editing earlier history makes the model process the whole prompt again | Keep the system prompt and the tool list stable, append to the history instead of rewriting it, and keep llama.cpp's context checkpoints on |
 | Instruction following with a long memory file | Rules in a long `AGENTS.md` are followed less reliably as the context grows | Keep `AGENTS.md` short, under about 2,000 to 3,000 tokens. Move hard rules into the guard plugin and `policies`, which apply deterministically |
 | Too many tools | Each tool schema costs context and lowers the accuracy of tool choice | Expose few tools to each agent, with short descriptions and enumerated arguments |
-| Malformed tool calls | Calls with broken arguments, or a call written inside the thinking block | llama.cpp constrains tool-call output with a grammar. Validate arguments and retry once in the harness. Pin the llama.cpp build and the chat template, and run the tool-call regression test in Chapter 9 after every change |
+| Malformed tool calls | Calls with broken arguments, or a call written inside the thinking block | llama.cpp constrains tool-call output with a grammar. Validate arguments and retry once in the harness. Pin the llama.cpp build and the chat template, and run the evaluations with their tool-calling suite after every change ([Evaluations and the regression gate](#evaluations-and-the-regression-gate)) |
 | Latency of thinking | Long reasoning before every answer; Qwen3.8-27B used 128 million output tokens on the index at `xhigh`, against a median of 77.7 million | Use reasoning effort `medium` for the main loop, and `local-fast` (thinking off) for titles, summaries and scouts |
 | Quantization loss over long runs | Quality studies of the quantized files cover single-turn tasks only | Prefer the 3.5-bit file or a larger one to smaller files. Repeat the evaluations after changing a model file |
 | KV cache precision | Tool calling degrades with a `q4_0` KV cache | Keep the KV cache at `q8_0` |

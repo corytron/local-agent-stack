@@ -32,7 +32,7 @@ The repository is PUBLIC_OR_PRIVATE.
 
 1. Issue first: `gh issue create` with labels from `.github/labels.json`, or `/issue N` for an
    existing one.
-2. Branch from an up-to-date main: `TYPE/N-short-slug` (feat, fix, docs, chore).
+2. Branch from an up-to-date main: `TYPE/short-slug-N` (feat, fix, docs, chore; issue number last).
 3. Open the pull request early with `Closes #N` in its body (`/pr`).
 4. A change people would notice adds a line under `## Unreleased` in `CHANGELOG.md`, with the
    issue number.

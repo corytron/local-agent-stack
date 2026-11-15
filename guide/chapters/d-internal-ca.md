@@ -3,7 +3,7 @@ kind: appendix
 
 # TLS with an internal certificate authority
 
-Chapter 6 obtains publicly trusted certificates for your own domain through the ACME DNS-01
+Chapter 5 obtains publicly trusted certificates for your own domain through the ACME DNS-01
 challenge. This appendix describes the alternative: Caddy runs its own local certificate
 authority (CA) and signs the certificates itself. The internal CA works fully offline and needs no
 domain, no DNS provider and no API token. In exchange, you install one root certificate on every
@@ -11,8 +11,9 @@ client that connects to the stack: the workstation `c4dev`, the Mac and the Wind
 browser or tool that keeps its own list of trusted authorities.
 
 TrueNAS 25.10 no longer includes a built-in certificate authority, so the CA lives in Caddy. The
-procedures use the `ai-edge` app of Chapter 6 with one change: a copy of the release's
-`Caddyfile` in which the DNS-01 settings are replaced by `tls internal`.
+procedures use the `ai-edge` app of Chapter 5 with one change: a copy of the release's
+`Caddyfile` in which the DNS-01 settings are replaced by `tls internal`, mounted by a compose
+override file that the app's YAML lists after the release's compose file.
 
 ## How the internal CA works
 
@@ -66,8 +67,11 @@ Table: Host names with the internal CA
 
 ## Configure the edge app for the internal CA
 
-These tasks replace the DNS-01 steps of Chapter 6. The other steps of that chapter apply
-unchanged.
+These tasks replace the DNS-01 steps of Chapter 5: the Cloudflare token, the staging and
+production certificates, and the plain YAML of
+[Create the ai-edge custom app](#create-the-ai-edge-custom-app). The other steps of that chapter
+apply unchanged, among them [Prepare the Caddy data directories](#prepare-the-caddy-data-directories)
+and [Verify each host name](#verify-each-host-name).
 
 ### Add the lab host names to DNS
 
@@ -101,6 +105,12 @@ server or router. If that is not possible, add the names to the hosts file of ea
 The compose file of `ai-edge` requires `LAB_DOMAIN`, `ACME_EMAIL` and `DNS_PROVIDER_TOKEN` to be
 set. With the internal CA, Caddy uses only `LAB_DOMAIN`; the other two need a value but are not
 used to obtain the lab certificates.
+
+`LAB_DOMAIN` must be the same in `edge.env`, `web.env` and the workstation's `client.env`. Set
+`LAB_DOMAIN=lab.home.arpa` in `web.env` as well, before Open WebUI first starts
+([Complete web.env before the first start](#complete-webenv-before-the-first-start)): Open WebUI
+stores `https://chat.<LAB_DOMAIN>` as its URL on its first start, and changes it afterwards only in
+its **Admin Panel**. `client.env` copies the value from `web.env` when Chapter 7 creates it.
 
 #### Steps
 
@@ -138,8 +148,10 @@ from trying to install its root into the container's own trust store. A small co
 file then mounts the copy in place of the release's file.
 
 !!! note
-    Repeat this task after every release update, so that the copy follows the release's
-    `Caddyfile`.
+    Repeat this task after every release update, before you apply the release, so that the copy
+    follows the release's `Caddyfile`. `tools/deploy.py` does not detect changes to the copy or to
+    the override file: after you change either of them, redeploy `ai-edge` by hand
+    ([Redeploy one app](#redeploy-one-app)).
 
 #### Steps
 
@@ -182,7 +194,10 @@ Appendix A protect.
 
 The app's YAML lists two files under `path`: the release's compose file and the override file.
 Compose merges them before it includes the result. TrueNAS validates the YAML with
-`docker compose config` when you save it.
+`docker compose config` when you save it. For comparison, the plain YAML of Chapter 5,
+`stack/edge/truenas-app.yaml`, has a single `path`:
+
+{{ include stack/edge/truenas-app.yaml }}
 
 #### Steps
 
@@ -223,6 +238,24 @@ Compose merges them before it includes the result. TrueNAS validates the YAML wi
 
     The issuer is `CN=Caddy Local Authority - ECC Intermediate` and the subject alternative name
     is `DNS:*.lab.home.arpa`.
+
+8. If you manage the apps with `tools/deploy.py` (Chapter 10), list the override in the
+   `[apps.ai-edge]` table of your desired-state file,
+   `~/.config/local-agent-stack/desired.toml`
+   ([Create your desired-state file](#create-your-desired-state-file)):
+
+        [apps.ai-edge]
+        stack = "edge"
+        overrides = ["/mnt/tank/ai/appdata/caddy/internal-ca.override.yaml"]
+
+    `deploy.py apply` then writes the same two-path YAML as step 3, followed by its content
+    hashes, and keeps the override. Check what `deploy.py` plans for the app:
+
+        cd ~/local-agent-stack
+        python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml plan --app ai-edge
+
+    The output shows `override: /mnt/tank/ai/appdata/caddy/internal-ca.override.yaml` under
+    `ai-edge`.
 
 #### Results
 
@@ -358,8 +391,46 @@ Test each tool against `https://llm.lab.home.arpa` before you rely on it.
 
 ## Return to DNS-01 certificates
 
-To switch from the internal CA to publicly trusted certificates later, set the DNS-01 values in
-`edge.env` (Chapter 6), edit the `ai-edge` app and replace its YAML with the standard one from
-Chapter 6, which includes only the release's compose file, and save. Caddy then obtains
-certificates through DNS-01. Remove the root certificate from the clients when no service uses it
-any longer.
+### Switch the edge app back to DNS-01
+
+#### Steps
+
+1. Set the DNS-01 values in `edge.env` as in [Complete edge.env](#complete-edgeenv), and copy
+   the file to the server
+   ([Copy the environment files to TrueNAS](#copy-the-environment-files-to-truenas)).
+
+    If `LAB_DOMAIN` changes with it, for example from `lab.home.arpa` to `lab.example.com`, change
+    it everywhere: add DNS records for the new host names
+    ([Add the host names to local DNS](#add-the-host-names-to-local-dns)); set the same value in
+    `web.env`, copy it to the server
+    ([Copy a changed environment file to TrueNAS](#copy-a-changed-environment-file-to-truenas))
+    and redeploy `ai-web` ([Redeploy one app](#redeploy-one-app)); change the URL that Open WebUI
+    stored at its first start in its **Admin Panel**
+    ([Change a setting that Open WebUI seeded](#change-a-setting-that-open-webui-seeded)); and
+    set the new value in `~/.config/local-agent-stack/client.env` on every workstation.
+
+2. Return the `ai-edge` app to the plain YAML, in one of two ways:
+
+    - With `tools/deploy.py`: remove the `overrides` line from the `[apps.ai-edge]` table of
+      `~/.config/local-agent-stack/desired.toml`, then run, from the workstation clone:
+
+            python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml apply --app ai-edge
+
+    - In the web interface: go to **Apps** > **Installed**, select `ai-edge`, click **Edit**,
+      replace **Custom Config** with the four lines of `stack/edge/truenas-app.yaml`, and click
+      **Save**:
+
+        {{ include stack/edge/truenas-app.yaml }}
+
+3. Verify that the container uses the release's `Caddyfile` again:
+
+        sudo docker exec caddy grep -c 'tls internal' /etc/caddy/Caddyfile
+
+    The output is `0`.
+
+4. Obtain the certificates as in [Obtain the certificates](#obtain-the-certificates).
+
+#### Results
+
+Caddy obtains publicly trusted certificates through DNS-01. Remove the root certificate from the
+clients when no service uses it any longer.

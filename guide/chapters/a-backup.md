@@ -28,7 +28,7 @@ Table: Backup scope
 | Repository clone | `tank/ai/stacks` | Daily snapshots kept 14 days, replication; the release tag on GitHub is a second copy |
 | Secrets | `tank/ai/secrets` | Daily snapshots kept 14 days, replication; the copies in `~/.config/local-agent-stack/secrets/` on the workstation |
 | TrueNAS settings: users, API keys, shares, tunables, init scripts, data protection tasks | TrueNAS configuration database | Configuration file downloaded before every update |
-| Model files | `tank/ai/models` | Not backed up; download them again (Chapter 4) |
+| Model files | `tank/ai/models` | Not backed up; download them again ([Download the model files](#download-the-model-files)) |
 | Container images and app definitions | The hidden `ix-apps` dataset | Not backed up; images are pulled again and each app's YAML is four lines (Chapters 4 to 6) |
 
 Restore the secrets from the same point in time as the databases. LiteLLM cannot read the
@@ -124,7 +124,7 @@ second system also protects against the loss of the server.
 
 - The periodic snapshot tasks exist and have run at least once.
 - A destination: a second pool on this server (`backup` in this example), or a second TrueNAS
-  system (`192.0.2.30` in this example) with an administrator account.
+  system (`192.0.2.40` in this example) with an administrator account.
 
 #### About this task
 
@@ -155,7 +155,7 @@ snapshots.
     - For a second TrueNAS system, select `On a Different System`. In **SSH Connection**, select
       **Create New**. In the **New SSH Connection** form, enter a **Connection Name**, select
       **Setup Method** `Semi-automatic (TrueNAS only)`, enter the **TrueNAS URL**
-      (`https://192.0.2.30`), the **Admin Username** and **Admin Password** of the destination,
+      (`https://192.0.2.40`), the **Admin Username** and **Admin Password** of the destination,
       enter the **Username** that receives the replica (for example `truenas_admin`), select
       **Enable passwordless sudo for zfs commands**, select **Private Key** `Generate New`, and
       click **Save**. If the wizard offers **Use Sudo For ZFS Commands**, select it. Then set
@@ -512,8 +512,9 @@ File**), which brings back the users, API keys, share, tunable, init script and 
 pool `tank` with the datasets `tank/ai` and `tank/ai/models` (Chapter 3); restore the replica as in
 steps 1 to 4; move each restored dataset into place, for example
 `sudo zfs rename tank/restore/ai/appdata tank/ai/appdata`, and turn `readonly` off; create the
-`ai-net` network (Chapter 3); then download the models (Chapter 4) and install the apps (Chapters
-4 to 6).
+`ai-net` network ([Create the shared Docker network](#create-the-shared-docker-network)); then
+download the models ([Download the model files](#download-the-model-files)) and install the apps
+in the order of Chapters 4 to 6: `ai-inference`, `ai-edge`, then `ai-rag` and `ai-web`.
 
 ## Test restores
 

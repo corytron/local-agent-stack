@@ -29,7 +29,8 @@ The stack provides:
 - **One API endpoint.** LiteLLM serves the OpenAI format (`/v1/...`) and the Anthropic format
   (`/v1/messages`) at `https://llm.lab.example.com`, with one key per client.
 - **A terminal coding agent.** OpenCode 2.3.0 runs on the workstation `c4dev` with sub-agents,
-  commands, a guard plugin and MCP tools. Claude Code itself can use the same endpoint as a second,
+  commands, a guard plugin and MCP tools, only while you use it: no service, container or timer of
+  the stack runs on a workstation. Claude Code itself can use the same endpoint as a second,
   unsupported path.
 - **A web GUI.** Open WebUI at `https://chat.lab.example.com` for chat, retrieval over your
   documents and web search.
@@ -132,9 +133,11 @@ Table: Repository layout
 
 | Directory | Contents |
 |---|---|
-| `stack/` | One directory per app (`inference`, `rag`, `web`, `edge`): the compose file, its configuration files and an `<app>.env.example` that documents every variable |
-| `clients/` | OpenCode configuration, agents, commands and the guard plugin; Claude Code settings; the ssh-mcp policy example; memory-file templates; `install.sh` |
-| `tools/` | `secrets.py` (generates the secrets files), `deploy.py` (plan, apply and drift checks against TrueNAS), `smoke.py` and `bench.sh` (validation), `check.sh` (repository checks) |
+| `stack/` | One directory per app (`inference`, `rag`, `web`, `edge`): the compose file, its configuration files, `truenas-app.yaml` (the four-line YAML that installs the app in TrueNAS) and an example environment file, such as `inference.env.example`, that documents every variable |
+| `clients/` | OpenCode configuration, agents, commands and the guard plugin; Claude Code settings; the ssh-mcp policy example; memory-file templates; `client.env.example`; `install.sh` |
+| `tools/` | `secrets.py` (generates the secrets files), `deploy.py` (plan, apply and drift checks against TrueNAS), `smoke.py` and `bench.sh` (validation), `eval.py` (evaluation suites and the regression gate), `check.sh` (repository checks) |
+| `evals/` | The evaluation suites, their sample documents, the run sets and the thresholds of the regression gate |
+| `deploy/` | `truenas.toml`, the desired state that `deploy.py` compares with the server |
 | `guide/` | The source of this guide |
 | `docs/` | The design contract and the research notes, with their sources |
 
@@ -145,15 +148,17 @@ Table: Deployment sequence
 | Step | Task | Chapter |
 |---|---|---|
 | 1 | Check the hardware, choose names and collect accounts and tokens | 2, Planning the deployment |
-| 2 | Enable the GPU, cap the ZFS ARC, create datasets and the document share, move the TrueNAS UI ports, create `ai-net`, clone the repository, create the secrets | 3, Preparing TrueNAS SCALE |
-| 3 | Download the models and install `ai-inference` | 4, Deploying the inference app |
-| 4 | Install `ai-rag` and `ai-web`, then complete the Open WebUI first-run settings | 5, Deploying the RAG and web apps |
-| 5 | Add DNS records, install `ai-edge` and obtain certificates | 6, Deploying the edge app |
+| 2 | Enable the GPU, cap the ZFS ARC, create datasets and the document share, move the TrueNAS UI ports, create `ai-net`, clone the repository, create the secrets and the API keys of `deploy.py` | 3, Preparing TrueNAS SCALE |
+| 3 | Download the models, install `ai-inference` and create the LiteLLM keys of the workstations | 4, Deploying the inference app |
+| 4 | Add DNS records, install `ai-edge` and obtain certificates | 5, Deploying the edge app |
+| 5 | Install `ai-rag` and `ai-web`, then complete the Open WebUI first-run settings | 6, Deploying the RAG and web apps |
 | 6 | Install and configure OpenCode and the MCP tools on the workstation | 7, Configuring the coding agent |
 | 7 | Set up project memory, agents and the GitHub workflow | 8, Running projects with agents |
 | 8 | Run the smoke tests, benchmarks and evaluations | 9, Validating the deployment |
 
-Chapters 10 to 12 cover operation, troubleshooting and removal.
+The edge app comes before the RAG and web apps because Open WebUI publishes no port: browsers reach
+it only through Caddy, and its first-run settings are made in a browser. Chapters 10 to 12 cover
+operation, troubleshooting and removal.
 
 ## How the stack maps to Claude Code
 

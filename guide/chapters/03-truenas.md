@@ -420,7 +420,7 @@ Table: Datasets of the stack
 | `tank/ai/appdata/caddy` | Apps | Defaults | Caddy certificates, ACME account and configuration |
 | `tank/ai/rag-docs` | SMB | **Create SMB Share**, **SMB Name** `rag-docs` | Documents to index, mounted read-only |
 | `tank/ai/stacks` | Generic | Owner `truenas_admin` (set from the shell) | Git clone of this repository |
-| `tank/ai/secrets` | Generic | Mode 0700, owner root (set from the shell) | The `<app>.env` files |
+| `tank/ai/secrets` | Generic | Mode 0700, owner root (set from the shell) | The environment files `inference.env`, `rag.env`, `web.env` and `edge.env` |
 
 The Apps preset sets the ACL type to NFSv4, turns access time off, and grants the TrueNAS `apps`
 user (UID 568) Modify with inheritance. A 32K record size suits PostgreSQL data files.
@@ -772,25 +772,29 @@ The repository is on the pool at the release tag.
 
 !!! note
     Do not edit files in the clone. Local changes make the server differ from the release and
-    block the move to the next tag. Chapter 10 describes updates.
+    block the move to the next tag. Chapter 10 describes updates
+    ([Updating to a new release](#updating-to-a-new-release)).
 
 ## Create the secrets files
 
-Each app reads its secrets from one environment file in `/mnt/tank/ai/secrets`. The tool
-`tools/secrets.py gen <app>` fills in the app's example file, `stack/<app>/<app>.env.example`,
-with a new random value (48 letters and digits) for every secret it generates, copies the values
-that two files share from an existing file named with `--share`, and leaves a placeholder for each
-value that you provide or that a running service creates later. With `-o <file>`, it writes a new
-file with mode 0600 and refuses to replace an existing one.
+Each app reads its secrets from one environment file in `/mnt/tank/ai/secrets`, named after its
+directory under `stack/`: `inference.env`, `rag.env`, `web.env` and `edge.env`. The tool
+`tools/secrets.py gen <name>` fills in the example file of that directory, for example
+`stack/inference/inference.env.example`, with a new random value (48 letters and digits) for every
+secret it generates, copies the values that two files share from an existing file named with
+`--share`, and leaves the example's placeholder for each value that you provide or that a running
+service creates later. With `-o <file>`, it writes a new file with mode 0600 and refuses to replace
+an existing one. The fifth file, the workstation's `client.env`, is created in Chapter 7
+([Create client.env](#create-clientenv)).
 
 Table: Secrets files
 
 | File | Variables | Values |
 |---|---|---|
 | `inference.env` | `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `LITELLM_DB_PASSWORD`, `LLAMA_SWAP_API_KEY` | Generated |
-| `rag.env` | `PG_PASSWORD`, `DOCLING_API_KEY`, `OIKB_TOKEN` | Generated, except `OIKB_TOKEN`, an Open WebUI key set in Chapter 5 |
-| `web.env` | `WEBUI_SECRET_KEY`, `PG_PASSWORD`, `LITELLM_WEBUI_KEY`, `SEARXNG_SECRET`, `MCP_HUB_TOKEN` | Generated, except `PG_PASSWORD`, copied from `rag.env`, and `LITELLM_WEBUI_KEY`, a LiteLLM key that exists only after `ai-inference` is installed |
-| `edge.env` | `LAB_DOMAIN`, `ACME_EMAIL`, `DNS_PROVIDER`, `DNS_PROVIDER_TOKEN` | You provide them (Chapter 6) |
+| `rag.env` | `PG_PASSWORD`, `DOCLING_API_KEY`, `OIKB_API_KEY`, `OIKB_TOKEN`, `OIKB_KB_ID` | The first three generated. `OIKB_TOKEN`, the `indexer` user's Open WebUI API key, and `OIKB_KB_ID`, the ID of the knowledge base, are set after Open WebUI's first start in Chapter 6 ([Store the service keys and redeploy ai-rag and ai-web](#store-the-service-keys-and-redeploy-ai-rag-and-ai-web)) |
+| `web.env` | `LAB_DOMAIN`, `WEBUI_SECRET_KEY`, `SEARXNG_SECRET`, `MCP_HUB_TOKEN`, `PG_PASSWORD`, `DOCLING_API_KEY`, `LITELLM_WEBUI_KEY`, `KB_READER_TOKEN`, `SEARXNG_CONTACT_URL` | `WEBUI_SECRET_KEY`, `SEARXNG_SECRET` and `MCP_HUB_TOKEN` generated; `PG_PASSWORD` and `DOCLING_API_KEY` copied from `rag.env`. You set `LAB_DOMAIN`, `LITELLM_WEBUI_KEY` (a LiteLLM key that exists only after `ai-inference` is installed) and the optional `SEARXNG_CONTACT_URL` before Open WebUI's first start ([Complete web.env before the first start](#complete-webenv-before-the-first-start)), and `KB_READER_TOKEN`, the `kb-reader` user's API key, after it |
+| `edge.env` | `LAB_DOMAIN`, `ACME_EMAIL`, `DNS_PROVIDER`, `DNS_PROVIDER_TOKEN`; optional `DNS_PROVIDER_KEY_ID`, `DNS_PROVIDER_CONSUMER_KEY`, `DNS_PROVIDER_ENDPOINT`, `ACME_RESOLVERS`, `ACME_CA`, `EDGE_ALLOWED_CIDRS`, `EDGE_BIND_IP`, `AI_ROOT` | You provide them in Chapter 5 ([Complete edge.env](#complete-edgeenv)); the example's defaults suit the optional ones |
 
 !!! warning
     The secrets files hold the keys that control the gateway, the databases and the certificates.
@@ -820,7 +824,7 @@ git clone --branch <release-tag> https://github.com/corytron/local-agent-stack.g
         cd ~/local-agent-stack
 
 3. Generate one file per app. Generate `rag.env` before `web.env`, which copies its
-   `PG_PASSWORD`:
+   `PG_PASSWORD` and `DOCLING_API_KEY`:
 
         python3 tools/secrets.py gen inference -o ~/.config/local-agent-stack/secrets/inference.env
         python3 tools/secrets.py gen rag -o ~/.config/local-agent-stack/secrets/rag.env
@@ -836,14 +840,23 @@ git clone --branch <release-tag> https://github.com/corytron/local-agent-stack.g
 
     The output lists four files, each with `-rw-------`.
 
-5. Check that `rag.env` and `web.env` carry the same database password:
+5. Check that `rag.env` and `web.env` carry the same database password and docling key:
 
-        grep -h '^PG_PASSWORD=' ~/.config/local-agent-stack/secrets/rag.env ~/.config/local-agent-stack/secrets/web.env | sort -u | wc -l
+        for v in PG_PASSWORD DOCLING_API_KEY; do grep -h "^$v=" ~/.config/local-agent-stack/secrets/rag.env ~/.config/local-agent-stack/secrets/web.env | sort -u | wc -l; done
 
-    The output is `1`.
+    The output is `1` twice.
 
-6. If you already have the values for `edge.env` (Chapter 2, accounts and tokens), replace its
-   placeholders now in a text editor. Otherwise leave them; Chapter 6 fills them in.
+6. Check that every secret was generated. Each generated value replaced a `change-me` placeholder
+   of the example file:
+
+        grep -c 'change-me' ~/.config/local-agent-stack/secrets/inference.env ~/.config/local-agent-stack/secrets/rag.env ~/.config/local-agent-stack/secrets/web.env
+
+    The counts are `0` for `inference.env` and `rag.env`, and `1` for `web.env`: its
+    `LITELLM_WEBUI_KEY` placeholder, which Chapter 6 replaces.
+
+7. Leave the placeholders that you provide for now. Chapter 5 completes `edge.env`
+   ([Complete edge.env](#complete-edgeenv)), and Chapter 6 completes `web.env` before Open WebUI
+   first starts and `rag.env` after it.
 
 ### Copy the environment files to TrueNAS
 
@@ -957,7 +970,7 @@ dialog. If a key is lost, delete it and create a new one.
 7. On the workstation, run the following command, paste the key at the prompt, and press Enter.
    The key is not echoed and does not enter the shell history:
 
-        (umask 077; read -rsp 'API key: ' key; echo; printf '%s\n' "$key" > ~/.config/local-agent-stack/truenas-read.key)
+        (umask 077; printf 'API key: '; read -rs key; echo; printf '%s\n' "$key" > ~/.config/local-agent-stack/truenas-read.key)
 
 8. In TrueNAS, click **Close**.
 
@@ -976,6 +989,7 @@ dialog. If a key is lost, delete it and create a new one.
 #### Results
 
 The workstation holds a read-only key and an apply key for `tools/deploy.py`. Chapter 10
-configures the tool with the address `wss://192.0.2.10:8443/api/current` and these two files, and
-checks the read-only key with `deploy.py status` before anything is applied. To revoke a key,
+configures the tool with the address `wss://192.0.2.10:8443/api/current` and these two files
+([Setting up deploy.py](#setting-up-deploypy)), and checks the read-only key with
+`deploy.py status` before anything is applied. To revoke a key,
 open **View API Keys** for its user and delete it.
