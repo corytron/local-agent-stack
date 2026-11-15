@@ -39,7 +39,7 @@ Table: Containers of the ai-edge app
 
 | Container | Image | Ports | GPU |
 |---|---|---|---|
-| `caddy` | `ghcr.io/corytron/local-agent-stack-caddy:2.11.9`, built by this project | 80/tcp, 443/tcp and 443/udp (HTTP/3), published on the server | None |
+| `caddy` | `ghcr.io/corytron/local-agent-stack-caddy:2.11.9`, built and published by this project, pinned by digest | 80/tcp, 443/tcp and 443/udp (HTTP/3), published on the server | None |
 | `gpu-exporter` | `utkuozdemir/nvidia_gpu_exporter:1.18.0-nvml`, pinned by digest | 9835, on `ai-net` only | Read-only access through the `utility` capability |
 
 The first part of the compose file defines `caddy`. The `gpu-exporter` part is shown in
@@ -566,7 +566,8 @@ change a value later, edit the workstation copy, repeat steps 7 to 9, and redepl
 The official Caddy image contains no DNS provider modules, so this project builds its own image
 with the eight modules and publishes it on the GitHub Container Registry as
 `ghcr.io/corytron/local-agent-stack-caddy`. A public package can be pulled without logging in, so
-TrueNAS needs no registry credentials.
+TrueNAS needs no registry credentials. The compose file of a release names the image by tag and
+digest, so the server always runs the image that the release was tested with.
 
 ### How the image is built and published
 
@@ -591,94 +592,148 @@ when they differ. Each DNS module is pinned to its latest release on 15 November
 database during the build. The build removes the file capability that `xcaddy` sets on the binary:
 with every capability dropped in the container, a binary that carries one cannot start.
 
+The workflow runs in this repository on GitHub, on `main` only; no other project publishes the
+image. A release copies the digest from the run summary into the `image:` line of
+`stack/edge/compose.yaml`, so that the line reads
+`ghcr.io/corytron/local-agent-stack-caddy:2.11.9@sha256:<digest>`. Docker then pulls that exact
+image, even if a later run of the workflow publishes a different image under the same tag. The
+workflow **MCP hub image** (`.github/workflows/mcp-hub-image.yml`) publishes the MCP hub image of
+the `ai-web` app in the same way
+([Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image)).
+
 !!! note
-    When this guide was written, the image had not yet been published, and the compose file names
-    it by tag only, `ghcr.io/corytron/local-agent-stack-caddy:2.11.9`, without a digest. Until a
-    release pins the digest (`:2.11.9@sha256:<digest>`), a later run of the workflow can publish a
-    different image under the same tag, and a pull replaces the image on the server. Check the
-    image before you install, as described in the next task, and compare its digest with the
-    summary of the workflow run that built it. The MCP hub image of the `ai-web` app, which the
-    workflow **MCP hub image** (`.github/workflows/mcp-hub-image.yml`) publishes, is in the same
-    state ([Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image)).
+    If the `image:` line of `caddy` in `stack/edge/compose.yaml` of your clone names the tag
+    without `@sha256:`, the image of that release has not been pinned yet. A later run of the
+    workflow can then publish a different image under the same tag, and a pull replaces the image
+    on the server. Compare the digest of the image that you pull in the next task with the summary
+    of the workflow run on the repository's **Actions** page, and report the missing pin as an
+    issue.
 
 ### Check the Caddy image on TrueNAS
 
 #### About this task
 
-This task pulls the image, records its digest, and validates the release's `Caddyfile` in the image
-with your `edge.env`. Validation loads every module, including the Cloudflare module's check of the
-token's shape, without starting the server.
+This task pulls the image that the release's compose file names, shows its digest, and validates
+the release's `Caddyfile` in the image with your `edge.env`. Validation loads every module,
+including the Cloudflare module's check of the token's shape, without starting the server. The
+commands take the image name from the compose file in the clone, so they check exactly the image
+that the app will run.
 
 #### Steps
 
-1. Pull the image:
+1. Store the image of the `caddy` service in a shell variable:
 
-        sudo docker pull ghcr.io/corytron/local-agent-stack-caddy:2.11.9
+        IMG=$(sed -n 's/^ *image: *\(ghcr\.io\/[^ ]*local-agent-stack-caddy:.*\)$/\1/p' \
+          /mnt/tank/ai/stacks/local-agent-stack/stack/edge/compose.yaml)
+        echo "$IMG"
 
-    The pull completes without asking for credentials. If it fails with an error such as `denied`
-    or `unauthorized`, the package is not public yet: see
+    The output is `ghcr.io/corytron/local-agent-stack-caddy:2.11.9@sha256:` followed by 64
+    hexadecimal digits. If it ends in `:2.11.9` without `@sha256:`, the image is not pinned yet; see
+    the note in [How the image is built and published](#how-the-image-is-built-and-published).
+
+2. Pull the image:
+
+        sudo docker pull "$IMG"
+
+    The pull completes without asking for credentials. If it fails with an error such as `denied`,
+    `unauthorized` or `manifest unknown`, the package is not public or not published: see
     [Make the Caddy image public](#make-the-caddy-image-public), or build the image on the server
     ([Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas)).
 
-2. Display the digest of the image:
+3. Display the digest of the image:
 
-        sudo docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/corytron/local-agent-stack-caddy:2.11.9
+        sudo docker image inspect --format '{{index .RepoDigests 0}}' "$IMG"
 
-    The output is `ghcr.io/corytron/local-agent-stack-caddy@sha256:<digest>`. Compare it with the
-    digest in the summary of the workflow run on the repository's **Actions** page.
+    The output is `ghcr.io/corytron/local-agent-stack-caddy@sha256:<digest>`, with the same digest
+    as the output of step 1. The summary of the workflow run that built the image, on the
+    repository's **Actions** page, names the same digest.
 
-3. Validate the `Caddyfile` with your values:
+4. Validate the `Caddyfile` with your values:
 
-        sudo docker run --rm --env-file /mnt/tank/ai/secrets/edge.env -v /mnt/tank/ai/stacks/local-agent-stack/stack/edge/Caddyfile:/etc/caddy/Caddyfile:ro ghcr.io/corytron/local-agent-stack-caddy:2.11.9 caddy validate --config /etc/caddy/Caddyfile
+        sudo docker run --rm --env-file /mnt/tank/ai/secrets/edge.env -v /mnt/tank/ai/stacks/local-agent-stack/stack/edge/Caddyfile:/etc/caddy/Caddyfile:ro "$IMG" caddy validate --config /etc/caddy/Caddyfile
 
     The last line of the output is `Valid configuration`.
 
-4. Optional: on the workstation, with the GitHub CLI (`gh`) installed and logged in, verify the
-   provenance of the image:
+5. Optional: on the workstation, with the GitHub CLI (`gh`) installed and logged in, verify the
+   provenance of the image. Replace `<digest>` with the digest of step 3:
 
-        gh attestation verify oci://ghcr.io/corytron/local-agent-stack-caddy:2.11.9 --repo corytron/local-agent-stack
+        gh attestation verify oci://ghcr.io/corytron/local-agent-stack-caddy@sha256:<digest> --repo corytron/local-agent-stack
 
     The command reports a successful verification. The attestation was signed by the workflow
     `.github/workflows/caddy-image.yml` of the repository.
 
 #### Results
 
-The image is on the server, its digest is recorded, and the `Caddyfile` is valid with your values.
+The image that the release names is on the server, its digest matches the release, and the
+`Caddyfile` is valid with your values.
 
 !!! note
-    If a later workflow run publishes a new image under the same tag before a digest is pinned,
-    `sudo midclt call -j app.pull_images ai-edge` pulls the images of the app again and redeploys
-    it. Repeat this task before you do.
+    With a digest in the compose file, a pull always fetches the pinned image, and
+    `sudo midclt call -j app.pull_images ai-edge`, which pulls the images of the app again and
+    redeploys it, changes nothing. Without a digest, a later workflow run can publish a new image
+    under the same tag, which that command or a new installation would pull; repeat this task
+    before you run it.
 
 ### Make the Caddy image public
 
 #### About this task
 
-This task applies only to the maintainer of the GitHub repository that publishes the image, for
-example after a fork. GitHub creates a new container package as private, and a package does not
-inherit the visibility of its repository. Do this once, after the first run of the **Caddy image**
-workflow, and once for the MCP hub image after the first run of its workflow.
+This task applies only to the maintainer of a GitHub repository that publishes the images: this
+project's repository, or your fork if you publish your own images. GitHub creates a new container
+package as private, and a package does not inherit the visibility of its repository. Do this once,
+after the first run of the **Caddy image** workflow, and once for the MCP hub image after the first
+run of its workflow.
+
+A fork that publishes its own images must first rename them. The image names are written in six
+places, each with the account `corytron`:
+
+Table: Image names to change in a fork
+
+| File | Line to change |
+|---|---|
+| `.github/workflows/caddy-image.yml` | `IMAGE: ghcr.io/corytron/local-agent-stack-caddy` |
+| `.github/workflows/mcp-hub-image.yml` | `IMAGE: ghcr.io/corytron/local-agent-stack-mcp-hub` |
+| `stack/edge/compose.yaml` | The `image:` line of `caddy` |
+| `stack/web/compose.yaml` | The `image:` line of `mcp-hub` |
+| `stack/edge/Dockerfile`, `stack/web/mcp-hub/Dockerfile` | The `org.opencontainers.image.source` label, the repository the image is built from |
+
+Without the change, the fork's workflows cannot push to `corytron`'s packages, and its servers
+keep pulling the images of this project. In the `gh attestation verify` commands of this guide, use
+your own repository with `--repo` as well.
 
 #### Steps
 
-1. On GitHub, open the repository page and click the package `local-agent-stack-caddy` under
+1. In a fork only: replace `corytron` with your GitHub account in the six places of the table, in
+   a pull request, and merge it. The merge to `main` runs both workflows; otherwise start each one
+   from the repository's **Actions** page with **Run workflow**.
+
+2. On GitHub, open the repository page and click the package `local-agent-stack-caddy` under
    **Packages**.
 
-2. Click **Package settings**.
+3. Click **Package settings**.
 
-3. Under **Danger Zone**, click **Change visibility**, select **Public**, and confirm.
+4. Under **Danger Zone**, click **Change visibility**, select **Public**, and confirm.
 
-4. Pin the digest from the summary of the workflow run in `stack/edge/compose.yaml`, through a
-   pull request.
+5. Pin the digest from the summary of the workflow run in `stack/edge/compose.yaml`, through a
+   pull request. The `image:` line then reads
+   `ghcr.io/<account>/local-agent-stack-caddy:2.11.9@sha256:<digest>`.
 
-5. Repeat steps 1 to 4 for the package `local-agent-stack-mcp-hub`, which the workflow **MCP hub
+6. Repeat steps 2 to 5 for the package `local-agent-stack-mcp-hub`, which the workflow **MCP hub
    image** (`.github/workflows/mcp-hub-image.yml`) publishes in the same way for the `ai-web` app
    (Chapter 6). Its digest is pinned in `stack/web/compose.yaml`.
 
+7. Check that the images can be pulled without credentials, on TrueNAS, which is not logged in to
+   the registry:
+
+        sudo docker pull ghcr.io/<account>/local-agent-stack-caddy:2.11.9
+        sudo docker pull ghcr.io/<account>/local-agent-stack-mcp-hub:0.15.0
+
+    Both pulls complete without `denied` or `unauthorized`.
+
 #### Results
 
-The packages are public; anyone can pull them without logging in, and TrueNAS needs no registry
-credentials.
+The packages are public, and the compose files pin their digests; anyone can pull them without
+logging in, and TrueNAS needs no registry credentials.
 
 ### Build the Caddy image on TrueNAS
 
@@ -1244,6 +1299,9 @@ it routes the request. This is a second line of defence. The first is the networ
   they reach each other by container name on `ai-net`, so a narrower list does not affect them.
 - `EDGE_BIND_IP` limits the server address on which Caddy listens, when the server has more than
   one.
+- SearXNG at `search.lab.example.com` has no login and runs without its rate limiter, which suits
+  a LAN only. [Known limitations of the RAG and web apps](#known-limitations-of-the-rag-and-web-apps)
+  lists what it would need if it were ever reachable from beyond the LAN.
 
 ### Container hardening and response headers
 

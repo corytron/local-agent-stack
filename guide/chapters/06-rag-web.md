@@ -2,20 +2,25 @@ title: Deploying the RAG and web apps
 
 # Deploying the RAG and web apps
 
-This chapter installs the two apps that sit between the models and the people who use them. The
-`ai-rag` app holds Open WebUI's database and vector index (`pgvector`), converts documents to text
-(`docling`) and keeps a knowledge base in step with the `rag-docs` share (`oikb`). The `ai-web` app
-runs the web interface (`open-webui`), the self-hosted metasearch engine (`searxng`) and the MCP
-hub (`mcp-hub`), which serves search, page fetch and knowledge-base tools to the coding agent.
-Neither app publishes a port or uses the GPU. Browsers and the workstation reach them through the
-edge app from Chapter 5.
+This chapter installs the two apps between the models and their users. `ai-rag` holds Open WebUI's
+database and vector index (`pgvector`), converts documents to text (`docling`) and keeps a
+knowledge base in step with the `rag-docs` share (`oikb`). `ai-web` runs the web interface
+(`open-webui`), the metasearch engine (`searxng`) and the MCP hub (`mcp-hub`), which serves search,
+page fetch and knowledge-base tools to the coding agent. Neither app publishes a port or uses the
+GPU; browsers and workstations reach them through the edge app of Chapter 5.
 
-Open WebUI copies most of its settings from its environment into its database the first time it
-starts, and from then on ignores the environment for those settings. Complete `web.env` before you
-install `ai-web`, and make later changes to those settings in the Open WebUI **Admin Panel**.
-Perform the tasks in the order shown. Run TrueNAS commands in **System** > **Shell**, or in an SSH
-session from the workstation as `truenas_admin`; commands that start with `sudo` prompt for the
-`truenas_admin` password.
+Open WebUI copies most of its settings from `web.env` into its database at its first start and
+ignores the environment for them afterwards. Complete `web.env` before you install `ai-web`, and
+perform the tasks in the order shown.
+
+## Before you install the RAG and web apps
+
+Run TrueNAS commands in **System** > **Shell**, or in an SSH session from the workstation as
+`truenas_admin`; commands that start with `sudo` prompt for the `truenas_admin` password. Make
+later changes to the settings that Open WebUI seeded in its **Admin Panel**
+([Settings that Open WebUI keeps from its first start](#settings-that-open-webui-keeps-from-its-first-start)).
+
+### Values and task order for the RAG and web apps
 
 Table: Values used in this chapter
 
@@ -34,23 +39,26 @@ Table: Order of the tasks in this chapter
 |---|---|---|
 | 1 | Create the LiteLLM key of Open WebUI and complete `web.env` | `ai-inference` running (Chapter 4); `edge.env` complete (Chapter 5) |
 | 2 | Install `ai-rag` | The datasets, the share and `rag.env` from Chapter 3 |
-| 3 | Build or pull the MCP hub image, then install `ai-web` | `ai-rag` and `ai-inference` running |
+| 3 | Pull the MCP hub image (or build it), then install `ai-web` | `ai-rag` and `ai-inference` running |
 | 4 | Create the administrator account and check the settings | `ai-edge` running with a certificate (Chapter 5) |
 | 5 | Create the service users, the knowledge base and their keys; redeploy both apps | Steps 2 to 4 |
 | 6 | Add documents; verify web search and the MCP hub | Step 5 |
 
+### Containers of the RAG and web apps
+
 Table: Services of the RAG and web apps
 
-| Container | App | Image (pinned by tag and digest) | Address on ai-net |
+| Container | App | Image tag | Address on ai-net |
 |---|---|---|---|
 | `pgvector` | `ai-rag` | `pgvector/pgvector:0.8.7-pg17` | `pgvector:5432` |
 | `docling` | `ai-rag` | `ghcr.io/docling-project/docling-serve-cpu:v1.38.2` | `docling:5001` |
 | `oikb` | `ai-rag` | `ghcr.io/open-webui/oikb:0.6.0` | `oikb:8080` (health, sync and metrics routes) |
 | `open-webui` | `ai-web` | `ghcr.io/open-webui/open-webui:v0.13.3-slim` | `open-webui:8080` |
 | `searxng` | `ai-web` | `docker.io/searxng/searxng:2026.11.15-2d500cb6b` | `searxng:8080` |
-| `mcp-hub` | `ai-web` | `ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0`, built from `stack/web/mcp-hub` | `mcp-hub:8096` |
+| `mcp-hub` | `ai-web` | `ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0`, published by this project's workflow from `stack/web/mcp-hub` | `mcp-hub:8096` |
 
-Every container sets `NVIDIA_VISIBLE_DEVICES=void`, because TrueNAS makes `nvidia` the default
+The compose files `stack/rag/compose.yaml` and `stack/web/compose.yaml` name each image by its tag
+and its digest; the table shows the tags. Every container sets `NVIDIA_VISIBLE_DEVICES=void`, because TrueNAS makes `nvidia` the default
 Docker runtime and none of these images needs the GPU. Every container runs with
 `no-new-privileges`, and Docker rotates each container's log at 10 MB, keeping five files.
 
@@ -154,11 +162,15 @@ command line. Run it once: every run creates another valid key.
 
     The command prints the new key, which starts with `sk-`. Copy it; it is `<litellm-webui-key>`.
 
-3. Check which models the key allows. Replace `<litellm-webui-key>` with the key:
+3. Check which models the key allows. Read the key into a shell variable: run the command, paste
+   the key, and press Enter. The key is not echoed, and the next command passes it to `curl` on
+   standard input, so it does not appear in the process list:
 
-        sudo docker exec litellm python3 -c "import json, urllib.request as u; \
-        req = u.Request('http://127.0.0.1:4000/v1/models', headers={'Authorization': 'Bearer <litellm-webui-key>'}); \
-        print(sorted(m['id'] for m in json.load(u.urlopen(req))['data']))"
+        printf 'Key: '; read -rs K; echo
+        printf 'Authorization: Bearer %s\n' "$K" |
+          sudo docker exec -i llama-swap curl -sS -H @- http://litellm:4000/v1/models |
+          python3 -c "import json, sys; print(sorted(m['id'] for m in json.load(sys.stdin)['data']))"
+        unset K
 
     The output is
     `['local-coder', 'local-coder-moe', 'local-embed', 'local-fast', 'local-rerank']`.
@@ -242,9 +254,10 @@ and copies it to the server.
 
 The environment files are edited on the workstation in `~/.config/local-agent-stack/secrets/` and
 copied to `/mnt/tank/ai/secrets/` on the server, where only root can read them. This chapter
-repeats this task after every change; replace `<app>` with `rag` or `web`. An app reads the new
-values at its next start or redeploy. The settings that Open WebUI seeded from `web.env` do not
-change this way.
+repeats this task after every change; replace `<app>` with `rag` or `web`, or with `inference` or
+`edge` when another chapter refers to this task. An app reads the new values at its next redeploy,
+which recreates its containers. The settings that Open WebUI seeded from `web.env` do not change
+this way.
 
 #### Steps
 
@@ -275,8 +288,9 @@ The server holds the new file. Chapter 3 describes the same procedure for all fo
 
 The `ai-rag` app runs PostgreSQL with pgvector, the document parser and the knowledge-base sync.
 Install it before `ai-web`: Open WebUI cannot start without `pgvector`. The document parser is
-sized for the 64 GB reference system: `docling` may use up to 8 GB of memory and converts with two
-workers. It requires the `X-Api-Key` header with `DOCLING_API_KEY` on every request, and its API
+sized for the 64 GB of system memory that Chapter 2 requires: `docling` may use up to 8 GB of
+memory and converts with two workers. The release has no smaller setting for servers below that
+minimum. It requires the `X-Api-Key` header with `DOCLING_API_KEY` on every request, and its API
 reference pages are turned off.
 
 ### Install ai-rag from a YAML wrapper
@@ -495,90 +509,176 @@ PostgreSQL initializes its data directory on the **Generic** dataset and accepts
 
 ## Install the ai-web app
 
-The `ai-web` app runs Open WebUI, SearXNG and the MCP hub. Its MCP hub image is built from the
-repository, so the image must be on the server before Compose can start the app.
+The `ai-web` app runs Open WebUI, SearXNG and the MCP hub. The MCP hub image comes from this
+project, so check that the server can pull it before you install the app.
 
 ### Build or pull the MCP hub image
 
 #### About this task
 
-The `mcp-hub` service names the image `ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0` and the
-build context `./mcp-hub`. Compose pulls the image if it is published, and otherwise builds it from
-`stack/web/mcp-hub` in the clone on the server.
+The `mcp-hub` service names the image `ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0` with its
+digest, and the build context `./mcp-hub`. The GitHub Actions workflow **MCP hub image**
+(`.github/workflows/mcp-hub-image.yml`) of this repository builds the image from
+`stack/web/mcp-hub` on a push to `main` that changes that folder or the workflow, or on a manual
+run, and publishes it on the GitHub Container Registry with a signed build provenance attestation,
+in the same way as the Caddy image
+([How the image is built and published](#how-the-image-is-built-and-published)). A release copies
+the digest of the published image into `stack/web/compose.yaml`, so the server pulls exactly that
+image.
 
-The GitHub Actions workflow **MCP hub image** (`.github/workflows/mcp-hub-image.yml`) builds the
-image from `stack/web/mcp-hub` on a push to `main` that changes that folder or the workflow, or on
-a manual run, and publishes it on the GitHub Container Registry with a signed build provenance
-attestation, in the same way as the Caddy image
-([How the image is built and published](#how-the-image-is-built-and-published)). When this guide
-was written, the image had not yet been published, and the compose file names it by tag only,
-without a digest. Until a release pins the digest, a later run of the workflow can publish a
-different image under the same tag. If the pull in step 1 fails, build the image on the server.
+Compose pulls the image when it installs the app. This task pulls it first, so that a problem shows
+here and not as a failed installation. If the pull fails, build the image on the server instead
+with [Build the MCP hub image on TrueNAS](#build-the-mcp-hub-image-on-truenas).
 
-The build starts from `ghcr.io/sparfenyuk/mcp-proxy:v0.15.0-debian-node`, pinned by digest, and adds
-two Node.js MCP servers, installed with `npm ci` from the lock file (127 packages, none with an
-install script), and the Python fetch server, installed into its own virtual environment with every
-package checked by hash. The image is about 430 MB and runs as UID 10001. The time the build takes
-was not measured; it depends on the download of the base image and the packages. If Compose builds
-the image during the installation, the installation job shows no progress until the build ends.
-Building it first in the shell shows each step and any error, and the installation of `ai-web` then
-uses the image at once.
+{{ include stack/web/compose.yaml lines=166-206 }}
 
-{{ include stack/web/compose.yaml lines=166-205 }}
+!!! note
+    If the `image:` line of `mcp-hub` in `stack/web/compose.yaml` of your clone names the tag
+    without `@sha256:`, the image of that release has not been pinned yet. A later run of the
+    workflow can then publish a different image under the same tag. Compare the digest that step 3
+    shows with the summary of the workflow run on the repository's **Actions** page, and report the
+    missing pin as an issue.
 
 #### Steps
 
-1. Try to pull the published image:
+1. Store the image of the `mcp-hub` service in a shell variable:
 
-        sudo docker pull ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0
+        IMG=$(sed -n 's/^ *image: *\(ghcr\.io\/[^ ]*local-agent-stack-mcp-hub:.*\)$/\1/p' \
+          /mnt/tank/ai/stacks/local-agent-stack/stack/web/compose.yaml)
+        echo "$IMG"
 
-    If the pull succeeds, continue with step 3. An error such as `not found`, `manifest unknown`
-    or `denied` means that the image is not published; continue with step 2.
+    The output is `ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0@sha256:` followed by 64
+    hexadecimal digits.
 
-2. Build the image from the clone, under the name that the compose file uses:
+2. Pull the image:
 
-        sudo docker build -t ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0 /mnt/tank/ai/stacks/local-agent-stack/stack/web/mcp-hub
+        sudo docker pull "$IMG"
 
-    Docker prints each step of the Dockerfile and ends by naming the tagged image. An error in a
-    `RUN` step stops the build and prints the failing command's output.
+    If the pull fails with an error such as `not found`, `manifest unknown` or `denied`, the image
+    is not published or not public; continue with
+    [Build the MCP hub image on TrueNAS](#build-the-mcp-hub-image-on-truenas) instead of this task.
 
 3. Verify the image:
 
-        sudo docker image ls ghcr.io/corytron/local-agent-stack-mcp-hub
+        sudo docker image inspect --format '{{index .RepoDigests 0}} {{.Size}}' "$IMG"
 
-    The list shows the tag `0.15.0` with a size of about 430 MB.
+    The output is `ghcr.io/corytron/local-agent-stack-mcp-hub@sha256:<digest>`, with the same
+    digest as in step 1, followed by the size in bytes, about 430 MB.
 
-4. Optional, if step 1 pulled the image: on the workstation, with the GitHub CLI (`gh`) installed
-   and logged in, verify the provenance of the image:
+4. Optional: on the workstation, with the GitHub CLI (`gh`) installed and logged in, verify the
+   provenance of the image. Replace `<digest>` with the digest of step 3:
 
-        gh attestation verify oci://ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0 --repo corytron/local-agent-stack
+        gh attestation verify oci://ghcr.io/corytron/local-agent-stack-mcp-hub@sha256:<digest> --repo corytron/local-agent-stack
 
     The command reports a successful verification. The attestation was signed by the workflow
     `.github/workflows/mcp-hub-image.yml` of the repository.
 
 #### Results
 
-The MCP hub image is on the server, and Compose uses it when `ai-web` is installed.
+The MCP hub image that the release names is on the server, and Compose uses it when `ai-web` is
+installed. A later release with a new image names a new digest, which Compose pulls when the app is
+redeployed.
+
+### Build the MCP hub image on TrueNAS
+
+#### About this task
+
+This task is an alternative to the published image, for the time a pull fails. The server builds
+the image from the release's `stack/web/mcp-hub` under a local name, and a compose override file
+selects that image, in the same way as for the Caddy image
+([Build the Caddy image on TrueNAS](#build-the-caddy-image-on-truenas)). The pinned name of the
+compose file cannot be used for a local build, because a local build has no registry digest.
+
+The build starts from `ghcr.io/sparfenyuk/mcp-proxy:v0.15.0-debian-node`, pinned by digest, and adds
+two Node.js MCP servers, installed with `npm ci` from the lock file (127 packages, none with an
+install script), and the Python fetch server, installed into its own virtual environment with every
+package checked by hash. The image is about 430 MB and runs as UID 10001. The time the build takes
+was not measured; it depends on the download of the base image and the packages.
 
 !!! note
     Building the image on TrueNAS 25.10 was not tried; it was built and tested on another Docker
-    host. If step 2 fails on the server and the workstation has Docker, build the image there and
-    copy it. On the workstation:
+    host. Check the output of step 2 before you use the image.
 
-        docker build -t ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0 ~/local-agent-stack/stack/web/mcp-hub
-        docker save -o /tmp/mcp-hub.tar ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0
+#### Steps
+
+1. Build the image:
+
+        sudo docker build --pull -t local-agent-stack-mcp-hub:0.15.0-local /mnt/tank/ai/stacks/local-agent-stack/stack/web/mcp-hub
+
+    Docker prints each step of the Dockerfile and ends by naming the tagged image. An error in a
+    `RUN` step stops the build and prints the failing command's output.
+
+2. Verify the image:
+
+        sudo docker image ls local-agent-stack-mcp-hub
+
+    The list shows the tag `0.15.0-local` with a size of about 430 MB.
+
+3. Create a directory for the override file:
+
+        sudo install -d /mnt/tank/ai/appdata/mcp-hub
+
+4. Write the compose override file that selects the local image:
+
+        sudo tee /mnt/tank/ai/appdata/mcp-hub/local-image.override.yaml > /dev/null <<'EOF'
+        services:
+          mcp-hub:
+            image: local-agent-stack-mcp-hub:0.15.0-local
+            pull_policy: never
+        EOF
+
+5. When you install the app in [Install ai-web from a YAML wrapper](#install-ai-web-from-a-yaml-wrapper),
+   use the following YAML instead of the standard one. Compose merges the two files, and the
+   override replaces only the image:
+
+        include:
+          - path:
+              - /mnt/tank/ai/stacks/local-agent-stack/stack/web/compose.yaml
+              - /mnt/tank/ai/appdata/mcp-hub/local-image.override.yaml
+            env_file: /mnt/tank/ai/secrets/web.env
+        services: {}
+
+6. List the override in your desired-state file, the copy of `deploy/truenas.toml` that Chapter 10
+   creates in [Create your desired-state file](#create-your-desired-state-file). Add this line to
+   the `[apps.ai-web]` table, below its `stack` line; if you create the file later, add the line
+   then:
+
+        overrides = ["/mnt/tank/ai/appdata/mcp-hub/local-image.override.yaml"]
+
+    `deploy.py apply` then writes the same YAML as step 5, followed by its content hashes, and
+    keeps the override; without the line, `apply` would replace the YAML with the four lines of
+    `stack/web/truenas-app.yaml` and return to the published image.
+
+#### Results
+
+The `ai-web` app runs the image built on the server once it is installed with the YAML of step 5.
+A redeploy does not rebuild the image: repeat steps 1 and 2 after every release update that changes
+files under `stack/web/mcp-hub`, then redeploy the app with
+`sudo midclt call -j app.redeploy ai-web`. As for the Caddy image, `deploy.py plan` and `drift`
+report `ai-web` with images other than the release's while the local image runs.
+
+To return to the published image, remove the `overrides` line from the `[apps.ai-web]` table of
+your desired-state file and run `deploy.py apply --app ai-web` as in Chapter 10, or, without a
+desired-state file, edit the app and use the four lines of
+[Install ai-web from a YAML wrapper](#install-ai-web-from-a-yaml-wrapper).
+
+!!! note
+    If the build fails on TrueNAS as well, you can build the image once on a workstation that has
+    Docker Engine and copy it. This is a one-time exception to the rule that nothing of the stack
+    runs on a workstation: remove the image and the build cache afterwards, and Docker Engine too
+    if you installed it only for this. On the workstation:
+
+        docker build -t local-agent-stack-mcp-hub:0.15.0-local ~/local-agent-stack/stack/web/mcp-hub
+        docker save -o /tmp/mcp-hub.tar local-agent-stack-mcp-hub:0.15.0-local
         scp /tmp/mcp-hub.tar truenas_admin@192.0.2.10:/mnt/tank/ai/stacks/
         rm /tmp/mcp-hub.tar
-        docker image rm ghcr.io/corytron/local-agent-stack-mcp-hub:0.15.0
+        docker image rm local-agent-stack-mcp-hub:0.15.0-local
+        docker builder prune --force
 
-    Then, on TrueNAS:
+    Then, on TrueNAS, load the image and continue with step 2:
 
         sudo docker load -i /mnt/tank/ai/stacks/mcp-hub.tar
         rm /mnt/tank/ai/stacks/mcp-hub.tar
-
-!!! note
-    A redeploy of `ai-web` does not rebuild an image that is already on the server. When a later
-    release changes files under `stack/web/mcp-hub`, repeat step 2 before you redeploy `ai-web`.
 
 ### Install ai-web from a YAML wrapper
 
@@ -588,7 +688,9 @@ The MCP hub image is on the server, and Compose uses it when `ai-web` is install
 - `ai-inference` is installed and `litellm` is healthy (Chapter 4).
 - `/mnt/tank/ai/secrets/web.env` is complete
   ([Complete web.env before the first start](#complete-webenv-before-the-first-start)).
-- The MCP hub image is on the server ([Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image)).
+- The MCP hub image is on the server: pulled in
+  [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image), or built with its override
+  file in [Build the MCP hub image on TrueNAS](#build-the-mcp-hub-image-on-truenas).
 
 #### About this task
 
@@ -618,6 +720,9 @@ first start. The installation itself does not need `ai-edge`; signing in does.
     four lines after a `# ai-web` line. When the clone has the release tag, it adds an
     `x-local-agent-stack` block with the content hashes that `deploy.py apply` records
     ([Setting up deploy.py](#setting-up-deploypy)). Paste only the four lines.
+
+    If you built the MCP hub image on the server, use the YAML from
+    [Build the MCP hub image on TrueNAS](#build-the-mcp-hub-image-on-truenas) instead.
 
 5. Click **Save**.
 
@@ -773,20 +878,26 @@ correct it on the same page and click **Save**.
    `searxng` and the query URL `http://searxng:8080/search?q=<query>`.
 
 6. On TrueNAS, read the Open WebUI key from `web.env` into a shell variable and check the embedding
-   route:
+   route from the `open-webui` container. The key goes to `curl` on standard input, so it does not
+   appear in the process list:
 
+        sudo -v
         K=$(sudo sed -n 's/^LITELLM_WEBUI_KEY=//p' /mnt/tank/ai/secrets/web.env)
-        sudo docker exec open-webui curl -s http://litellm:4000/v1/embeddings -H "Authorization: Bearer $K" \
-          -H 'Content-Type: application/json' -d '{"model":"local-embed","input":"pgvector adds vector search to PostgreSQL"}' \
-          | python3 -c "import json, sys; print(len(json.load(sys.stdin)['data'][0]['embedding']))"
+        printf 'Authorization: Bearer %s\n' "$K" |
+          sudo docker exec -i open-webui curl -s -H @- -H 'Content-Type: application/json' \
+            -d '{"model":"local-embed","input":"pgvector adds vector search to PostgreSQL"}' \
+            http://litellm:4000/v1/embeddings |
+          python3 -c "import json, sys; print(len(json.load(sys.stdin)['data'][0]['embedding']))"
 
     The output is `1024`, the vector size of the embedding model.
 
-7. Check the reranking route in the same shell:
+7. Check the reranking route in the same shell, then clear the variable:
 
-        sudo docker exec open-webui curl -s http://litellm:4000/v1/rerank -H "Authorization: Bearer $K" \
-          -H 'Content-Type: application/json' \
-          -d '{"model":"local-rerank","query":"what is pgvector","documents":["pgvector adds vector search to PostgreSQL","bananas are yellow"],"top_n":2}'
+        printf 'Authorization: Bearer %s\n' "$K" |
+          sudo docker exec -i open-webui curl -s -H @- -H 'Content-Type: application/json' \
+            -d '{"model":"local-rerank","query":"what is pgvector","documents":["pgvector adds vector search to PostgreSQL","bananas are yellow"],"top_n":2}' \
+            http://litellm:4000/v1/rerank
+        unset K
 
     The answer holds `results`, each with an `index` and a `relevance_score`; the document with
     `index` 0 scores higher than the document with `index` 1.
@@ -828,12 +939,16 @@ bypass LiteLLM's keys and logs.
 
 #### Steps
 
-1. On TrueNAS, read the llama-swap key and check llama-swap's reranking route:
+1. On TrueNAS, read the llama-swap key and check llama-swap's reranking route from the
+   `open-webui` container, with the key on standard input:
 
+        sudo -v
         L=$(sudo sed -n 's/^LLAMA_SWAP_API_KEY=//p' /mnt/tank/ai/secrets/inference.env)
-        sudo docker exec open-webui curl -s http://llama-swap:8080/v1/rerank -H "Authorization: Bearer $L" \
-          -H 'Content-Type: application/json' \
-          -d '{"model":"rerank","query":"what is pgvector","documents":["pgvector adds vector search to PostgreSQL","bananas are yellow"],"top_n":2}'
+        printf 'Authorization: Bearer %s\n' "$L" |
+          sudo docker exec -i open-webui curl -s -H @- -H 'Content-Type: application/json' \
+            -d '{"model":"rerank","query":"what is pgvector","documents":["pgvector adds vector search to PostgreSQL","bananas are yellow"],"top_n":2}' \
+            http://llama-swap:8080/v1/rerank
+        unset L
 
     The answer holds `results` with `index` and `relevance_score`.
 
@@ -1232,7 +1347,8 @@ environment:
 
 {{ include stack/web/mcp-hub/servers.json }}
 
-The commands below run `curl` inside the `open-webui` container, which sits on `ai-net`. An MCP
+The commands below run `curl` inside the `open-webui` container, which sits on `ai-net`. The token
+goes to `curl` on standard input (`-H @-`), so it does not appear in the process list. An MCP
 session starts with `initialize`; if the answer carries an `mcp-session-id` header, the later
 requests of the session send it back. Each answer is either plain JSON or an event stream whose
 `data:` line holds the JSON message.
@@ -1247,12 +1363,15 @@ requests of the session send it back. Each answer is either plain JSON or an eve
 
 2. Read the hub token from `web.env` into a shell variable:
 
+        sudo -v
         T=$(sudo sed -n 's/^MCP_HUB_TOKEN=//p' /mnt/tank/ai/secrets/web.env)
 
 3. Check that the hub refuses a request without the token, and a foreign `Host` header:
 
         sudo docker exec open-webui curl -s -o /dev/null -w '%{http_code}\n' -X POST http://mcp-hub:8096/servers/fetch/mcp
-        sudo docker exec open-webui curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" -H 'Host: evil.example.com' http://mcp-hub:8096/status
+        printf 'Authorization: Bearer %s\n' "$T" |
+          sudo docker exec -i open-webui curl -s -o /dev/null -w '%{http_code}\n' -H @- \
+            -H 'Host: evil.example.com' http://mcp-hub:8096/status
 
     The outputs are `401` and `421`.
 
@@ -1262,10 +1381,11 @@ requests of the session send it back. Each answer is either plain JSON or an eve
 
 5. Start a session:
 
-        sudo docker exec open-webui curl -s -i http://mcp-hub:8096/servers/$N/mcp \
-          -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
-          -H 'Accept: application/json, text/event-stream' \
-          -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}'
+        printf 'Authorization: Bearer %s\n' "$T" |
+          sudo docker exec -i open-webui curl -s -i http://mcp-hub:8096/servers/$N/mcp \
+            -H @- -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}'
 
     The status line shows `200`, and the JSON result holds `protocolVersion` and a
     `serverInfo` with the server's name and version. For `fetch`, the name is `mcp-fetch` and the
@@ -1280,34 +1400,39 @@ requests of the session send it back. Each answer is either plain JSON or an eve
 
 7. Complete the start of the session:
 
-        sudo docker exec open-webui curl -s -o /dev/null -w '%{http_code}\n' http://mcp-hub:8096/servers/$N/mcp \
-          -H "Authorization: Bearer $T" -H "Mcp-Session-Id: $S" -H 'MCP-Protocol-Version: 2025-06-18' \
-          -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-          -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+        printf 'Authorization: Bearer %s\n' "$T" |
+          sudo docker exec -i open-webui curl -s -o /dev/null -w '%{http_code}\n' http://mcp-hub:8096/servers/$N/mcp \
+            -H @- -H "Mcp-Session-Id: $S" -H 'MCP-Protocol-Version: 2025-06-18' \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 
     The output is a status in the 200 range; a notification has no result.
 
 8. List the server's tools:
 
-        sudo docker exec open-webui curl -s http://mcp-hub:8096/servers/$N/mcp \
-          -H "Authorization: Bearer $T" -H "Mcp-Session-Id: $S" -H 'MCP-Protocol-Version: 2025-06-18' \
-          -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-          -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+        printf 'Authorization: Bearer %s\n' "$T" |
+          sudo docker exec -i open-webui curl -s http://mcp-hub:8096/servers/$N/mcp \
+            -H @- -H "Mcp-Session-Id: $S" -H 'MCP-Protocol-Version: 2025-06-18' \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 
     The result lists the tools of the server, as in the table above, each with its description and
     input schema.
 
 9. For `kb`, call `list_knowledge_bases`, which runs as the `kb-reader` user:
 
-        sudo docker exec open-webui curl -s http://mcp-hub:8096/servers/kb/mcp \
-          -H "Authorization: Bearer $T" -H "Mcp-Session-Id: $S" -H 'MCP-Protocol-Version: 2025-06-18' \
-          -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-          -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_knowledge_bases","arguments":{}}}'
+        printf 'Authorization: Bearer %s\n' "$T" |
+          sudo docker exec -i open-webui curl -s http://mcp-hub:8096/servers/kb/mcp \
+            -H @- -H "Mcp-Session-Id: $S" -H 'MCP-Protocol-Version: 2025-06-18' \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_knowledge_bases","arguments":{}}}'
 
     The result names the `rag-docs` knowledge base and its ID. An authentication error means that
     `KB_READER_TOKEN` is empty or wrong, or that `ai-web` was not redeployed after it was set.
 
-10. Repeat steps 4 to 8 with `N=searxng` and with `N=fetch`.
+10. Repeat steps 4 to 8 with `N=searxng` and with `N=fetch`, then clear the variables:
+
+        unset T S N
 
 #### Results
 
@@ -1397,19 +1522,29 @@ reranker key. A new key goes into all three, and then into `web.env`.
 5. Repeat steps 3, 6 and 7 of
    [Check the Open WebUI connections and document settings](#check-the-open-webui-connections-and-document-settings).
 
-6. Delete the old key in LiteLLM. Replace `<old-litellm-webui-key>` with the old key:
+6. Delete the old key in LiteLLM. Read the old key into a shell variable: run the first command,
+   paste the old key, and press Enter. The second command passes it to the container on standard
+   input, and takes the master key from the container's own environment, so neither key appears in
+   the process list:
 
-        sudo docker exec litellm python3 -c "import json, os, urllib.request as u; \
-        body = json.dumps({'keys': ['<old-litellm-webui-key>']}).encode(); \
+        sudo -v; printf 'Old key: '; read -rs OLD; echo
+        printf '%s\n' "$OLD" |
+          sudo docker exec -i litellm python3 -c "import json, os, sys, urllib.request as u; \
+        body = json.dumps({'keys': [sys.stdin.readline().strip()]}).encode(); \
         req = u.Request('http://127.0.0.1:4000/key/delete', data=body, \
         headers={'Authorization': 'Bearer ' + os.environ['LITELLM_MASTER_KEY'], 'Content-Type': 'application/json'}); \
         print(u.urlopen(req).read().decode())"
 
-7. Check that the old key is refused: run step 3 of
-   [Create the virtual key that Open WebUI uses](#create-the-virtual-key-that-open-webui-uses) with
-   the old key.
+    The response lists the deleted key under `deleted_keys`.
 
-    The command fails with an HTTP error instead of listing the models.
+7. Check that the old key is refused, then clear the variable:
+
+        printf 'Authorization: Bearer %s\n' "$OLD" |
+          sudo docker exec -i llama-swap curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
+            http://litellm:4000/v1/models
+        unset OLD
+
+    The output is `401`.
 
 #### Results
 
@@ -1417,8 +1552,8 @@ Open WebUI uses the new key everywhere, and the old key no longer works.
 
 !!! note
     LiteLLM's `/key/delete` endpoint was not checked against version 1.108.8 for this guide. Step 7
-    shows whether the old key was revoked; if it still lists the models, revoke the key in LiteLLM's
-    Admin UI at `https://llm.lab.example.com/ui`, where you sign in with the master key.
+    shows whether the old key was revoked; if its output is `200`, revoke the key in LiteLLM's Admin
+    UI at `https://llm.lab.example.com/ui`, where you sign in with the master key.
 
 ### Rotate the API keys of the service users
 
@@ -1461,7 +1596,7 @@ Table: Rotating the RAG and web secrets
 | Secret | Files | Procedure |
 |---|---|---|
 | `DOCLING_API_KEY` | `rag.env` and `web.env` (the same value) | Set the new value in both files and copy them; redeploy `ai-rag`; enter the new key for docling in **Admin Panel** > **Settings** > **Documents** and click **Save** |
-| `PG_PASSWORD` | `rag.env` and `web.env` (the same value) | Change the database password first (steps below), then set it in both files, copy them, and redeploy `ai-rag`, then `ai-web` |
+| `PG_PASSWORD` | `rag.env` and `web.env` (the same value) | Set the new value in both files and copy them, change the database password to it, then redeploy `ai-rag` and `ai-web` (steps below) |
 | `MCP_HUB_TOKEN` | `web.env`, and `client.env` on every workstation (Chapter 7) | Set the new value, copy `web.env`, redeploy `ai-web`; update each workstation and every Open WebUI MCP connection to the hub |
 | `SEARXNG_SECRET`, `OIKB_API_KEY` | `web.env`, `rag.env` | Set the new value, copy the file, and redeploy the app |
 | `WEBUI_SECRET_KEY` | `web.env` | Never change it: every session ends, and the tokens that Open WebUI stored can no longer be decrypted |
@@ -1470,17 +1605,23 @@ Table: Rotating the RAG and web secrets
 
 To change the database password:
 
-1. Change the password of the `openwebui` role. Replace `<new-pg-password>` with a new value of
-   letters and digits only, because the password goes into a URL:
+1. On the workstation, generate a new value with the command at the start of this topic (letters
+   and digits only, because the password goes into a URL). Set it as `PG_PASSWORD` in `rag.env`
+   and in `web.env` in `~/.config/local-agent-stack/secrets/`, and copy both files with
+   [Copy a changed environment file to TrueNAS](#copy-a-changed-environment-file-to-truenas).
 
-        sudo docker exec -it pgvector psql -U openwebui -d openwebui -c "ALTER ROLE openwebui PASSWORD '<new-pg-password>'"
+2. On TrueNAS, change the password of the `openwebui` role to the value in the new `rag.env`.
+   `psql` reads the statement on standard input, so the password does not appear on a command
+   line:
 
-    The output is `ALTER ROLE`.
+        sudo -v
+        printf "ALTER ROLE openwebui PASSWORD '%s';\n" \
+          "$(sudo sed -n 's/^PG_PASSWORD=//p' /mnt/tank/ai/secrets/rag.env)" |
+          sudo docker exec -i pgvector psql -U openwebui -d openwebui
 
-2. Set `PG_PASSWORD=<new-pg-password>` in `rag.env` and in `web.env` on the workstation, and copy
-   both files with [Copy a changed environment file to TrueNAS](#copy-a-changed-environment-file-to-truenas).
+    The output is `ALTER ROLE`. Open connections keep working; new ones fail until the next step.
 
-3. Redeploy both apps:
+3. Redeploy both apps at once:
 
         sudo midclt call -j app.redeploy ai-rag
         sudo midclt call -j app.redeploy ai-web
@@ -1528,13 +1669,21 @@ Open WebUI uses the new setting at once, and keeps it across restarts and redepl
 - **Web search depends on public engines.** Result quality follows DuckDuckGo, Brave and the other
   enabled engines; Google and Bing are not queried. Engines that see CAPTCHAs suspend the instance
   for a while.
+- **SearXNG is for the LAN only.** It has no login and runs with its limiter (bot detection and rate
+  limiting) off and without Valkey, the store the limiter needs, because the limiter would
+  throttle Open WebUI and the MCP hub. Never make `search.lab.example.com` reachable from beyond
+  the LAN. If you ever must, three changes to the release's files come first, through Chapter 8:
+  `server.limiter: true` in `stack/web/searxng/settings.yml`, a Valkey container in `ai-web` with
+  `SEARXNG_VALKEY_URL`, and the Docker network that Caddy uses and the LAN in
+  `[botdetection] trusted_proxies` and `[botdetection.ip_lists] pass_ip` of
+  `stack/web/searxng/limiter.toml`.
 - **One token for the MCP hub.** The hub's bearer token carries no user identity: every client that
   holds it gets the same tools, and the `kb` tools always act as `kb-reader`.
 - **No fetches into the LAN.** Open WebUI's page fetcher and the hub's `fetch` server refuse
   private addresses, and `fetch` honours robots.txt.
-- **Document conversion runs on the CPU.** `docling` has two workers and 8 GB of memory; a large
-  scanned PDF can take minutes, up to the 600-second limit of a synchronous conversion. Embedding
-  and reranking also run on the CPU.
+- **Document conversion runs on the CPU.** `docling` has two workers and 8 GB of memory, sized for
+  the 64 GB minimum of Chapter 2; a large scanned PDF can take minutes, up to the 600-second limit
+  of a synchronous conversion. Embedding and reranking also run on the CPU.
 - **Some files are never indexed.** Files over 100 MB and the excluded patterns are skipped; files
   that Open WebUI rejects fail at every sync until they are removed from the share.
 - **One address for Open WebUI.** It accepts browsers only at `https://chat.lab.example.com`.
@@ -1543,5 +1692,7 @@ Open WebUI uses the new setting at once, and keeps it across restarts and redepl
   requirements are not already in the image does not work.
 - **Seeded settings.** After the first start, the settings in the first-start groups change only in
   the **Admin Panel**.
-- **The MCP hub image is built locally** until a release publishes it, and a redeploy does not
-  rebuild it.
+- **The MCP hub image comes from this project.** This repository's own workflow builds and
+  publishes it, and each release pins its digest. An image built on the server with
+  [Build the MCP hub image on TrueNAS](#build-the-mcp-hub-image-on-truenas) is not rebuilt by a
+  redeploy; rebuild it after every release that changes `stack/web/mcp-hub`.

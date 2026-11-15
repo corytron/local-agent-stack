@@ -66,6 +66,11 @@ Table: Model files to download
 
     The **Avail** column shows at least `34G`. The four files need 33.3 GiB.
 
+#### Results
+
+The directory `/mnt/tank/ai/models/gguf` exists, and the dataset has room for the four files. If
+**Avail** is lower, free space in the pool before you start the downloads.
+
 ### Start the model downloads
 
 #### Prerequisites
@@ -263,7 +268,7 @@ Table: llama-swap global settings
 | `startPort: 10001` | Each `llama-server` listens on `127.0.0.1`, port 10001 and up, inside the container |
 | `sendLoadingState: false` | No "loading" text is injected into the reasoning field while a model loads; Claude Code and OpenCode would take it for model output |
 | `globalTTL: 0` | No model is unloaded on a timer; the groups decide (below) |
-| `captureBuffer: 0` | No request or response bodies are kept in llama-swap's memory (default 5 MB), for privacy |
+| `captureBuffer: 0` | No request or response bodies are kept in llama-swap's memory (default 5 MB), for privacy. To see the requests of a failing tool call, raise it for a while: [Capture requests while you debug tool calls](#capture-requests-while-you-debug-tool-calls) |
 | `helpagent: disable: true` | The UI's help chat is off; it would load a model of its own choice and swap the GPU model |
 | `apiKeys` | Every inference and `/api` route needs `LLAMA_SWAP_API_KEY`, as a Bearer token, a Basic password or an `x-api-key` header. `/health` stays open for the health check |
 | `macros` | `server` starts `llama-server` on loopback with Prometheus metrics (`/upstream/<id>/metrics`) and without its own web UI; `gguf` is the model directory |
@@ -452,6 +457,11 @@ and reads its variables from `/mnt/tank/ai/secrets/inference.env`.
     The command prints nothing. PostgreSQL creates its data directory, `pgdata`, on the first start,
     with the password from `inference.env`.
 
+#### Results
+
+The clone, the environment file and the database directory are ready, and Compose accepts the app's
+files with your values. Every check passed, so TrueNAS can validate the YAML in the next task.
+
 ### Install ai-inference with Install via YAML
 
 #### About this task
@@ -498,6 +508,16 @@ app's **Edit** screen later shows only these lines, not the included files.
     `(healthy)` in their status. On the first start, LiteLLM runs its database migrations and can
     take up to two minutes.
 
+    !!! note
+        PostgreSQL's first start on a dataset with the **Apps** preset (NFSv4 ACL) was not tested.
+        If `litellm-db` keeps restarting and `sudo docker logs --tail 30 litellm-db` shows a
+        permissions error for `/var/lib/postgresql/data/pgdata` (for example from `chmod`), the
+        dataset's ACL refuses the mode that PostgreSQL sets on its data directory. `litellm` then
+        never starts, because it waits for a healthy database, and the app stays **Deploying**.
+        Recreate the empty dataset with
+        [Recreate the litellm-db dataset with the Generic preset](#recreate-the-litellm-db-dataset-with-the-generic-preset),
+        then continue with this step.
+
 6. Confirm the state that TrueNAS reports:
 
         sudo midclt call app.get_instance ai-inference |
@@ -517,6 +537,81 @@ that failed:
 sudo tail -n 50 /var/log/app_lifecycle.log
 sudo docker logs --tail 100 litellm
 ```
+
+### Recreate the litellm-db dataset with the Generic preset
+
+#### Prerequisites
+
+- `litellm-db` keeps restarting, and its log shows a permissions error for
+  `/var/lib/postgresql/data/pgdata`.
+- LiteLLM has never started, so the dataset holds no keys and no usage logs.
+
+#### About this task
+
+PostgreSQL's first start on a dataset with the **Apps** preset (NFSv4 ACL) was not tested. The
+image's entrypoint changes the mode of `PGDATA` to 0700, which the dataset's ACL mode can refuse.
+If that happens, recreate `tank/ai/appdata/litellm-db` with the **Generic** preset. A dataset's
+preset cannot be changed after it is created, so this task destroys the empty dataset and creates
+it again with the same record size, 32K. The `litellm-db` service mounts the dataset at
+`/var/lib/postgresql/data` and keeps `PGDATA` one level below it:
+
+{{ include stack/inference/compose.yaml lines=141-171 }}
+
+Chapter 6 gives the `pgvector` database of the `ai-rag` app the same treatment if it shows the same
+error ([Recreate the pgvector dataset with the Generic preset](#recreate-the-pgvector-dataset-with-the-generic-preset)).
+
+!!! caution
+    `zfs destroy` deletes the dataset and every file in it. Run step 4 only while the database has
+    never started. After LiteLLM has stored keys, restore from a backup instead (Appendix A).
+
+#### Steps
+
+1. Confirm the error:
+
+        sudo docker logs --tail 30 litellm-db
+
+    The log shows a permissions error that names `/var/lib/postgresql/data/pgdata`.
+
+2. Confirm that no database was created:
+
+        sudo test -e /mnt/tank/ai/appdata/litellm-db/pgdata/PG_VERSION && echo initialized || echo empty
+
+    The output is `empty`. If it is `initialized`, PostgreSQL created its database, and the error
+    has another cause; do not continue with this task, and see Chapter 11.
+
+3. Stop the container:
+
+        sudo docker stop litellm-db
+
+4. Destroy the dataset:
+
+        sudo zfs destroy tank/ai/appdata/litellm-db
+
+5. In the TrueNAS web interface, go to **Datasets**, select `tank/ai/appdata` and click
+   **Add Dataset**.
+
+6. Enter **Name** `litellm-db` and select **Dataset Preset** `Generic`.
+
+7. Click **Advanced Options**, set **Record Size** to `32K` and click **Save**.
+
+8. Verify the record size and that the new dataset is empty:
+
+        sudo zfs get -o property,value recordsize tank/ai/appdata/litellm-db
+        sudo ls -A /mnt/tank/ai/appdata/litellm-db
+
+    The value is `32K`, and the second command prints nothing.
+
+9. Redeploy the app, which recreates all three containers:
+
+        sudo midclt call -j app.redeploy ai-inference
+
+10. Repeat steps 5 and 6 of
+    [Install ai-inference with Install via YAML](#install-ai-inference-with-install-via-yaml).
+
+#### Results
+
+PostgreSQL initializes its data directory on the **Generic** dataset, `litellm-db` reports
+healthy, and `litellm` starts. Appendix A backs up the new dataset like the old one.
 
 ### Redeploy ai-inference after a change
 
@@ -548,6 +643,11 @@ for a minute or more.
              for m in json.load(sys.stdin)['running']]"
 
     Each line shows a loaded model and the flags it runs with.
+
+#### Results
+
+Every container of `ai-inference` runs with the current files, and the `coder` line shows the flags
+you expect. Clients that sent requests during the redeploy retry once the model has loaded.
 
 !!! note
     llama-swap runs with `-watch-config` and reloads its configuration when the file changes. The
@@ -590,6 +690,11 @@ standard input.
 
     The output contains `"status":"healthy"` and `"db":"connected"`.
 
+#### Results
+
+llama-swap answers and has loaded `coder`, `embed` and `rerank`, and LiteLLM is ready with its
+database connected.
+
 !!! warning
     Never call LiteLLM's `GET /health` without a model, and never point a monitor at it. It sends a
     real request to every model, which loads `coder-moe` and swaps `coder` out of the GPU. Use
@@ -613,6 +718,12 @@ standard input.
         nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
 
     The list has one `llama-server` process, the `coder` model.
+
+#### Results
+
+Only the `coder` process holds GPU memory, and you know how much of the card it uses. The
+benchmark later in this chapter measures the headroom in detail
+([Test that the coder model fits](#test-that-the-coder-model-fits)).
 
 !!! note
     The VRAM figures are estimates with an uncertainty of about 0.5 GiB, and the total of about
@@ -942,6 +1053,10 @@ Both keys are stored on `c4dev`. When Chapter 7 asks for a workstation's key, di
 
         unset KEY
 
+#### Results
+
+The key is active and allows exactly the model names of its client.
+
 If a key is lost or exposed, delete it by its alias with the master key, then create a new one and
 replace it where it goes. For example, for the `mac` key:
 
@@ -955,6 +1070,214 @@ unset MK
 ```
 
 The response lists the deleted key under `deleted_keys`.
+
+## Rotate the inference secrets
+
+Chapter 3 generates the four values of `inference.env` once. Replace one when it may have been
+exposed, for example after it was pasted into a chat or an issue, or when a person who knew it no
+longer should. The file of record is the workstation's copy,
+`~/.config/local-agent-stack/secrets/inference.env`; the server's copy is installed from it. The
+keys of the workstations and of Open WebUI are LiteLLM virtual keys, not values of this file:
+replace them as described at the end of [Verify a LiteLLM key](#verify-a-litellm-key) and in
+[Rotate the LiteLLM key of Open WebUI](#rotate-the-litellm-key-of-open-webui).
+
+### What changes with each inference secret
+
+Table: Rotating the inference secrets
+
+| Secret | Also held by | Procedure |
+|---|---|---|
+| `LITELLM_MASTER_KEY` | No other app. You sign in to the LiteLLM Admin UI with it, and a Prometheus scrape job that you added for `litellm:4000/metrics` holds a copy | [Rotate the LiteLLM master key](#rotate-the-litellm-master-key) |
+| `LLAMA_SWAP_API_KEY` | `litellm`, from the same file; Open WebUI's reranker key if you applied [Point the reranker at llama-swap](#point-the-reranker-at-llama-swap); a browser that saved it as the password of `https://models.lab.example.com/ui` | [Rotate the llama-swap key](#rotate-the-llama-swap-key) |
+| `LITELLM_DB_PASSWORD` | The `litellm` role in the `litellm-db` database, which keeps the value of the first start | [Change the LiteLLM database password](#change-the-litellm-database-password) |
+| `LITELLM_SALT_KEY` | The data that LiteLLM encrypted in its database | Never change it |
+
+Each procedure starts with a new value in the form that `tools/secrets.py` generates. Print one on
+the workstation; the two keys start with `sk-`, the database password does not:
+
+```
+python3 -c "import secrets, string; print('sk-' + ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(48)))"
+python3 -c "import secrets, string; print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(48)))"
+```
+
+Each procedure redeploys `ai-inference`, which reloads the GPU model. Run it while no client needs
+the stack.
+
+### Rotate the LiteLLM master key
+
+#### About this task
+
+The master key administers LiteLLM: it creates and deletes the virtual keys and signs in to the
+Admin UI. Only `litellm` reads it, from `inference.env`, so a new value needs the file and a
+redeploy. The virtual keys of the clients are stored in LiteLLM's database; they are expected to
+keep working with a new master key, and step 8 checks it.
+
+#### Steps
+
+1. On TrueNAS, keep the current key in a shell variable for the check in step 7. The value is not
+   printed:
+
+        sudo -v
+        OLD=$(sudo sed -n 's/^LITELLM_MASTER_KEY=//p' /mnt/tank/ai/secrets/inference.env)
+
+2. On the workstation, print a new key with the first command above and copy it.
+
+3. Open `~/.config/local-agent-stack/secrets/inference.env` in a text editor, for example
+   `nano ~/.config/local-agent-stack/secrets/inference.env`, set `LITELLM_MASTER_KEY` to the new
+   key, and save the file.
+
+4. Copy the file to the server with
+   [Copy a changed environment file to TrueNAS](#copy-a-changed-environment-file-to-truenas), using
+   `inference` for `<app>`.
+
+5. On TrueNAS, in the shell of step 1, redeploy the app:
+
+        sudo midclt call -j app.redeploy ai-inference
+
+    Wait until the three containers report healthy, as in step 5 of
+    [Install ai-inference with Install via YAML](#install-ai-inference-with-install-via-yaml).
+
+6. Check the new key:
+
+        MK=$(sudo sed -n 's/^LITELLM_MASTER_KEY=//p' /mnt/tank/ai/secrets/inference.env)
+        printf 'Authorization: Bearer %s\n' "$MK" |
+          sudo docker exec -i llama-swap curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
+            http://litellm:4000/v1/models
+
+    The output is `200`.
+
+7. Check that the old key is refused:
+
+        printf 'Authorization: Bearer %s\n' "$OLD" |
+          sudo docker exec -i llama-swap curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
+            http://litellm:4000/v1/models
+
+    The output is `401`.
+
+8. Check that a workstation key still works, with steps 1 to 3 of
+   [Verify a LiteLLM key](#verify-a-litellm-key).
+
+    The key lists its model names and its record shows `active`. If it fails, create the
+    workstation keys again ([Generate the workstation keys](#generate-the-workstation-keys)) and
+    replace them in `client.env` on each workstation (Chapter 7), and create a new key for Open
+    WebUI ([Rotate the LiteLLM key of Open WebUI](#rotate-the-litellm-key-of-open-webui)).
+
+9. Clear the variables:
+
+        unset OLD MK
+
+#### Results
+
+LiteLLM accepts only the new master key, and the clients keep their virtual keys. Sign in to the
+Admin UI with the new key, and update any scrape job that you configured with the old one.
+
+### Rotate the llama-swap key
+
+#### About this task
+
+`llama-swap` requires `LLAMA_SWAP_API_KEY` on every model request, and `litellm` sends it on every
+upstream call. Both containers read it from `inference.env`, so a redeploy of `ai-inference` changes
+it on both sides at once. A copy outside the app, such as Open WebUI's reranker key after
+[Point the reranker at llama-swap](#point-the-reranker-at-llama-swap), changes by hand.
+
+#### Steps
+
+1. On TrueNAS, keep the current key in a shell variable for the check in step 7:
+
+        sudo -v
+        OLD=$(sudo sed -n 's/^LLAMA_SWAP_API_KEY=//p' /mnt/tank/ai/secrets/inference.env)
+
+2. On the workstation, print a new key with the first command above, set it as
+   `LLAMA_SWAP_API_KEY` in `~/.config/local-agent-stack/secrets/inference.env` in a text editor, and
+   save the file.
+
+3. Copy the file to the server with
+   [Copy a changed environment file to TrueNAS](#copy-a-changed-environment-file-to-truenas), using
+   `inference` for `<app>`.
+
+4. On TrueNAS, in the shell of step 1, redeploy the app and wait until the three containers report
+   healthy:
+
+        sudo midclt call -j app.redeploy ai-inference
+
+5. Check that llama-swap accepts the new key, which the command reads from the container's
+   environment:
+
+        sudo docker exec llama-swap sh -c 'curl -sS -o /dev/null -w "%{http_code}\n" \
+          -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/running'
+
+    The output is `200`.
+
+6. Check that LiteLLM reaches llama-swap with the new key, with steps 3 and 5 of
+   [Send test requests through ai-net](#send-test-requests-through-ai-net).
+
+    The output of step 5 is `OK`.
+
+7. Check that the old key is refused, and clear the variable:
+
+        printf 'Authorization: Bearer %s\n' "$OLD" |
+          sudo docker exec -i llama-swap curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
+            http://127.0.0.1:8080/running
+        unset OLD
+
+    The output is `401`.
+
+8. If Open WebUI reranks through llama-swap, display the new key, enter it as the API key of the
+   **Reranking Engine** in **Admin Panel** > **Settings** > **Documents**, and click **Save**:
+
+        sudo sed -n 's/^LLAMA_SWAP_API_KEY=//p' /mnt/tank/ai/secrets/inference.env
+
+    Then repeat step 1 of [Point the reranker at llama-swap](#point-the-reranker-at-llama-swap).
+
+#### Results
+
+llama-swap accepts only the new key, and LiteLLM uses it. A browser that stored the old key for
+`https://models.lab.example.com/ui` asks for the new one at its next visit.
+
+### Change the LiteLLM database password
+
+#### About this task
+
+`LITELLM_DB_PASSWORD` becomes the password of the `litellm` role when `litellm-db` first creates its
+data directory; a new value in `inference.env` alone does not change it and locks LiteLLM out of
+its database. This task changes the role's password first, to the new value in the server's file,
+and then recreates the containers so that LiteLLM connects with it. `psql` reads the statement on
+standard input, so the password does not appear on a command line.
+
+#### Steps
+
+1. On the workstation, print a new password with the second command above (letters and digits
+   only, because the password goes into a URL), set it as `LITELLM_DB_PASSWORD` in
+   `~/.config/local-agent-stack/secrets/inference.env` in a text editor, and save the file.
+
+2. Copy the file to the server with
+   [Copy a changed environment file to TrueNAS](#copy-a-changed-environment-file-to-truenas), using
+   `inference` for `<app>`.
+
+3. On TrueNAS, change the password of the role to the value in the new file:
+
+        sudo -v
+        printf "ALTER ROLE litellm PASSWORD '%s';\n" \
+          "$(sudo sed -n 's/^LITELLM_DB_PASSWORD=//p' /mnt/tank/ai/secrets/inference.env)" |
+          sudo docker exec -i litellm-db psql -U litellm -d litellm
+
+    The output is `ALTER ROLE`. LiteLLM's open connections keep working; new ones fail until the
+    next step.
+
+4. Redeploy the app at once:
+
+        sudo midclt call -j app.redeploy ai-inference
+
+5. Check LiteLLM and its database, with step 3 of
+   [Check the health endpoints](#check-the-health-endpoints).
+
+    The output contains `"status":"healthy"` and `"db":"connected"`.
+
+#### Results
+
+The database and LiteLLM use the new password. The `POSTGRES_PASSWORD` that `litellm-db` receives
+from `inference.env` is used only when its data directory is empty, so the `ALTER ROLE` statement is
+the change that counts.
 
 ## Measure performance with bench.sh
 
@@ -994,15 +1317,27 @@ Table: Main options of bench.sh
 
 | Option | Meaning |
 |---|---|
-| `-m`, `--model FILE` | A file under `/models/gguf` in the container (required) |
+| `-m`, `--model FILE` | A file under `/models/gguf` in the container, or an absolute path inside the container (required) |
 | `--mode MODE` | `bench` or `server` |
 | `-c`, `--contexts LIST` | `bench`: KV depths, default `0,16384,32768`. `server`: context sizes, default `32768,65536` |
 | `-u`, `--ubatch LIST` | `-ub` values, default `512,1024,2048` |
+| `-p`, `--prompt N` | `bench`: prompt tokens per prompt-processing test, default 2048 |
+| `-g`, `--gen N` | `bench`: generated tokens per generation test, default 128, `0` to skip the test. `server`: `max_tokens` of the request |
 | `-r`, `--reps N` | `bench`: repetitions per test, default 3 |
-| `-g`, `--gen N` | Generated tokens per test, default 128 |
 | `-f`, `--fill PCT` | `server`: share of the context that the prompt fills, default 75 |
+| `--container NAME` | The llama-swap container to run in, default `llama-swap` |
+| `--oneoff` | Run in a throwaway container instead of inside the running one |
+| `--image REF` | `--oneoff`: the image, default the pinned llama-swap image |
+| `--models-dir DIR` | `--oneoff`: the server directory mounted at `/models`, default `${AI_ROOT:-/mnt/tank/ai}/models` |
 | `--unload LIST` | llama-swap models to unload first, `all` or `none`; default `coder,coder-moe` |
+| `--port N` | `server`: loopback port of the test server inside the container, default 18080 |
+| `--timeout SEC` | `server`: seconds to wait for a test server to start, default 600 |
 | `--dry-run` | Print the Docker commands instead of running them |
+| `-h`, `--help` | Print the usage |
+
+Two environment variables change the defaults: `DOCKER`, the Docker command that the script runs
+(default `docker`), and `AI_ROOT`, the root of the stack's datasets (default `/mnt/tank/ai`), which
+sets the default of `--models-dir`.
 
 !!! note
     `bench.sh` has not yet been run on a server with a GPU. It was checked with `--dry-run`,
@@ -1252,6 +1587,283 @@ click **Save**. In both cases, the copy and the override file under
 `/mnt/tank/ai/appdata/llama-swap` are no longer used; delete them with
 `sudo rm /mnt/tank/ai/appdata/llama-swap/config.yaml /mnt/tank/ai/appdata/llama-swap/fallback.override.yaml`.
 
+## Tool calls on the local models
+
+The agents depend on the model calling tools in the exact format that llama-server parses. This
+topic lists what is known about tool calls in the llama.cpp build of the stack and shows how to see
+the requests of a failing call. Chapter 9 tests tool calls
+([Test tool calls on the OpenAI route](#test-tool-calls-on-the-openai-route)), and Chapter 11 gives
+the order in which to look for causes ([Tool calls fail or loop](#tool-calls-fail-or-loop)).
+
+### Known tool-call problems of this build
+
+- **A call inside the thinking block (llama.cpp issue 20837).** Qwen3.5 and Qwen3.6 models
+  sometimes write a tool call into their reasoning, and the answer ends without a call. The issue
+  was closed on 14 November 2026 by commit `3c31179`. The stack's build, `b12407`, contains that
+  commit: in the llama.cpp repository, `b12407` is 16 commits after it. The commit's final change,
+  however, touches only the Ministral-3 parser and the chat tests, so the problem may still occur
+  with the Qwen models of this stack. Watch for a turn that stops while the agent was about to use a
+  tool: the answer has `finish_reason` `stop`, no `tool_calls`, and a `<tool_call>` text in
+  `content` or `reasoning_content`. Retry the turn, as Chapter 11 describes. `local-fast` runs with
+  thinking off and writes no reasoning to put a call into.
+- **Parallel tool calls.** One answer can carry several tool calls. llama-server `b12407` returns
+  several calls only when the request's `parallel_tool_calls` field is `true` or, if the request
+  does not set the field, when the model's chat template declares support for them (read in the
+  llama.cpp source of `b12407`). Whether OpenCode and Claude Code set the field was not verified.
+  Local models produce several calls in one answer less reliably than Claude does. If a session's
+  failures cluster on answers with several calls, capture them with the next task and report an
+  issue: switching parallel calls off is a change to the release's configuration, made through
+  Chapter 8 and tested with the evaluation gate of Chapter 9.
+
+To see whether the chat template of `coder` declares parallel tool calls, ask its `llama-server`
+for its properties:
+
+```
+sudo docker exec llama-swap sh -c 'curl -fsS \
+  -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/upstream/coder/props' |
+  python3 -c "import json, sys; \
+    print(json.load(sys.stdin)['chat_template_caps'].get('supports_parallel_tool_calls'))"
+```
+
+The output is `True` or `False`.
+
+### Capture requests while you debug tool calls
+
+#### About this task
+
+With `captureBuffer: 0`, llama-swap keeps no request or response bodies. While you debug a failing
+tool call, a capture buffer lets llama-swap's web interface at
+`https://models.lab.example.com/ui` show the recent requests and responses, with the tools the
+client sent and the calls that the model returned. The release's file stays unchanged: as for the
+fallbacks of `coder`, a copy under `/mnt/tank/ai/appdata/llama-swap` with `captureBuffer: 5` (5 MB)
+replaces it through a compose override file.
+
+!!! warning
+    Captured requests hold whole prompts: the files that the agent read, command output, and any
+    secret that passed through a session. Anyone with the llama-swap key can read them in the web
+    interface. Capture only while you debug, and turn the capture off again with steps 8 and 9.
+
+!!! caution
+    Do not run `deploy.py apply` while the capture is on. The override is not listed in your
+    desired-state file, so `apply` writes the release's YAML back and turns the capture off.
+
+#### Steps
+
+1. Check whether a fallback of `coder` is in place:
+
+        sudo ls /mnt/tank/ai/appdata/llama-swap 2>/dev/null
+
+    If the output lists `config.yaml` and `fallback.override.yaml`, a fallback from
+    [Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit) is in
+    place. Otherwise the output is empty.
+
+2. Without a fallback, create the directory and write a copy of the release's file with the capture
+   buffer on:
+
+        sudo install -d /mnt/tank/ai/appdata/llama-swap
+        sudo sed -e 's/^captureBuffer: 0$/captureBuffer: 5/' \
+          /mnt/tank/ai/stacks/local-agent-stack/stack/inference/llama-swap/config.yaml |
+          sudo tee /mnt/tank/ai/appdata/llama-swap/config.yaml > /dev/null
+
+    With a fallback, change its copy instead:
+
+        sudo sed -i 's/^captureBuffer: 0$/captureBuffer: 5/' /mnt/tank/ai/appdata/llama-swap/config.yaml
+
+3. Verify the copy:
+
+        sudo grep -n '^captureBuffer' /mnt/tank/ai/appdata/llama-swap/config.yaml
+
+    The output is one line that ends in `captureBuffer: 5`.
+
+4. Without a fallback, write the override file and change the app's YAML with steps 4 to 7 of
+   [Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit). Do not
+   add the override to your desired-state file. With a fallback, redeploy the app instead:
+
+        sudo midclt call -j app.redeploy ai-inference
+
+5. Confirm that `llama-swap` reads the copy:
+
+        sudo docker inspect llama-swap --format '{{range .Mounts}}{{println .Destination .Source}}{{end}}' | grep /app/config.yaml
+
+    The output is `/app/config.yaml /mnt/tank/ai/appdata/llama-swap/config.yaml`.
+
+6. Repeat the failing request from the client, for example the same prompt in a new OpenCode
+   session.
+
+7. On a workstation, open `https://models.lab.example.com/ui` in a browser. It asks for a user name
+   and a password and accepts the llama-swap key as the password; display the key on TrueNAS with
+   `sudo sed -n 's/^LLAMA_SWAP_API_KEY=//p' /mnt/tank/ai/secrets/inference.env`. Open the recent
+   requests of `coder` and read the captured request and response. The labels of llama-swap's
+   interface are not described in this guide.
+
+8. Turn the capture off. With a fallback, change its copy back and redeploy:
+
+        sudo sed -i 's/^captureBuffer: 5$/captureBuffer: 0/' /mnt/tank/ai/appdata/llama-swap/config.yaml
+        sudo midclt call -j app.redeploy ai-inference
+
+    Without a fallback, edit the app, replace **Custom Config** with the four lines of
+    `stack/inference/truenas-app.yaml` from
+    [Install ai-inference with Install via YAML](#install-ai-inference-with-install-via-yaml), click
+    **Save**, and delete the copy and the override file:
+
+        sudo rm /mnt/tank/ai/appdata/llama-swap/config.yaml /mnt/tank/ai/appdata/llama-swap/fallback.override.yaml
+
+9. Confirm the configuration that `llama-swap` reads:
+
+        sudo docker inspect llama-swap --format '{{range .Mounts}}{{println .Destination .Source}}{{end}}' | grep /app/config.yaml
+
+    Without a fallback, the source is
+    `/mnt/tank/ai/stacks/local-agent-stack/stack/inference/llama-swap/config.yaml`. With a
+    fallback, it is the copy, and
+    `sudo grep -n '^captureBuffer' /mnt/tank/ai/appdata/llama-swap/config.yaml` ends in
+    `captureBuffer: 0`.
+
+#### Results
+
+You have read the requests and responses of the failing call, and llama-swap keeps no request
+bodies again. Attach the relevant part, with every secret and private address removed, to the issue
+that you report.
+
+## Reach the models while LiteLLM is down
+
+Every client of the stack goes through LiteLLM. If `litellm` or `litellm-db` fails, OpenCode,
+Claude Code and Open WebUI get errors, while `llama-swap` keeps serving at
+`https://models.lab.example.com`. This topic describes that direct route as a stopgap while you
+repair LiteLLM with Chapter 11 ([LiteLLM gateway issues](#litellm-gateway-issues)).
+
+### What llama-swap serves without LiteLLM
+
+llama-swap answers the same two API formats as LiteLLM: `/v1/chat/completions` in the OpenAI format
+and `/v1/messages` with `/v1/messages/count_tokens` in the Anthropic format, plus `/v1/embeddings`
+and `/v1/rerank`. It knows only its own model ids, `coder`, `coder-fast`, `coder-moe`, `embed` and
+`rerank`, not the `local-*` names, and it accepts only `LLAMA_SWAP_API_KEY`.
+
+What the direct route loses:
+
+- **No client keys.** Every request uses the server's one llama-swap key: no model allowlists, no
+  budgets and no usage logs. The key also opens llama-swap's `/api` routes and its web interface,
+  which load and unload models.
+- **No OpenCode.** OpenCode's global policies allow only the provider `local`, whose models are the
+  LiteLLM names, so OpenCode cannot be pointed at llama-swap without changing the release's
+  configuration. Open WebUI also reaches its models only through LiteLLM.
+- **Claude Code only from `c4dev`.** The next task reads the key from the workstation's copy of
+  `inference.env`, which only `c4dev` holds. Do not copy the key to another machine or into a
+  project; if it leaves `c4dev`, rotate it afterwards
+  ([Rotate the llama-swap key](#rotate-the-llama-swap-key)).
+
+### Check llama-swap directly from the workstation
+
+#### Steps
+
+1. On `c4dev`, read the llama-swap key from your copy of `inference.env`. The value is not printed:
+
+        LSK=$(sed -n 's/^LLAMA_SWAP_API_KEY=//p' ~/.config/local-agent-stack/secrets/inference.env)
+
+2. Send a request in the OpenAI format to `coder-fast`. Replace `lab.example.com` with your domain:
+
+        printf 'Authorization: Bearer %s\n' "$LSK" |
+          curl -sS -H @- -H 'Content-Type: application/json' \
+            -d '{"model": "coder-fast", "max_tokens": 16,
+                 "messages": [{"role": "user", "content": "Reply with the single word OK."}]}' \
+            https://models.lab.example.com/v1/chat/completions |
+          python3 -c "import json, sys; d = json.load(sys.stdin); \
+            print(d['choices'][0]['message']['content'] if 'choices' in d else d)"
+
+    The output is `OK`.
+
+3. Send a request in the Anthropic format:
+
+        printf 'Authorization: Bearer %s\n' "$LSK" |
+          curl -sS -H @- -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
+            -d '{"model": "coder-fast", "max_tokens": 16,
+                 "messages": [{"role": "user", "content": "Reply with the single word OK."}]}' \
+            https://models.lab.example.com/v1/messages |
+          python3 -c "import json, sys; d = json.load(sys.stdin); \
+            print(''.join(b.get('text', '') for b in d.get('content', []) \
+            if b.get('type') == 'text') or d)"
+
+    The output is `OK`.
+
+4. Clear the variable:
+
+        unset LSK
+
+#### Results
+
+llama-swap serves both API formats without LiteLLM. If it does not, the problem is not in LiteLLM:
+check `ai-inference` with [Verify the models load](#verify-the-models-load).
+
+### Run Claude Code against llama-swap while LiteLLM is down
+
+#### Prerequisites
+
+- `claude-local` works on `c4dev` when LiteLLM is up
+  ([Start Claude Code with claude-local](#start-claude-code-with-claude-local), Chapter 7).
+- `~/.config/local-agent-stack/secrets/inference.env` is on `c4dev` (Chapter 3).
+
+#### About this task
+
+`claude-local` points Claude Code at LiteLLM. A second settings file points it at llama-swap
+instead, with the llama-swap ids as the model names. Its key helper reads the llama-swap key from
+the workstation's copy of `inference.env` when Claude Code needs it, so the key is not written into
+the settings and the commands that Claude Code runs do not inherit it. The file holds no secret;
+keep it for the next outage.
+
+!!! note
+    Claude Code against llama-swap's `/v1/messages` directly was not tested. The research of this
+    release names this route as the fallback; the settings follow those of `claude-local`
+    (Chapter 7, [Claude Code settings for the gateway](#claude-code-settings-for-the-gateway)).
+
+#### Steps
+
+1. On `c4dev`, write the settings file:
+
+        cat > ~/.config/local-agent-stack/claude-fallback.json <<'EOF'
+        {
+          "env": {
+            "ANTHROPIC_BASE_URL": "https://models.lab.example.com",
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "coder",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "coder",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "coder-fast",
+            "ANTHROPIC_MODEL": "coder",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "coder",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "65536",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "16384",
+            "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_TELEMETRY": "1"
+          },
+          "apiKeyHelper": "sed -n 's/^LLAMA_SWAP_API_KEY=//p' \"$HOME/.config/local-agent-stack/secrets/inference.env\"",
+          "skipWebFetchPreflight": true
+        }
+        EOF
+
+2. Put your domain into the file, from the `LAB_DOMAIN` that the profile block of Chapter 7 exports:
+
+        sed -i "s/lab\.example\.com/$LAB_DOMAIN/" ~/.config/local-agent-stack/claude-fallback.json
+
+3. Check the file:
+
+        python3 -m json.tool ~/.config/local-agent-stack/claude-fallback.json > /dev/null && echo valid
+        grep -c "https://models.$LAB_DOMAIN" ~/.config/local-agent-stack/claude-fallback.json
+
+    The output is `valid` and `1`.
+
+4. Run a headless request in a repository:
+
+        CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536 claude --settings ~/.config/local-agent-stack/claude-fallback.json -p "Reply with the word OK."
+
+    The answer is `OK`.
+
+5. Start an interactive session with the same command without `-p "..."`, and work as usual. When
+   LiteLLM works again, return to `claude-local`.
+
+#### Results
+
+Claude Code works against llama-swap while LiteLLM is down. The requests of this session do not
+appear in LiteLLM's usage logs.
+
 ## Use the fast profile
 
 The fast profile serves `coder-moe`, Qwen3.6-35B-A3B, under the name `local-coder-moe`. It
@@ -1265,11 +1877,20 @@ Table: Default and fast profiles compared
 | Property | Default (`local-coder`) | Fast (`local-coder-moe`) |
 |---|---|---|
 | Model and placement | Qwen3.8-27B, entirely on the GPU | Qwen3.6-35B-A3B, experts of 16 layers in system RAM |
-| VRAM | About 14.3 GiB (estimate) | About 15.7 GiB (measured on an RTX 4080 SUPER) |
+| VRAM in use on the card | About 14.3 GiB of model, KV cache and buffers (estimate), plus the CUDA context | About 15.7 GiB in total, CUDA context included (measured on an RTX 4080 SUPER) |
 | System RAM | Prompt cache up to 6 GiB | About 8 GB of experts plus the prompt cache up to 6 GiB |
 | Generation | 40 to 45 tokens/s, 50 to 65 with MTP (estimates) | 65 to 80 tokens/s (80 measured elsewhere) |
 | Prompt processing | About 900 to 1,500 tokens/s (estimate) | About 1,800 to 2,000 tokens/s (measured elsewhere) |
 | Agentic strength | Terminal-Bench 2.1: 73.0 (vendor figure) | Terminal-Bench 2.1: 44.38, SWE-bench Verified: 70.12 (NVIDIA's re-run); community reports of losing the plan on long runs |
+
+The two VRAM figures measure different things. The 15.7 GiB of `coder-moe` is read as the memory in
+use on the whole card, as `nvidia-smi` reports it, with the CUDA context of the process included
+(the measurement's source gives the total only); it compares with the card's total of about
+16,376 MiB (16.0 GiB). The 15.5 GiB that Chapter 2 gives as usable is what remains for a model's own
+allocations after that context (an assumption for a headless card). Read that way, `coder-moe` fits
+with about 0.3 GiB to spare; with `--n-cpu-moe 14` instead of 16, the measured run overflowed. Read
+your own figure in step 4 of [Switch to the fast profile](#switch-to-the-fast-profile); if
+`memory.used` reaches the card's total, the model does not fit.
 
 The profiles share one GPU, and only one of the two models is loaded at a time:
 

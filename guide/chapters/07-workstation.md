@@ -76,6 +76,152 @@ Table: Supported workstations
 | Mac | `clients/install.sh` (macOS path), or `ssh` into `c4dev` | The macOS path of the installer has not been run on a Mac |
 | Windows VM | `ssh` into `c4dev`; a browser for Open WebUI | `install.sh` supports Linux and macOS only |
 
+## Install the workstation prerequisites
+
+A workstation needs a few command-line tools besides the agent. None of them runs in the
+background: the Docker command-line tools in particular are installed without Docker Engine.
+
+### Software the workstation needs
+
+Table: Software on the workstation
+
+| Software | Needed for | Check |
+|---|---|---|
+| `git`, `curl`, `tar`, `openssl` | The clone, `install.sh` and the certificate checks | `git --version` |
+| Python 3.11 or later | `tools/secrets.py` (Chapter 3 and this chapter), `smoke.py` and `eval.py` (Chapter 9), `deploy.py` (Chapter 10) | `python3 --version` |
+| Node.js 20.6 or later, with npm | The SSH tool (`ssh-mcp`), and Claude Code if you install it with npm | `node --version` |
+| Docker CLI with the Compose plugin, without Docker Engine | `deploy.py` (Chapter 10), which compares the images that the apps run with those of the release by running `docker compose config --images` on the workstation | `docker compose version` |
+| GitHub CLI (`gh`) | The project workflow (Chapter 8) and the optional provenance checks of the images (Chapters 5 and 6) | `gh --version` |
+
+On Ubuntu, install any of the first four that is missing with `sudo apt install git curl openssl`;
+the `python3` of Ubuntu 24.04 and 26.04 is recent enough. On macOS, if `python3 --version` reports
+a version below 3.11, install a current one with Homebrew (`brew install python`). Chapter 8
+installs `gh`.
+
+### Install Node.js and npm
+
+#### About this task
+
+The SSH tool needs Node.js 20.6 or later and npm; `install.sh` skips it otherwise. Ubuntu's own
+`nodejs` package is Node.js 22.22.1 on Ubuntu 26.04, which is enough, and Node.js 18.19.1 on
+Ubuntu 24.04, which is too old (packages.ubuntu.com, checked on 15 November 2026). On Ubuntu 24.04,
+install Node.js 22 from NodeSource's repository instead, as NodeSource documents it.
+
+#### Steps
+
+1. Check what is installed:
+
+        node --version
+        npm --version
+
+    If the first line is `v20.6.0` or later and the second prints a version, skip this task.
+
+2. On Ubuntu 26.04, install the archive's packages:
+
+        sudo apt install nodejs npm
+
+3. On Ubuntu 24.04, download NodeSource's setup script for Node.js 22, read it, run it, and install
+   the package. The script adds NodeSource's apt repository and its signing key; the `nodejs`
+   package from that repository includes npm:
+
+        curl -fsSL https://deb.nodesource.com/setup_22.x -o nodesource_setup.sh
+        less nodesource_setup.sh
+        sudo -E bash nodesource_setup.sh
+        sudo apt install -y nodejs
+        rm nodesource_setup.sh
+
+4. On macOS, install Node.js with Homebrew:
+
+        brew install node
+
+5. Check the versions again:
+
+        node --version
+        npm --version
+
+    The first line is `v20.6.0` or later, and the second prints the npm version.
+
+#### Results
+
+Node.js and npm are installed, and `install.sh` installs the SSH tool.
+
+### Install the Docker CLI and the Compose plugin
+
+#### About this task
+
+`deploy.py` (Chapter 10) runs `docker compose config --images` on the workstation to read the images
+of the release's compose files, and compares them with the images that the apps run on TrueNAS.
+This needs the `docker` command and its Compose plugin, but no Docker Engine: no daemon is
+installed and nothing runs in the background. Without them, `deploy.py plan` and `drift` report
+the images as not compared and never notice an image that differs from the release.
+
+On Ubuntu, the packages come from Docker's apt repository, set up as Docker's installation guide
+describes for Ubuntu 22.04, 24.04 and 26.04. That guide also installs Docker Engine (`docker-ce`);
+this task installs only the command-line tool and the plugin.
+
+#### Steps
+
+1. On Ubuntu, add Docker's apt repository:
+
+        sudo apt update
+        sudo apt install ca-certificates curl
+        sudo install -m 0755 -d /etc/apt/keyrings
+        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+        sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+        Types: deb
+        URIs: https://download.docker.com/linux/ubuntu
+        Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+        Components: stable
+        Architectures: $(dpkg --print-architecture)
+        Signed-By: /etc/apt/keyrings/docker.asc
+        EOF
+        sudo apt update
+
+2. On Ubuntu, install the command-line tool and the Compose plugin only:
+
+        sudo apt install docker-ce-cli docker-compose-plugin
+
+3. On macOS, install both with Homebrew, and tell the `docker` command where Homebrew puts its
+   plugins. The second command creates `~/.docker/config.json` only if it does not exist; if it
+   exists, add the `cliPluginsExtraDirs` entry to it by hand:
+
+        brew install docker docker-compose
+        mkdir -p ~/.docker
+        test -e ~/.docker/config.json || printf '{\n  "cliPluginsExtraDirs": ["%s/lib/docker/cli-plugins"]\n}\n' "$(brew --prefix)" > ~/.docker/config.json
+
+4. Check the plugin:
+
+        docker compose version
+
+    The output is `Docker Compose version v` followed by the version.
+
+5. On Ubuntu, check that no Docker Engine was installed:
+
+        systemctl list-unit-files docker.service
+
+    The output ends with `0 unit files listed.`, unless Docker Engine was installed on the
+    workstation before.
+
+6. In the clone, read the images of a compose file of the release:
+
+        cd ~/local-agent-stack
+        docker compose --env-file stack/edge/edge.env.example -f stack/edge/compose.yaml config --images
+
+    The output is two lines, the images of the edge app with their digests:
+    `ghcr.io/corytron/local-agent-stack-caddy:2.11.9@sha256:...` and
+    `utkuozdemir/nvidia_gpu_exporter:1.18.0-nvml@sha256:...`.
+
+#### Results
+
+The workstation has the `docker` command with the Compose plugin and no Docker Engine, and
+`deploy.py` can compare images in Chapter 10.
+
+!!! note
+    The macOS steps were not run on a Mac for this release. The Homebrew formula `docker` installs
+    the command-line client, and the formula `docker-compose` names the plugin directory in its
+    installation notes.
+
 ## Prepare the client environment file
 
 ### Values in client.env
@@ -198,7 +344,7 @@ spaces or quotes; the generated tokens and LiteLLM keys contain none.
 The installer appends a marked block to the profile file of your login shell: `~/.bashrc` for
 bash, `~/.zshrc` for zsh, `~/.profile` for any other shell. The block is the following text:
 
-{{ include clients/install.sh lines=344-354 }}
+{{ include clients/install.sh lines=346-356 }}
 
 - `set -a` exports every variable that `client.env` assigns, so OpenCode reads them with
   `{env:LAB_DOMAIN}`, `{env:LOCAL_LLM_KEY}` and `{env:MCP_HUB_TOKEN}`.
@@ -233,8 +379,8 @@ Table: What install.sh does
 | 1. OpenCode | Downloads `@opencode/cli-<target>` 2.3.0 from `registry.npmjs.org`, checks it against the sha512 pinned in the script, and installs `~/.opencode/bin/opencode` (the package and location the official installer uses) | Skipped when 2.3.0 is already installed. A different version is kept as `opencode.bak.<time>` |
 | 2. Background service | Runs `opencode service set disabled true` | Setting it again is harmless |
 | 3. Configuration | Links `opencode.jsonc`, the agents, the commands and the plugin into `~/.config/opencode/` (or `$XDG_CONFIG_HOME/opencode/`) | An existing file at a link path is moved to `<name>.bak.<time>`. An existing `opencode.json` is moved aside, because OpenCode would merge it with `opencode.jsonc` |
-| 4. `client.env` | Creates `~/.config/local-agent-stack/client.env` with placeholders, mode 600, directory mode 700 | Only when the file does not exist |
-| 5. SSH tool | Installs `ssh-mcp` 2.26.0 into `~/.local/share/local-agent-stack/ssh-mcp` with npm (registry integrity check, no install scripts), and copies the policy example to `~/.config/ssh-mcp/config.toml` with mode 600 in a 700 directory | Only when Node.js 20.6 or later and npm are present. The policy is copied only when no `config.toml` exists |
+| 4. `client.env` | Creates `~/.config/local-agent-stack/client.env` with placeholders, mode 600, directory mode 700. The path is always under `~/.config`, also when `XDG_CONFIG_HOME` is set | Only when the file does not exist |
+| 5. SSH tool | Installs `ssh-mcp` 2.26.0 into `~/.local/share/local-agent-stack/ssh-mcp` with npm (registry integrity check, no install scripts), and copies the policy example to `~/.config/ssh-mcp/config.toml` with mode 600 in a 700 directory | Only when Node.js 20.6 or later and npm are present ([Install Node.js and npm](#install-nodejs-and-npm)). The policy is copied only when no `config.toml` exists |
 | 6. Launchers | Links `ssh-mcp-stdio` and `claude-local` into `~/.local/bin` | As step 3 |
 | 7. Shell profile | Appends the marked block (previous topic) to the profile file, or replaces an older version of the block | The profile file is copied to `<file>.bak.<time>` first |
 
@@ -272,9 +418,10 @@ Table: install.sh options
 
         node --version
 
-    The SSH tool needs `v20.6.0` or later and npm. If `node` is missing, install it
-    (`sudo apt install nodejs npm` on Ubuntu) and check the version again. Without a suitable
-    Node.js, the installer skips `ssh-mcp` and installs everything else.
+    The SSH tool needs `v20.6.0` or later and npm. If `node` is missing or older, install it with
+    [Install Node.js and npm](#install-nodejs-and-npm) and check the version again; on Ubuntu 24.04,
+    the archive's `nodejs` package is too old. Without a suitable Node.js, the installer skips
+    `ssh-mcp` and installs everything else.
 
 3. Run the installer in dry-run mode:
 
@@ -305,7 +452,8 @@ You know every change the installer will make. Nothing has changed yet.
     - `disabled: each opencode command runs its own server and stops it on exit`;
     - one `linked` line per configuration file;
     - `installed ssh-mcp 2.26.0 in ...` and `created .../ssh-mcp/config.toml`, or a `skipped:`
-      line that names the missing Node.js;
+      line that names the missing or older Node.js; in that case, complete
+      [Install Node.js and npm](#install-nodejs-and-npm) and run the installer again;
     - `appended block; open a new terminal or run: . /home/<user>/.bashrc`.
 
     The output ends with a `Next:` list. Its third line names only two models; the configuration
@@ -980,9 +1128,11 @@ profile and the agent key line in that host's `authorized_keys`.
 
 #### Steps
 
-1. Check that the gateway accepts the workstation key and lists its models:
+1. Check that the gateway accepts the workstation key and lists its models. The key goes to
+   `curl` on standard input, so it does not appear in the process list:
 
-        curl -s -H "Authorization: Bearer $LOCAL_LLM_KEY" https://llm.$LAB_DOMAIN/v1/models | head -c 300
+        printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY" |
+          curl -s -H @- https://llm.$LAB_DOMAIN/v1/models | head -c 300
 
     The output is JSON that lists the model names the key allows, such as `local-coder`.
 
@@ -1172,7 +1322,7 @@ directory to resume the last session.
 - SSH access from the Mac to `c4dev`, which holds the Mac's LiteLLM key and the shared values of
   `client.env`.
 - A LiteLLM virtual key for the Mac from Chapter 4, allowing the same models as the `c4dev` key.
-- For the SSH tool: Node.js 20.6 or later and npm, installed by your usual method.
+- For the SSH tool: Node.js 20.6 or later and npm ([Install Node.js and npm](#install-nodejs-and-npm)).
 
 #### About this task
 
@@ -1298,7 +1448,9 @@ The key reaches Claude Code only through the settings' `apiKeyHelper`, which rea
     `claude-local` reads `client.env` without exporting it, so that the commands Claude Code runs
     do not inherit the key. In a terminal where the installer's profile block has already exported
     `client.env`, they inherit it anyway. Use `--no-shell-rc` when you install, and load the values
-    only where you need them, if that matters to you.
+    only where you need them, if that matters to you. Without the profile block, OpenCode and the
+    hub tools of Claude Code need `MCP_HUB_TOKEN` and the other values exported by hand
+    ([Add the hub tools to Claude Code](#add-the-hub-tools-to-claude-code)).
 
 ### Claude Code settings for the gateway
 
@@ -1330,17 +1482,25 @@ Table: Limits of Claude Code with the local gateway
 | WebSearch | Not available: it is a server tool run by Anthropic. Use the hub's SearXNG tool instead ([Add the hub tools to Claude Code](#add-the-hub-tools-to-claude-code)) |
 | Remote Control, fast mode, Advisor | Not available with a non-Anthropic base URL |
 | Context | 65,536 tokens against 200,000 or more on Claude. Claude Code's first request alone carries 11,375 tokens (5,340 for OpenCode), so expect frequent compaction |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Do not set it. It accepts only 100,000 to 1,000,000 tokens, so it cannot describe a 65,536-token window, although LiteLLM's Claude Code tutorial suggests it. `CLAUDE_CODE_MAX_CONTEXT_TOKENS` sets the window instead |
+| Prompt caching | `cache_control` markers have no effect. llama-server reuses the unchanged start of the prompt by itself, from its slot and its prompt cache in host RAM; `CLAUDE_CODE_ATTRIBUTION_HEADER=0` keeps that start unchanged. Appendix C compares it with OpenCode ([Agent loop and context window](#agent-loop-and-context-window)) |
+| Images and screenshots | Not available: the stack's models run without a vision projector (`--no-mmproj`), so they cannot read images ([Images and PDF reading](#images-and-pdf-reading)) |
+| PDF documents | Not verified: whether llama.cpp accepts the PDF `document` blocks that Claude Code sends is unknown. Convert a PDF to text first, or put it in the knowledge base (Chapter 6) |
 | Tool use | Weaker than on Claude: malformed arguments and loops are more common |
 | `/cost` | Meaningless; LiteLLM's usage logs record tokens and durations per key |
-| Subagents | Run at most two at a time; one GPU serves every agent |
+| Subagents | Run two at a time, or three when one is a short read-only researcher; one GPU serves every agent ([Concurrency on one 16 GB GPU](#concurrency-on-one-16-gb-gpu)) |
 | Guard rules | `guard.ts` and OpenCode's policies do not apply to Claude Code. Put the same rules into the project's `.claude/settings.json` hooks and permissions; the repository's `pre-push` hook still refuses pushes to `main` |
 
 ### Start Claude Code with claude-local
 
 #### Prerequisites
 
-- Claude Code is installed on the workstation. If it is not, install it with npm and pin the
-  version you test: `npm install -g @anthropic-ai/claude-code@<version>`.
+- Claude Code is installed on the workstation. If it is not, install it with npm
+  ([Install Node.js and npm](#install-nodejs-and-npm)) and pin the version you test:
+  `npm install -g @anthropic-ai/claude-code@<version>`. If npm reports `EACCES` for its global
+  directory, do not use `sudo`; set a prefix in your home directory first with
+  `npm config set prefix ~/.local`, so that the command goes to `~/.local/bin`, which the profile
+  block puts on `PATH`.
 - The workstation's LiteLLM key allows `local-opus`, `local-sonnet` and `local-haiku`.
 - `claude-local` is linked into `~/.local/bin` ([Run the installer](#run-the-installer)).
 
@@ -1379,11 +1539,24 @@ Anthropic when you start it with `claude`.
 
 ### Add the hub tools to Claude Code
 
+#### Prerequisites
+
+- `MCP_HUB_TOKEN` is exported in the shell that starts `claude-local`. The installer's profile
+  block exports it from `client.env`; `claude-local` itself reads `client.env` without exporting
+  it. If you installed with `--no-shell-rc` and did not add the block, export the token alone in
+  that shell, without printing it:
+
+        export MCP_HUB_TOKEN="$(sed -n 's/^MCP_HUB_TOKEN=//p' ~/.config/local-agent-stack/client.env)"
+
+    Check it with `echo "${MCP_HUB_TOKEN:+token-set}"`, which prints `token-set`.
+
 #### About this task
 
 Without WebSearch, Claude Code needs the hub's SearXNG tool for web search. The hub's servers are
 plain MCP servers over HTTP with a bearer token, which Claude Code accepts in a project's
-`.mcp.json` file. The token stays in the environment.
+`.mcp.json` file. The file names the token as `${MCP_HUB_TOKEN}`, which Claude Code fills in from
+its environment, so the token stays out of the file. Without the variable in the environment, the
+hub servers do not connect.
 
 !!! note
     This configuration is not part of the release files and was not tested against the hub through
@@ -1408,7 +1581,12 @@ plain MCP servers over HTTP with a bearer token, which Claude Code accepts in a 
 
         echo '.mcp.json' >> .gitignore
 
-3. Start `claude-local` in the project and ask it to search the web with the `searxng` server.
+3. Start `claude-local` in the project and run `/mcp`.
+
+    The list shows `searxng`, `fetch` and `kb` as connected. If they fail to connect, check that
+    `MCP_HUB_TOKEN` is exported (Prerequisites).
+
+4. Ask Claude Code to search the web with the `searxng` server.
 
     The session shows a call to `searxng_web_search` and lists results.
 
