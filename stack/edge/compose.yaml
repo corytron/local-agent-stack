@@ -1,0 +1,100 @@
+# ai-edge: the only app that publishes ports. Caddy terminates TLS for every lab host name
+# (docs/stack-design.md §3) and proxies to the other apps by container name on ai-net;
+# gpu-exporter serves Prometheus metrics for the RTX 4080 on ai-net only.
+#
+# TrueNAS custom app "ai-edge", Install via YAML (docs/stack-design.md §4):
+#   include:
+#     - path: /mnt/tank/ai/stacks/local-agent-stack/stack/edge/compose.yaml
+#       env_file: /mnt/tank/ai/secrets/edge.env
+#   services: {}
+#
+# Variables: stack/edge/edge.env.example. Relative paths resolve against this file's directory.
+# Check: docker compose --env-file stack/edge/edge.env.example -f stack/edge/compose.yaml config -q
+
+services:
+  caddy:
+    # Built from stack/edge/Dockerfile by .github/workflows/caddy-image.yml; the tag is the
+    # Caddy version.
+    # UNVERIFIED: the image has not been pushed yet; pin it as :2.11.9@sha256:<digest> from the
+    # first workflow run (the run's summary and attestation name the digest).
+    image: ghcr.io/corytron/local-agent-stack-caddy:2.11.9
+    container_name: caddy
+    restart: unless-stopped
+    # TrueNAS "apps" user and group; /data and /config must be writable by it (Apps preset).
+    user: "568:568"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      # lets the unprivileged user bind 80 and 443 inside the container
+      net.ipv4.ip_unprivileged_port_start: "0"
+    ports:
+      # EDGE_BIND_IP: one host address to listen on (default: all). 443/udp is HTTP/3.
+      - "${EDGE_BIND_IP:-0.0.0.0}:80:80"
+      - "${EDGE_BIND_IP:-0.0.0.0}:443:443"
+      - "${EDGE_BIND_IP:-0.0.0.0}:443:443/udp"
+    environment:
+      LAB_DOMAIN: ${LAB_DOMAIN:?set LAB_DOMAIN in edge.env, e.g. lab.example.com}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in edge.env}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+      ACME_RESOLVERS: ${ACME_RESOLVERS:-1.1.1.1 1.0.0.1}
+      EDGE_ALLOWED_CIDRS: ${EDGE_ALLOWED_CIDRS:-private_ranges}
+      DNS_PROVIDER: ${DNS_PROVIDER:-cloudflare}
+      DNS_PROVIDER_TOKEN: ${DNS_PROVIDER_TOKEN:?set DNS_PROVIDER_TOKEN in edge.env}
+      # only for providers that need more than one credential (see edge.env.example)
+      DNS_PROVIDER_KEY_ID: ${DNS_PROVIDER_KEY_ID:-}
+      DNS_PROVIDER_CONSUMER_KEY: ${DNS_PROVIDER_CONSUMER_KEY:-}
+      DNS_PROVIDER_ENDPOINT: ${DNS_PROVIDER_ENDPOINT:-ovh-eu}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${AI_ROOT:-/mnt/tank/ai}/appdata/caddy/data:/data       # account key, certificates
+      - ${AI_ROOT:-/mnt/tank/ai}/appdata/caddy/config:/config
+    tmpfs:
+      - /tmp
+    healthcheck:
+      # the admin API listens on localhost inside the container only
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks: [ai-net]
+
+  gpu-exporter:
+    # NVML backend (the "-nvml" image flavour): reads libnvidia-ml.so.1, which the NVIDIA
+    # container runtime injects for the "utility" capability. Distroless image (no shell or
+    # HTTP client), so no healthcheck; check it with: curl http://gpu-exporter:9835/metrics
+    # from another container on ai-net.
+    image: utkuozdemir/nvidia_gpu_exporter:1.18.0-nvml@sha256:bf82122fdf8cc960b1233e33dea82767a711343fa2919d525ca9199e83cc5195
+    container_name: gpu-exporter
+    restart: unless-stopped
+    # Not read_only: the NVIDIA runtime adds the driver libraries to the container's filesystem
+    # when it starts. UNVERIFIED on this host (no GPU here): that NVML works with every
+    # capability dropped; it needs only the device nodes the runtime adds.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+        limits:
+          memory: 128M
+    expose:
+      - "9835"
+    networks: [ai-net]
+
+networks:
+  ai-net:
+    external: true

@@ -1,0 +1,152 @@
+// OpenCode 2.3.0 global config for the local agent stack (docs/stack-design.md §7).
+// clients/install.sh links this file to ~/.config/opencode/opencode.jsonc.
+//
+// Values from the environment (clients/install.sh creates ~/.config/local-agent-stack/client.env
+// and loads it from your shell profile):
+//   LAB_DOMAIN     your lab domain, e.g. lab.example.com
+//   LOCAL_LLM_KEY  your LiteLLM virtual key (sk-local-...)
+//   MCP_HUB_TOKEN  the MCP hub bearer token
+// Keys and URLs follow the V2 docs (opencode.ai/docs: config, providers, models, agents,
+// permissions, policies, mcp-servers) and the schema at https://opencode.ai/config.json.
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "local/local-coder",
+  "default_agent": "coordinator",
+
+  // No update checks, no session sharing, no paid web-search tool (search goes through the
+  // SearXNG MCP server below).
+  "update": "disable",
+  "share": "disabled",
+  "websearch": false,
+
+  "providers": {
+    "local": {
+      "name": "Local stack (LiteLLM)",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "https://llm.{env:LAB_DOMAIN}/v1",
+        "apiKey": "{env:LOCAL_LLM_KEY}"
+      },
+      "models": {
+        // Qwen3.8-27B on llama-swap, 64K context (docs/stack-design.md §5). OpenCode reads the
+        // reasoning stream field it sees (reasoning_content) without extra settings.
+        "local-coder": {
+          "name": "Local coder (Qwen3.8-27B)",
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "limit": { "context": 65536, "output": 16384 }
+        },
+        // The same model with thinking off: titles, quick lookups.
+        "local-fast": {
+          "name": "Local fast (thinking off)",
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "limit": { "context": 65536, "output": 8192 }
+        },
+        // Swaps the GPU model: use for a whole session, not next to other agents.
+        "local-coder-moe": {
+          "name": "Local coder MoE (Qwen3.6-35B-A3B, swaps the GPU model)",
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "limit": { "context": 65536, "output": 16384 }
+        }
+      }
+    }
+  },
+
+  "agents": {
+    // Session titles on the fast model (V2 replacement for small_model).
+    "title": { "model": "local/local-fast" }
+  },
+
+  // Compact before the 64K window fills; keep the recent tail.
+  "compaction": { "auto": true, "keep": { "tokens": 8000 }, "buffer": "20%" },
+
+  "experimental": { "todo": true },
+
+  // Hard limits. Policies only tighten, never prompt, and a project's config cannot loosen
+  // the ones set here. clients/opencode/plugins/guard.ts enforces the finer rules.
+  "policies": [
+    { "action": "provider.use", "resource": "*", "effect": "deny" },
+    { "action": "provider.use", "resource": "local", "effect": "allow" },
+    { "action": "websearch.use", "resource": "*", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git push * main *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git push * master *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git push * *:main *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git push * *:master *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git push --all *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git push --mirror *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:rm -rf / *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:rm -fr / *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:rm -rf ~ *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:* --no-preserve-root *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:mkfs*", "effect": "deny" },
+    { "action": "tool.use", "resource": "edit:*.env", "effect": "deny" },
+    { "action": "tool.use", "resource": "edit:*.pem", "effect": "deny" },
+    { "action": "tool.use", "resource": "edit:*/.ssh/*", "effect": "deny" },
+    { "action": "tool.use", "resource": "read:*/.ssh/id_*", "effect": "deny" },
+    { "action": "tool.use", "resource": "read:*/.config/local-agent-stack/*", "effect": "deny" }
+  ],
+
+  // Ordered rules; the last match wins, agent rules are appended after these.
+  "permissions": [
+    { "action": "shell", "resource": "*", "effect": "ask" },
+    { "action": "shell", "resource": "git status *", "effect": "allow" },
+    { "action": "shell", "resource": "git diff *", "effect": "allow" },
+    { "action": "shell", "resource": "git log *", "effect": "allow" },
+    { "action": "shell", "resource": "git show *", "effect": "allow" },
+    { "action": "shell", "resource": "git branch --show-current", "effect": "allow" },
+    { "action": "shell", "resource": "gh issue view *", "effect": "allow" },
+    { "action": "shell", "resource": "gh issue list *", "effect": "allow" },
+    { "action": "shell", "resource": "gh pr view *", "effect": "allow" },
+    { "action": "shell", "resource": "gh pr checks *", "effect": "allow" },
+    { "action": "shell", "resource": "tools/check.sh *", "effect": "allow" },
+    { "action": "shell", "resource": "sudo *", "effect": "deny" },
+    { "action": "external_directory", "resource": "*", "effect": "ask" },
+    // No Code Mode: MCP tools are listed as plain tools, which weak models call more reliably
+    // than writing JavaScript for the execute tool; it also drops that tool's schema.
+    { "action": "execute", "resource": "*", "effect": "deny" },
+    // Without Code Mode, OpenCode's own opencode_* tools (worktrees, session move and rename,
+    // model list, MCP resources) would be listed too; a short tool list suits a local model.
+    { "action": "opencode_*", "resource": "*", "effect": "deny" },
+    { "action": "read", "resource": "*.env", "effect": "deny" },
+    { "action": "read", "resource": "*.env.example", "effect": "allow" }
+  ],
+
+  "mcp": {
+    "servers": {
+      // Shared tools on the TrueNAS MCP hub (docs/stack-design.md §2, §3). Bearer token, no
+      // OAuth. codemode false lists each tool directly, which weak models handle better than
+      // writing Code Mode JavaScript.
+      "searxng": {
+        "type": "remote",
+        "url": "https://mcp.{env:LAB_DOMAIN}/servers/searxng/mcp",
+        "oauth": false,
+        "headers": { "Authorization": "Bearer {env:MCP_HUB_TOKEN}" },
+        "codemode": false
+      },
+      "fetch": {
+        "type": "remote",
+        "url": "https://mcp.{env:LAB_DOMAIN}/servers/fetch/mcp",
+        "oauth": false,
+        "headers": { "Authorization": "Bearer {env:MCP_HUB_TOKEN}" },
+        "codemode": false
+      },
+      "kb": {
+        "type": "remote",
+        "url": "https://mcp.{env:LAB_DOMAIN}/servers/kb/mcp",
+        "oauth": false,
+        "headers": { "Authorization": "Bearer {env:MCP_HUB_TOKEN}" },
+        "codemode": false
+      },
+      // SSH to remote hosts: ssh-mcp as a stdio child process that OpenCode starts with the
+      // session and stops with it (no daemon). Deny-by-default: it refuses every call until
+      // its policy file lists a host (clients/ssh-mcp/config.example.toml). Off until you
+      // have written that file; enable it per project (clients/README.md).
+      "ssh": {
+        "type": "local",
+        "command": ["{env:HOME}/.local/bin/ssh-mcp-stdio"],
+        "codemode": false,
+        "disabled": true
+      }
+    }
+  }
+}

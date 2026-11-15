@@ -180,6 +180,9 @@ Table: Workstation files
 | `clients/ssh-mcp/config.example.toml` | SSH tool policy example. |
 | `clients/templates/AGENTS.md` | Project memory template. |
 | `clients/templates/CLAUDE.md` | Claude Code memory template that imports AGENTS.md. |
+| `clients/install.sh` | Installs OpenCode and links these files on a workstation. |
+| `clients/claude-code/claude-local` | Starts Claude Code against the local gateway. |
+| `clients/ssh-mcp/ssh-mcp-stdio` | Launches the SSH tool as a stdio child of the agent. |
 
 ### clients/opencode/opencode.jsonc
 
@@ -264,6 +267,24 @@ Project memory template.
 Claude Code memory template that imports AGENTS.md.
 
 {{ include clients/templates/CLAUDE.md }}
+
+### clients/install.sh
+
+Installs OpenCode and links these files on a workstation.
+
+{{ include clients/install.sh }}
+
+### clients/claude-code/claude-local
+
+Starts Claude Code against the local gateway.
+
+{{ include clients/claude-code/claude-local }}
+
+### clients/ssh-mcp/ssh-mcp-stdio
+
+Launches the SSH tool as a stdio child of the agent.
+
+{{ include clients/ssh-mcp/ssh-mcp-stdio }}
 
 ## Deployment state file
 

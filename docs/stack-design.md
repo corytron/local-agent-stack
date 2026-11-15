@@ -128,8 +128,8 @@ in the agent's hand-back.
 `rag.env`: `PG_PASSWORD` (URL-safe), `DOCLING_API_KEY`, `OIKB_TOKEN` (the `indexer` user's Open WebUI key), `OIKB_KB_ID` (not secret), optional `OIKB_API_KEY`.
 `web.env`: `LAB_DOMAIN`, `WEBUI_SECRET_KEY`, `PG_PASSWORD` (same value as rag), `DOCLING_API_KEY` (same as rag), `LITELLM_WEBUI_KEY` (a LiteLLM virtual key allowed local-coder/fast/coder-moe/embed/rerank), `SEARXNG_SECRET`, `MCP_HUB_TOKEN` (`[A-Za-z0-9-._~+/]` only), `KB_READER_TOKEN` (the `kb-reader` user's key; empty until created), optional `SEARXNG_CONTACT_URL`.
 Open WebUI reads most settings only on its first start (PersistentConfig), so `web.env` must be complete before the first install; later changes to those go through the Admin Panel (`stack/web/README.md`).
-`edge.env`: `LAB_DOMAIN`, `ACME_EMAIL`, `DNS_PROVIDER`, `DNS_PROVIDER_TOKEN`.
-Workstation: `~/.config/local-agent-stack/client.env` with `LOCAL_LLM_KEY`, `MCP_HUB_TOKEN`.
+`edge.env`: `LAB_DOMAIN`, `ACME_EMAIL`, `DNS_PROVIDER` (default `cloudflare`), `DNS_PROVIDER_TOKEN`; optional `DNS_PROVIDER_KEY_ID`, `DNS_PROVIDER_CONSUMER_KEY`, `DNS_PROVIDER_ENDPOINT` (providers that need more than a token), `ACME_RESOLVERS` (default `1.1.1.1 1.0.0.1`, for split-horizon DNS), `ACME_CA` (staging/production), `EDGE_ALLOWED_CIDRS` (default private ranges), `EDGE_BIND_IP`, `AI_ROOT`.
+Workstation: `~/.config/local-agent-stack/client.env` with `LAB_DOMAIN`, `LOCAL_LLM_KEY`, `MCP_HUB_TOKEN`.
 `tools/secrets.py gen <app>` prints a new `<app>.env` with random values for every generated
 secret (stdlib `secrets`), leaving the reader-provided ones as placeholders.
 

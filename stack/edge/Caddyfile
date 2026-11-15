@@ -1,0 +1,135 @@
+# Caddyfile for the ai-edge app (docs/stack-design.md §2, §3). No edits needed: every
+# deployment-specific value comes from the environment (stack/edge/edge.env.example).
+#
+# Two kinds of placeholder, on purpose:
+#   {$NAME} / {$NAME:default}  replaced when Caddy reads this file (before parsing), so it can
+#                              stand for a whole name, an address or several tokens.
+#   {env.NAME}                 replaced at run time by the DNS module itself, so DNS credentials
+#                              never appear in the adapted JSON config (admin API, logs).
+#
+# One wildcard certificate, *.{$LAB_DOMAIN}, through the ACME DNS-01 challenge: nothing on this
+# server has to be reachable from the internet, and the individual host names are not written
+# to the public Certificate Transparency logs. Port 80 only redirects to HTTPS.
+{
+	email {$ACME_EMAIL}
+	# Let's Encrypt production by default. For a first test, set ACME_CA to
+	# https://acme-staging-v02.api.letsencrypt.org/directory (untrusted certificates, high limits).
+	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+	# Do not write the running config to /config/caddy/autosave.json.
+	persist_config off
+}
+
+# One snippet per DNS provider module built into the image (stack/edge/Dockerfile). The tls
+# block below imports dns-{$DNS_PROVIDER}, so DNS_PROVIDER picks the snippet; an unknown name
+# fails at start-up with "File to import not found: dns-<name>". Credentials per provider are
+# listed in edge.env.example. Cloudflare is the default and the worked example.
+(dns-cloudflare) {
+	dns cloudflare {env.DNS_PROVIDER_TOKEN}
+}
+(dns-route53) {
+	dns route53 {
+		access_key_id {env.DNS_PROVIDER_KEY_ID}
+		secret_access_key {env.DNS_PROVIDER_TOKEN}
+	}
+}
+(dns-digitalocean) {
+	dns digitalocean {env.DNS_PROVIDER_TOKEN}
+}
+(dns-porkbun) {
+	dns porkbun {
+		api_key {env.DNS_PROVIDER_KEY_ID}
+		api_secret_key {env.DNS_PROVIDER_TOKEN}
+	}
+}
+(dns-namecheap) {
+	dns namecheap {
+		api_key {env.DNS_PROVIDER_TOKEN}
+		user {env.DNS_PROVIDER_KEY_ID}
+	}
+}
+(dns-duckdns) {
+	dns duckdns {env.DNS_PROVIDER_TOKEN}
+}
+(dns-desec) {
+	dns desec {
+		token {env.DNS_PROVIDER_TOKEN}
+	}
+}
+(dns-ovh) {
+	dns ovh {
+		endpoint {$DNS_PROVIDER_ENDPOINT:ovh-eu}
+		application_key {env.DNS_PROVIDER_KEY_ID}
+		application_secret {env.DNS_PROVIDER_TOKEN}
+		consumer_key {env.DNS_PROVIDER_CONSUMER_KEY}
+	}
+}
+
+# Response headers for every host. No Content-Security-Policy: Open WebUI and the llama-swap UI
+# load inline scripts and styles, and a wrong policy breaks them silently.
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+		-X-Powered-By
+	}
+}
+
+*.{$LAB_DOMAIN} {
+	tls {
+		import dns-{$DNS_PROVIDER:cloudflare}
+		# Resolvers for the DNS challenge's zone lookup and propagation check. The lab names
+		# also exist in local DNS (split-horizon), and a local zone for {$LAB_DOMAIN} hides the
+		# public records the check needs; public resolvers avoid that. Override with
+		# ACME_RESOLVERS (space-separated); it only affects certificate issuance and renewal.
+		resolvers {$ACME_RESOLVERS:1.1.1.1 1.0.0.1}
+	}
+
+	import security_headers
+
+	# LAN only: any client outside EDGE_ALLOWED_CIDRS (default: the private ranges, 10/8,
+	# 172.16/12, 192.168/16, 127/8, fd00::/8, ::1) is dropped before routing. A second line of
+	# defence behind "no port forwarding on the router".
+	@outside not remote_ip {$EDGE_ALLOWED_CIDRS:private_ranges}
+	handle @outside {
+		abort
+	}
+
+	@chat host chat.{$LAB_DOMAIN}
+	handle @chat {
+		reverse_proxy open-webui:8080
+	}
+
+	# OpenAI /v1/... and Anthropic /v1/messages. Streaming (text/event-stream) is flushed as it
+	# arrives, and the proxy has no response timeout, so long generations are not cut off.
+	@llm host llm.{$LAB_DOMAIN}
+	handle @llm {
+		reverse_proxy litellm:4000
+	}
+
+	@models host models.{$LAB_DOMAIN}
+	handle @models {
+		reverse_proxy llama-swap:8080
+	}
+
+	# mcp-proxy checks the Host header against its --allowed-host list, which names its
+	# ai-net address (mcp-hub:8096); send that instead of the public name.
+	@mcp host mcp.{$LAB_DOMAIN}
+	handle @mcp {
+		reverse_proxy mcp-hub:8096 {
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	@search host search.{$LAB_DOMAIN}
+	handle @search {
+		reverse_proxy searxng:8080
+	}
+
+	# Any other name under the wildcard: close the connection.
+	handle {
+		abort
+	}
+}

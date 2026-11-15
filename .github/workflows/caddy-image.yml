@@ -1,0 +1,111 @@
+# Builds the edge app's Caddy image (stack/edge/Dockerfile: Caddy plus the caddy-dns provider
+# modules) and pushes it to ghcr.io/corytron/local-agent-stack-caddy:<caddy-version>, with a
+# signed SLSA build provenance attestation pushed next to it. stack/edge/compose.yaml uses it.
+# Verify a pulled image with:
+#   gh attestation verify oci://ghcr.io/corytron/local-agent-stack-caddy:<version> \
+#     --repo corytron/local-agent-stack
+name: Caddy image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - stack/edge/Dockerfile
+      - .github/workflows/caddy-image.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: caddy-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and push
+    # A manual run from another branch must not publish: only main builds the image.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read        # checkout
+      packages: write       # push to GHCR
+      id-token: write       # Sigstore certificate for the attestation
+      attestations: write   # store the attestation
+    env:
+      IMAGE: ghcr.io/corytron/local-agent-stack-caddy
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the Caddy version from the Dockerfile
+        id: version
+        run: |
+          set -euo pipefail
+          file=stack/edge/Dockerfile
+          ver='[0-9][0-9.]*'
+          digest='@sha256:[0-9a-f]\{64\}'
+          builder=$(sed -n "s/^FROM caddy:\(${ver}\)-builder${digest} AS builder\$/\1/p" "$file")
+          final=$(sed -n "s/^FROM caddy:\(${ver}\)${digest}\$/\1/p" "$file")
+          if [ -z "$builder" ] || [ "$builder" != "$final" ]; then
+            echo "::error file=${file}::both FROM lines must pin one caddy version by digest" \
+              "(builder '${builder}', final '${final}')"
+            exit 1
+          fi
+          echo "version=$builder" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No build cache: a cache shared with other workflows could poison a published image.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: stack/edge
+          file: stack/edge/Dockerfile
+          platforms: linux/amd64
+          pull: true
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false   # storage records need an organization-owned repository
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### ${IMAGE}:${VERSION}"
+            echo
+            echo "Pin in stack/edge/compose.yaml:"
+            echo
+            echo '```yaml'
+            echo "image: ${IMAGE}:${VERSION}@${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

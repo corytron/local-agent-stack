@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://llm.lab.example.com",
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "local-opus",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "local-sonnet",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "local-haiku",
+    "ANTHROPIC_MODEL": "local-sonnet",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "local-sonnet",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "65536",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "16384",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_TELEMETRY": "1"
+  },
+  "apiKeyHelper": "[ -n \"${LOCAL_LLM_KEY:-}\" ] || . \"$HOME/.config/local-agent-stack/client.env\"; printf '%s' \"$LOCAL_LLM_KEY\"",
+  "skipWebFetchPreflight": true
+}
