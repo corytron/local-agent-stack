@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Print a new .env file for one app, with fresh random values for every secret the stack generates.
 
-  secrets.py gen <app> [--example FILE] [--share FILE] [-o FILE]
+  secrets.py gen <app> [--example FILE] [--share FILE] [--ask NAME]... [-o FILE]
   secrets.py names [<app>]
 
 <app> is inference, rag, web, edge (the TrueNAS apps, docs/stack-design.md, section 6) or client
-(the workstation's ~/.config/local-agent-stack/client.env).
+(the workstation's ~/.config/local-agent-stack/client.env: LAB_DOMAIN, LOCAL_LLM_KEY,
+MCP_HUB_TOKEN).
 
 gen reads the app's example file, stack/<app>/<app>.env.example (clients/client.env.example for
 client), and prints it with every generated secret replaced by a new random value; every other
@@ -18,25 +19,36 @@ symbols, because the database passwords go into URLs (DATABASE_URL), the keys in
 and MCP_HUB_TOKEN may hold only [A-Za-z0-9-._~+/]; keys LiteLLM and llama-swap check get the
 prefix sk- (b-inference research note). Values created later in a UI (LiteLLM virtual keys, Open
 WebUI API keys, the knowledge base ID) stay placeholders, with a comment saying where they come
-from. They are new on
-every run: run gen once per installation, and never again for a value that must not change
-(LITELLM_SALT_KEY encrypts what LiteLLM stores; WEBUI_SECRET_KEY encrypts Open WebUI's tokens).
+from. They are new on every run: run gen once per installation, and never again for a value that
+must not change (LITELLM_SALT_KEY encrypts what LiteLLM stores; WEBUI_SECRET_KEY encrypts Open
+WebUI's tokens).
 
 Values two files share are copied, never generated twice: --share FILE reads an existing .env
-and takes the shared values from it (web's PG_PASSWORD from rag.env, client's MCP_HUB_TOKEN from
-web.env). Without --share they stay placeholders.
+and takes the shared values from it (web's PG_PASSWORD and DOCLING_API_KEY from rag.env; client's
+MCP_HUB_TOKEN and LAB_DOMAIN from web.env, whose LAB_DOMAIN is the same as edge.env's). Without
+--share they stay placeholders, and gen says so on standard error.
+
+--ask NAME prompts on the terminal for a value you provide or copy (not echoed, never on the
+command line or in the shell history), for example the workstation's LiteLLM key:
+  install -d -m 0700 ~/.config/local-agent-stack
+  python3 tools/secrets.py gen client --share ~/.config/local-agent-stack/secrets/web.env \\
+      --ask LOCAL_LLM_KEY -o ~/.config/local-agent-stack/client.env
+The value may hold letters, digits and . _ ~ + / = : @ % , - only, because the .env files are read
+by Compose and client.env by a shell.
 
 -o FILE writes the result to a new file created with mode 0600 (it refuses to replace one); the
 default is standard output, for example on the NAS:
   (umask 077; python3 tools/secrets.py gen inference > /mnt/tank/ai/secrets/inference.env)
 
 Standard library only. Exit codes: 0 done, 1 cannot write the output, 2 usage (unknown app,
-unreadable --share or --example file).
+unreadable --share or --example file, an --ask name the app does not take, an empty or unsafe
+value).
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import re
 import string
@@ -90,6 +102,7 @@ VARIABLES = {
         "DNS_PROVIDER_TOKEN": "provided",
     },
     "client": {
+        "LAB_DOMAIN": "shared",
         "LOCAL_LLM_KEY": "provided",
         "MCP_HUB_TOKEN": "shared",
     },
@@ -99,6 +112,7 @@ VARIABLES = {
 SHARED_FROM = {
     ("web", "PG_PASSWORD"): "rag.env",
     ("web", "DOCLING_API_KEY"): "rag.env",
+    ("client", "LAB_DOMAIN"): "web.env",
     ("client", "MCP_HUB_TOKEN"): "web.env",
 }
 
@@ -115,10 +129,13 @@ PROVIDED = {
     "ACME_EMAIL": "the ACME account address, e.g. admin@example.com",
     "DNS_PROVIDER": "the DNS provider of the DNS-01 challenge, e.g. cloudflare",
     "DNS_PROVIDER_TOKEN": "an API token of the DNS provider, scoped to the zone",
-    "LOCAL_LLM_KEY": "a LiteLLM virtual key for this workstation, created with /key/generate",
+    "LOCAL_LLM_KEY": "the LiteLLM virtual key created for this workstation in the guide's chapter 4 "
+    "(never LITELLM_MASTER_KEY); gen client --ask LOCAL_LLM_KEY prompts for it",
 }
 
 ASSIGNMENT_RE = re.compile(r"^(\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+# A value given with --ask: nothing a shell (client.env) or Compose's .env parser would change.
+SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9._~+/=:@%,-]+$")
 
 
 class UsageError(Exception):
@@ -153,17 +170,25 @@ def read_env(path):
     return values
 
 
-def generate(app, example_text=None, shared=None, choice=secrets.choice):
-    """The new .env text for the app."""
+def generate(app, example_text=None, shared=None, choice=secrets.choice, asked=None):
+    """The new .env text for the app. `shared` holds values copied from another app's file, `asked`
+    values typed at an --ask prompt; both replace the example's placeholders."""
     if app not in VARIABLES:
         raise UsageError(f"unknown app {app!r}: one of {', '.join(VARIABLES)}")
     variables = VARIABLES[app]
     shared = shared or {}
-    out = [f"# {app}.env, written by tools/secrets.py gen {app}: every generated value below is new."]
+    asked = asked or {}
+    generated = any(kind in ("key", "secret") for kind in variables.values())
+    out = [
+        f"# {app}.env, written by tools/secrets.py gen {app}"
+        + (": every generated value below is new." if generated else ".")
+    ]
     seen = set()
 
     def value_for(name, current):
         kind = variables.get(name)
+        if name in asked:
+            return asked[name]
         if kind in ("key", "secret"):
             return random_value(kind, choice)
         if kind == "shared" and name in shared:
@@ -185,7 +210,9 @@ def generate(app, example_text=None, shared=None, choice=secrets.choice):
         out.append("# Not in the example file (docs/stack-design.md, section 6):")
     for name in missing:
         kind = variables[name]
-        if kind == "shared" and name not in shared:
+        if name in asked:
+            out.append(f"{name}={asked[name]}")
+        elif kind == "shared" and name not in shared:
             source = SHARED_FROM.get((app, name), "the other app's file")
             out.append(f"# The same value as {name} in {source} (or run gen with --share {source}).")
             out.append(f"{name}=replace-with-{name.lower().replace('_', '-')}-from-{source.replace('.', '-')}")
@@ -208,7 +235,31 @@ def write_new_file(path, text):
         handle.write(text)
 
 
-def main(argv=None, out=None):
+def ask_values(app, names, ask):
+    """{name: value} for each --ask name, read with ask (getpass: not echoed)."""
+    values = {}
+    for name in names:
+        kind = VARIABLES[app].get(name)
+        if kind is None:
+            raise UsageError(f"--ask {name}: {app}.env has no such variable ({', '.join(VARIABLES[app])})")
+        if kind not in ("provided", "shared"):
+            raise UsageError(f"--ask {name}: gen generates this value; --ask takes one you provide or copy")
+        try:
+            value = ask(f"{name}: ").strip()
+        except EOFError:  # no terminal and nothing on standard input
+            value = ""
+        if not value:
+            raise UsageError(f"--ask {name}: no value entered")
+        if not SAFE_VALUE_RE.match(value):
+            raise UsageError(
+                f"--ask {name}: the value may hold only letters, digits and . _ ~ + / = : @ % , - "
+                "(a shell reads client.env, Compose the other files)"
+            )
+        values[name] = value
+    return values
+
+
+def main(argv=None, out=None, ask=getpass.getpass):
     out = out or sys.stdout
     parser = argparse.ArgumentParser(prog="secrets.py", description="Print a new .env file with fresh random secrets.")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
@@ -216,6 +267,13 @@ def main(argv=None, out=None):
     gen.add_argument("app", help=", ".join(VARIABLES))
     gen.add_argument("--example", help="the example file to fill in (default: the app's .env.example)")
     gen.add_argument("--share", help="an existing .env to copy shared values from")
+    gen.add_argument(
+        "--ask",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="prompt for this variable's value without echoing it (repeatable)",
+    )
     gen.add_argument("-o", "--output", help="write to this new file (mode 0600) instead of standard output")
     names = commands.add_parser("names", help="list the section 6 variables and their kinds")
     names.add_argument("app", nargs="?")
@@ -246,7 +304,14 @@ def main(argv=None, out=None):
                 for name, kind in VARIABLES[args.app].items()
                 if kind == "shared" and values.get(name)
             }
-        text = generate(args.app, example_text, shared)
+        asked = ask_values(args.app, args.ask, ask)
+        text = generate(args.app, example_text, shared, asked=asked)
+        for name, kind in VARIABLES[args.app].items():
+            if kind == "shared" and name not in shared and name not in asked:
+                source = SHARED_FROM.get((args.app, name), "the other app's file")
+                print(
+                    f"secrets.py: {name} is a placeholder: run gen {args.app} with --share <{source}>", file=sys.stderr
+                )
     except UsageError as error:
         print(f"secrets.py: {error}", file=sys.stderr)
         return 2

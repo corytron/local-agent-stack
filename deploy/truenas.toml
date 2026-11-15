@@ -8,8 +8,8 @@
 schema = 1
 
 # The release tag whose stack/ the NAS runs. The git clone at stacks_dir must be checked out at
-# this tag (guide chapter 10); deploy.py compares the images the apps run with this tag's
-# compose files.
+# this tag (guide chapter 10); deploy.py compares the images the apps run, and a hash of the files
+# each app uses, with this tag's stack/ folders.
 release = "v1.0"
 
 # The TrueNAS version deploy.py was written and checked against (API v25.10, client tag
@@ -21,12 +21,27 @@ truenas_version = "25.10.8"
 stacks_dir = "/mnt/tank/ai/stacks/local-agent-stack"
 secrets_dir = "/mnt/tank/ai/secrets"
 
+# Optional: the folder where the machine that runs deploy.py keeps its copies of the env files,
+# <env_dir>/<stack>.env (the guide writes them on the workstation in chapter 3). deploy.py records
+# a hash of each env file in its app's YAML, so that a changed env file shows as an update; the
+# values are never printed. Without env_dir, env files are not compared. With --local on the NAS,
+# deploy.py reads the files in secrets_dir instead and ignores this setting.
+env_dir = "~/.config/local-agent-stack/secrets"
+
 # One table per TrueNAS custom app, in the order apply installs them (inference first: the web
-# app talks to LiteLLM; edge last: it proxies the others). Each app's YAML in TrueNAS is exactly
+# app talks to LiteLLM; edge last: it proxies the others). Each app's YAML in TrueNAS is
 #   include:
 #     - path: <stacks_dir>/stack/<stack>/compose.yaml
 #       env_file: <secrets_dir>/<stack>.env
 #   services: {}
+#   x-local-agent-stack:
+#     files: sha256:...   (the release's compose.yaml and the files it mounts)
+#     env: sha256:...     (the env file)
+# The first four lines are stack/<stack>/truenas-app.yaml. An app that runs with compose override
+# files on the NAS lists them in its table, and apply keeps them: `path` becomes a list, the
+# release's compose file first, then each override. For example:
+#   overrides = ["/mnt/tank/ai/appdata/llama-swap/fallback.override.yaml"]   (ai-inference)
+#   overrides = ["/mnt/tank/ai/appdata/caddy/internal-ca.override.yaml"]     (ai-edge)
 [apps.ai-inference]
 stack = "inference"
 

@@ -94,7 +94,7 @@ include:
 services: {}
 ```
 
-`stack/<app>/<app>.env.example` documents every variable with a placeholder value.
+`stack/<app>/<app>.env.example` documents every variable with a placeholder value, and `stack/<app>/truenas-app.yaml` holds exactly these four lines for the hand install. `tools/deploy.py apply` writes the same YAML plus a top-level `x-local-agent-stack` block (`files` and `env` content hashes) and, when `desired.toml` lists `overrides` for the app, includes them after the compose file (`path:` as a list).
 
 ## 5. Models, aliases and VRAM budget
 
@@ -130,7 +130,7 @@ in the agent's hand-back.
 Open WebUI reads most settings only on its first start (PersistentConfig), so `web.env` must be complete before the first install; later changes to those go through the Admin Panel (`stack/web/README.md`).
 `edge.env`: `LAB_DOMAIN`, `ACME_EMAIL`, `DNS_PROVIDER` (default `cloudflare`), `DNS_PROVIDER_TOKEN`; optional `DNS_PROVIDER_KEY_ID`, `DNS_PROVIDER_CONSUMER_KEY`, `DNS_PROVIDER_ENDPOINT` (providers that need more than a token), `ACME_RESOLVERS` (default `1.1.1.1 1.0.0.1`, for split-horizon DNS), `ACME_CA` (staging/production), `EDGE_ALLOWED_CIDRS` (default private ranges), `EDGE_BIND_IP`, `AI_ROOT`.
 Workstation: `~/.config/local-agent-stack/client.env` with `LAB_DOMAIN`, `LOCAL_LLM_KEY`, `MCP_HUB_TOKEN`.
-`tools/secrets.py gen <app>` prints a new `<app>.env` with random values for every generated
+`tools/secrets.py gen <app> [--share FILE] [--ask NAME]`; `gen client --share web.env --ask LOCAL_LLM_KEY` writes `client.env`. It prints a new `<app>.env` with random values for every generated
 secret (stdlib `secrets`), leaving the reader-provided ones as placeholders.
 
 ## 7. Workstation (clients/)
@@ -167,7 +167,7 @@ secret (stdlib `secrets`), leaving the reader-provided ones as placeholders.
   `vX.Y`, build the guide PDF and `stack-vX.Y.tar.gz`, `SHA256SUMS.txt`, notes from `CHANGELOG.md`.
 - `renovate.json` (images incl. `server-cuda-bNNNN` style tags; CUDA ≤ 13.0 rule as a comment),
   `.github/dependabot.yml` (actions, pip), `.github/labels.json`.
-- `tools/deploy.py validate|plan|apply|drift|status` against `deploy/truenas.toml`
+- `tools/deploy.py [--file|--config|--local] validate|render|plan|apply|drift|status` (options before or after the command; `desired.toml` with `env_dir` and per-app `overrides`; change detection by image, YAML, mounted config files and env file hashes) against `deploy/truenas.toml`
   (desired release tag + apps; `drift` runs on demand and after every `apply`, or from a TrueNAS cron job, never a workstation timer), keys from `~/.config/local-agent-stack/` (READONLY_ADMIN for
   plan/drift/status, FULL_ADMIN only for apply). `tools/bench.sh` (llama-bench sweep, run on the
   NAS shell) and `tools/smoke.py` (end-to-end checks of every endpoint from the workstation).

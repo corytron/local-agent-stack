@@ -1,45 +1,111 @@
 #!/usr/bin/env python3
 """Make the TrueNAS SCALE server run what deploy/truenas.toml says, and show where it differs.
 
-  deploy.py validate                   check deploy/truenas.toml and the stack files it names (offline)
-  deploy.py render [--app NAME]        print each app's TrueNAS YAML (the include wrapper)
-  deploy.py plan [--app NAME...]       what apply would do, per app (read-only key)
-  deploy.py apply [--app NAME...]      create, update or redeploy the apps (full-admin key)
-                  [--dry-run] [--timeout SECONDS]
-  deploy.py drift [--app NAME...]      exit 3 when the NAS differs from the desired state
-                  [--issue]            ... and keep one open GitHub issue labelled `deploy` (gh)
-  deploy.py status                     one line per app: state, configuration, images
+  deploy.py [OPTIONS] validate                    check the desired state and the stack files it names (offline)
+  deploy.py [OPTIONS] render [--app NAME]         print each app's TrueNAS YAML as apply would write it (offline)
+  deploy.py [OPTIONS] plan [--app NAME]...        what apply would do, per app (read-only key)
+  deploy.py [OPTIONS] apply [--app NAME]... [--dry-run] [--timeout SECONDS]
+                                                  create, update or redeploy the apps (full-admin key)
+  deploy.py [OPTIONS] drift [--app NAME]... [--issue]
+                                                  exit 3 when the NAS differs from the desired state;
+                                                  --issue keeps one open GitHub issue labelled `deploy` (gh)
+  deploy.py [OPTIONS] status                      one line per app: state, YAML, files, env, images
 
-Common options: --file (default deploy/truenas.toml), --config (default
-~/.config/local-agent-stack/truenas.toml), --local (on the NAS itself, as root: the local
-middleware socket, no key).
+OPTIONS stand before or after the command: `deploy.py --local drift` and `deploy.py drift --local`
+are the same; an option written on both sides takes the value written after the command.
+  --file FILE     the desired state (default: deploy/truenas.toml in this clone)
+  --config FILE   the connection settings (default: ~/.config/local-agent-stack/truenas.toml)
+  --local         on the NAS itself, as root: the local middleware socket, no key and no settings
+                  file; the env files are read from secrets_dir
 
 What runs where (owner, 2026-11-15): nothing of this stack runs on the workstation full time (no
 timers, no daemons), so drift is an on-demand command: run it by hand or by an agent, and after
 every apply. A scheduled check, if wanted, is a TrueNAS cron job on the NAS: System > Advanced
 Settings > Cron Jobs > Add (card and form labels checked in truenas/webui at TS-25.10.8:
 Description, Command, Run As User, Schedule, Hide Standard Output, Hide Standard Error, Enabled),
-Run As User root, Command
-  python3 /mnt/tank/ai/stacks/local-agent-stack/tools/deploy.py drift --local
---local talks to the local middleware socket and needs no key (UNVERIFIED: that the NAS's system
-Python can import truenas_api_client, which midclt uses, and has git for the image comparison;
-without git the images are reported as not compared). Exit 3 marks drift; that TrueNAS mails a
-cron job's output to root unless Hide Standard Output/Error is set is assumed, not verified.
+Run As User root, and this Command, written on one line (the guide's chapter 10 prints it so):
+  out=$(env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory
+  GIT_CONFIG_VALUE_0=/mnt/tank/ai/stacks/local-agent-stack
+  python3 /mnt/tank/ai/stacks/local-agent-stack/tools/deploy.py
+  --local --file /mnt/tank/ai/stacks/desired.toml drift 2>&1) || echo "$out" >&2
+The clone belongs to truenas_admin and the job runs as root, so git needs the clone in its
+safe.directory setting (passed in the environment) to read the release tag; without it, the files
+and images are reported as not compared. The desired state is the reader's copy, placed beside the
+clone. --local needs no key (UNVERIFIED: that the NAS's system Python can import
+truenas_api_client, which midclt uses). Exit 3 marks drift; the command prints the report only
+then, on standard error, which TrueNAS reports when Hide Standard Error is cleared (that it mails
+it to root is assumed, not verified).
 
-The desired state (deploy/truenas.toml, read with tomllib): schema, release (the tag the NAS clone
-is at), truenas_version, stacks_dir, secrets_dir, and [apps.<name>] tables with `stack = "<dir>"`.
-Each app is a TrueNAS custom app whose YAML is exactly the include wrapper of
-docs/stack-design.md, section 4:
+The desired state (deploy/truenas.toml, read with tomllib; a reader keeps a copy outside the
+clone and passes it with --file):
+  schema = 1
+  release = "v1.0"                          the tag the NAS clone is checked out at
+  truenas_version = "25.10.8"               the NAS must report exactly this version
+  stacks_dir = "/mnt/tank/ai/stacks/local-agent-stack"
+  secrets_dir = "/mnt/tank/ai/secrets"
+  env_dir = "~/.config/local-agent-stack/secrets"
+                                            optional: where this machine keeps copies of the env
+                                            files (<env_dir>/<stack>.env), for the env hash
+  [apps.ai-edge]                            one table per TrueNAS custom app, in apply's order
+  stack = "edge"                            a folder under stack/
+  overrides = ["/mnt/tank/ai/appdata/caddy/internal-ca.override.yaml"]
+                                            optional: compose files on the NAS merged over the
+                                            release's compose file, in this order
+
+Each app is a TrueNAS custom app whose YAML is the include wrapper of docs/stack-design.md,
+section 4, followed by the content hashes. For the default paths and an app without overrides,
+stack/<stack>/truenas-app.yaml holds the first four lines byte for byte (what the guide installs by
+hand, and what render prints after its "# <app>" line, minus the hashes):
 
   include:
     - path: <stacks_dir>/stack/<stack>/compose.yaml
       env_file: <secrets_dir>/<stack>.env
   services: {}
+  x-local-agent-stack:
+    files: sha256:<64 hex digits>
+    env: sha256:<64 hex digits>
+
+With overrides, `path` is a list: the release's compose file first, then each override (the shape
+of the coder fallback in the guide's chapter 4 and of the internal CA in appendix D). Compose
+merges the files before it includes the result, so apply keeps the overrides:
+
+  include:
+    - path:
+        - <stacks_dir>/stack/<stack>/compose.yaml
+        - <override>
+      env_file: <secrets_dir>/<stack>.env
+  services: {}
+  x-local-agent-stack: ...
+
+Content hashes. Compose recreates a container when its service definition changes, not when a file
+it bind-mounts changes, so without help a changed Caddyfile or llama-swap config would leave plan
+at "none". The top-level extension x-local-agent-stack records two hashes in the app's YAML; a
+change to either makes plan report update, and apply's app.update recreates the app's containers:
+  files  sha256 over the lines "<sha256 of the file>  <path>\\n", sorted by path, of compose.yaml and
+         of every file under stack/<stack>/ that compose.yaml names with a ./ path outside build:,
+         context: and dockerfile: (the bind-mount sources; a directory stands for every regular
+         file below it; a path that does not exist is the line "missing  <path>"). Build contexts
+         are left out because a redeploy does not rebuild an image. The files come from
+         `git archive <release> stack/<stack>`, so every machine computes the same value from the
+         same tag; without git or the tag they are not compared.
+  env    sha256 of the env file's bytes: with --local the file in secrets_dir, otherwise
+         <env_dir>/<stack>.env, the workstation's copy that the guide installs on the NAS. The
+         content is never printed or sent; only the hash leaves the file (into the app's YAML and
+         plan's diff), and a hash cannot be reversed to values that include a random secret.
+A hash this run cannot compute is "not compared" (a note says why) and plan keeps the value the NAS
+has recorded, so a machine without git or without the env copies never undoes what another one
+recorded. A hash the NAS has not recorded (an app installed by hand from truenas-app.yaml, or by an
+older deploy.py) is an update: apply records it, which recreates the app's containers once.
+Changes to an override file, or to a file only an override mounts, are not detected: redeploy by
+hand. Compose accepts any top-level key that starts with x- and ignores it (Compose Specification;
+`docker compose config` with Compose v5.6.0 on c4dev accepted both wrapper shapes with the
+extension; the Compose version TrueNAS bundles was not tried).
 
 The workstation's connection settings (~/.config/local-agent-stack/truenas.toml, mode 0600, never
-in the repository):
+in the repository; the TrueNAS web interface and its API move to port 8443 in the guide's
+chapter 3):
 
-  uri = "wss://192.0.2.10/api/current"      # wss:// only: a key sent over ws:// is revoked
+  uri = "wss://192.0.2.10:8443/api/current" # wss:// only: a key sent over ws:// is revoked
   read_user = "deploy-read"                 # a user whose group's privilege is READONLY_ADMIN
   read_key_file = "truenas-read.key"        # relative to the config file's folder, mode 0600
   apply_user = "deploy-apply"               # a user whose group's privilege is FULL_ADMIN
@@ -50,15 +116,20 @@ plan, drift and status log in with the read key; only apply loads the full-admin
 no smaller predefined role that may write apps: docs/research/f-project-tooling.md, section 2).
 
 Middleware calls (checked against truenas/middleware at tag TS-25.10.8, API v25_10_5, and
-truenas/api_client at tag TS-25.10.8; see "Verified" below):
+truenas/api_client at tag TS-25.10.8):
   auth.login_ex {"mechanism": "API_KEY_PLAIN", "username", "api_key"} -> response_type SUCCESS
   system.info -> {"version": ...}       (version is system.version_short)
   app.query [filters] {options} -> name, state, custom_app, active_workloads.images (each
             container's Config.Image); queried without extra.retrieve_config, so no other app's
             configuration (and none of its secrets) is fetched
-  app.config <name> -> the stored compose for a custom app (the parsed YAML apply sent)
+  app.config <name> -> the stored compose for a custom app: the parsed YAML apply sent, extension
+            included (plugins/apps/custom_app_utils.py validate_payload loads it with
+            safe_yaml_load and checks it with `docker compose config`; ix_apps/lifecycle.py
+            update_app_config stores it)
   app.create {"custom_app": true, "app_name", "custom_compose_config_string"}   (job)
-  app.update <name> {"custom_compose_config_string"}                           (job)
+  app.update <name> {"custom_compose_config_string"}                           (job; runs
+            `compose up --force-recreate --remove-orphans` unless the app is STOPPED, which only
+            stores the YAML: plugins/apps/crud.py update_internal)
   app.redeploy <name>                                                           (job)
 Client: truenas_api_client.Client(uri, verify_ssl=True); call(method, *params, job=True) waits for
 a job. Install it on the workstation in a virtual environment:
@@ -70,14 +141,18 @@ WEBSOCKET_CLIENT_CA_BUNDLE (websocket-client reads it when no CA is given in cod
 
 What plan decides, per app (apply never deletes anything; "edge cases before automation"):
   create    the app does not exist                          -> app.create
-  update    its stored YAML differs from the wrapper        -> app.update
+  update    its stored YAML differs from the wrapper: the include (paths, overrides, env_file),
+            or a content hash (the release's files or the env file changed, or not recorded)
+                                                            -> app.update (recreates the containers
+                                                               of a running app)
   redeploy  the YAML matches but the images it runs are not the release's, or it CRASHED
                                                             -> app.redeploy
   conflict  an app of that name exists but is a catalog app -> reported, never touched
-  none      in step (a STOPPED app is reported, not started: someone stopped it on purpose)
+  none      in step (a STOPPED app is reported, not started: someone stopped it on purpose; an
+            update of a STOPPED app only stores its YAML)
 Apps on the NAS that the desired state does not name are listed as unmanaged, never removed.
-The release's images come from `git archive <release> stack/<stack>` and `docker compose config
---images` on this machine; without git, docker or the tag, images are not compared (said so).
+The release's images come from the same `git archive` and `docker compose config --images` on this
+machine; without git, docker or the tag, images are not compared (said so).
 
 Exit codes: 0 done (drift: no drift), 1 a call or an apply step failed, 2 usage or configuration
 error (including a NAS that reports another TrueNAS version), 3 drift found (drift only).
@@ -89,9 +164,11 @@ import argparse
 import concurrent.futures
 import dataclasses
 import difflib
+import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import stat
 import subprocess
@@ -113,13 +190,21 @@ STACK_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 RELEASE_RE = re.compile(r"^v[0-9]+\.[0-9]+(-beta\.[1-9][0-9]*)?$")
 VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)+$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
-DESIRED_KEYS = {"schema", "release", "truenas_version", "stacks_dir", "secrets_dir", "apps"}
-APP_KEYS = {"stack"}
+ENV_DIR_RE = re.compile(r"^(/|~/)[A-Za-z0-9._/-]+$")
+DESIRED_KEYS = {"schema", "release", "truenas_version", "stacks_dir", "secrets_dir", "env_dir", "apps"}
+APP_KEYS = {"stack", "overrides"}
 CONFIG_KEYS = {"uri", "read_user", "read_key_file", "apply_user", "apply_key_file", "ca_file"}
 STATES_IN_STEP = {"RUNNING"}
 ISSUE_TITLE = "Deploy drift: TrueNAS differs from deploy/truenas.toml"
 ISSUE_LABEL = "deploy"
 POLL_SECONDS = 5
+
+# The top-level Compose extension that carries the content hashes, and its keys in YAML order.
+EXTENSION = "x-local-agent-stack"
+CONTENT_KEYS = ("files", "env")
+# A ./path in compose.yaml (bind-mount sources); keys whose ./paths are build inputs are skipped.
+SOURCE_RE = re.compile(r"(?<![\w./-])\./[\w.-][\w./-]*")
+BUILD_KEYS = {"build", "context", "dockerfile"}
 
 
 class DeployError(Exception):
@@ -139,6 +224,7 @@ class ConfigError(Exception):
 class App:
     name: str
     stack: str
+    overrides: tuple = ()  # absolute paths on the NAS, merged over the release's compose file
 
 
 @dataclasses.dataclass
@@ -148,27 +234,44 @@ class Desired:
     stacks_dir: str
     secrets_dir: str
     apps: list  # of App, in the file's order
+    env_dir: str | None = None  # as written in the file (may start with ~/); never expanded for display
 
-    def wrapper(self, app):
-        """The custom app's YAML: exactly docs/stack-design.md, section 4."""
-        return (
-            "include:\n"
-            f"  - path: {self.stacks_dir}/stack/{app.stack}/compose.yaml\n"
-            f"    env_file: {self.secrets_dir}/{app.stack}.env\n"
-            "services: {}\n"
-        )
+    def compose_path(self, app):
+        return f"{self.stacks_dir}/stack/{app.stack}/compose.yaml"
 
-    def wrapper_config(self, app):
+    def env_path(self, app):
+        return f"{self.secrets_dir}/{app.stack}.env"
+
+    def wrapper(self, app, content=None):
+        """The custom app's YAML: docs/stack-design.md, section 4, with the overrides and the content
+        hashes (module docstring). Without overrides and hashes it is stack/<stack>/truenas-app.yaml."""
+        lines = ["include:"]
+        if app.overrides:
+            lines.append("  - path:")
+            lines += [f"      - {path}" for path in (self.compose_path(app), *app.overrides)]
+        else:
+            lines.append(f"  - path: {self.compose_path(app)}")
+        lines.append(f"    env_file: {self.env_path(app)}")
+        lines.append("services: {}")
+        if content:
+            lines.append(f"{EXTENSION}:")
+            lines += [f"  {key}: {content[key]}" for key in CONTENT_KEYS if key in content]
+        return "\n".join(lines) + "\n"
+
+    def wrapper_config(self, app, content=None):
         """The wrapper as TrueNAS stores and returns it (app.config: the parsed YAML)."""
-        return {
-            "include": [
-                {
-                    "path": f"{self.stacks_dir}/stack/{app.stack}/compose.yaml",
-                    "env_file": f"{self.secrets_dir}/{app.stack}.env",
-                }
-            ],
-            "services": {},
-        }
+        path = [self.compose_path(app), *app.overrides] if app.overrides else self.compose_path(app)
+        config = {"include": [{"path": path, "env_file": self.env_path(app)}], "services": {}}
+        if content:
+            config[EXTENSION] = {key: content[key] for key in CONTENT_KEYS if key in content}
+        return config
+
+
+def check_path(value, problems, label):
+    if not isinstance(value, str) or not PATH_RE.match(value) or "//" in value or value.endswith("/"):
+        problems.append(f"{label} must be an absolute path of letters, digits, . _ - and /, not {value!r}")
+        return False
+    return True
 
 
 def load_desired(path, root=ROOT, check_files=True):
@@ -192,9 +295,14 @@ def load_desired(path, root=ROOT, check_files=True):
     if not isinstance(version, str) or not VERSION_RE.match(version):
         problems.append(f"truenas_version must look like 25.10.8, not {version!r}")
     for key in ("stacks_dir", "secrets_dir"):
-        value = data.get(key)
-        if not isinstance(value, str) or not PATH_RE.match(value) or "//" in value or value.endswith("/"):
-            problems.append(f"{key} must be an absolute path of letters, digits, . _ - and /, not {value!r}")
+        check_path(data.get(key), problems, key)
+    env_dir = data.get("env_dir")
+    if env_dir is not None and (
+        not isinstance(env_dir, str) or not ENV_DIR_RE.match(env_dir) or "//" in env_dir or env_dir.endswith("/")
+    ):
+        problems.append(
+            f"env_dir must be a folder like ~/.config/local-agent-stack/secrets or /abs/path, not {env_dir!r}"
+        )
     apps = []
     table = data.get("apps")
     if not isinstance(table, dict) or not table:
@@ -216,14 +324,21 @@ def load_desired(path, root=ROOT, check_files=True):
         if stack in stacks_seen:
             problems.append(f"apps.{name}.stack {stack!r} is also apps.{stacks_seen[stack]}.stack")
         stacks_seen[stack] = name
+        overrides = entry.get("overrides", [])
+        if not isinstance(overrides, list):
+            problems.append(f"apps.{name}.overrides must be a list of absolute paths")
+            overrides = []
+        for index, override in enumerate(overrides):
+            if check_path(override, problems, f"apps.{name}.overrides[{index}]") and overrides.index(override) != index:
+                problems.append(f"apps.{name}.overrides lists {override} twice")
         if check_files:
             for relative in (f"stack/{stack}/compose.yaml", f"stack/{stack}/{stack}.env.example"):
                 if not (Path(root) / relative).is_file():
                     problems.append(f"apps.{name}: {relative} does not exist")
-        apps.append(App(name, stack))
+        apps.append(App(name, stack, tuple(overrides)))
     if problems:
         raise ConfigError(f"{path}: " + "; ".join(problems))
-    return Desired(release, version, data["stacks_dir"], data["secrets_dir"], apps)
+    return Desired(release, version, data["stacks_dir"], data["secrets_dir"], apps, env_dir)
 
 
 def select_apps(desired, names):
@@ -388,7 +503,7 @@ def check_version(session, desired):
 
 
 # ---------------------------------------------------------------------------
-# Images of the release
+# What the release holds: images and the files hash; the env file's hash
 # ---------------------------------------------------------------------------
 
 
@@ -406,48 +521,137 @@ def run_quiet(command, **kwargs):
     return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, **kwargs)
 
 
-def release_images(root, release, stack, runner=run_quiet):
-    """The images stack/<stack>/compose.yaml names at the release tag, or (None, why not)."""
+def sha256_hex(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def compose_sources(text):
+    """The ./paths compose.yaml names outside build:, context: and dockerfile:, normalized and sorted
+    (comments ignored)."""
+    found = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        body = line.split(" #", 1)[0]
+        key = body.strip().lstrip("- ").split(":", 1)[0].strip().strip("\"'")
+        if key in BUILD_KEYS:
+            continue
+        for match in SOURCE_RE.finditer(body):
+            found.add(posixpath.normpath(match.group(0)))
+    return sorted(found)
+
+
+def stack_files_hash(base):
+    """The files hash of one stack folder (module docstring): compose.yaml and its ./ sources."""
+    base = Path(base)
+    compose = (base / "compose.yaml").read_bytes()
+    entries = {"compose.yaml": sha256_hex(compose)}
+    for source in compose_sources(compose.decode("utf-8", "replace")):
+        target = base / source
+        if source == ".." or source.startswith("../"):
+            entries[source] = "outside"
+        elif target.is_dir():
+            for folder, subfolders, names in os.walk(target):
+                subfolders.sort()
+                for name in names:
+                    path = Path(folder) / name
+                    if path.is_file() and not path.is_symlink():
+                        entries[path.relative_to(base).as_posix()] = sha256_hex(path.read_bytes())
+        elif target.is_file():
+            entries[source] = sha256_hex(target.read_bytes())
+        else:
+            entries[source] = "missing"
+    manifest = "".join(f"{entries[name]}  {name}\n" for name in sorted(entries))
+    return "sha256:" + sha256_hex(manifest.encode("utf-8"))
+
+
+@dataclasses.dataclass
+class Release:
+    """What one stack folder holds at the release tag; None with a reason when not computed."""
+
+    images: set | None
+    images_why: str | None
+    files: str | None
+    files_why: str | None
+
+
+def release_content(root, release, stack, runner=run_quiet):
+    """The images and the files hash of stack/<stack> at the release tag (git archive)."""
     rev = runner(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", f"refs/tags/{release}^{{commit}}"])
     if rev.returncode != 0:
-        return None, f"tag {release} is not in this clone (git fetch --tags)"
+        why = f"tag {release} is not in this clone (git fetch --tags)"
+        return Release(None, why, None, why)
     archive = runner(["git", "-C", str(root), "archive", "--format=tar", release, f"stack/{stack}"])
     if archive.returncode != 0:
-        return None, f"stack/{stack} is not in {release}"
+        why = f"stack/{stack} is not in {release}"
+        return Release(None, why, None, why)
     with tempfile.TemporaryDirectory() as folder:
         with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as bundle:
             bundle.extractall(folder, filter="data")
         base = Path(folder) / "stack" / stack
-        compose = runner(
-            [
-                "docker",
-                "compose",
-                "--env-file",
-                str(base / f"{stack}.env.example"),
-                "-f",
-                str(base / "compose.yaml"),
-                "config",
-                "--images",
-            ]
-        )
+        try:
+            files, files_why = stack_files_hash(base), None
+        except OSError as error:
+            files, files_why = None, f"cannot read stack/{stack} of {release}: {error.strerror or error}"
+        try:
+            compose = runner(
+                [
+                    "docker",
+                    "compose",
+                    "--env-file",
+                    str(base / f"{stack}.env.example"),
+                    "-f",
+                    str(base / "compose.yaml"),
+                    "config",
+                    "--images",
+                ]
+            )
+        except OSError as error:
+            return Release(None, f"cannot run docker: {error}", files, files_why)
     if compose.returncode != 0:
         detail = compose.stderr.decode("utf-8", "replace").strip().splitlines()
-        return None, "docker compose config failed: " + (detail[-1] if detail else "no output")
+        return Release(
+            None, "docker compose config failed: " + (detail[-1] if detail else "no output"), files, files_why
+        )
     images = {normalize_image(line) for line in compose.stdout.decode("utf-8", "replace").splitlines() if line.strip()}
-    return images, None
+    return Release(images, None, files, files_why)
 
 
-def all_release_images(root, release, apps, runner=run_quiet):
-    """{app name: (images or None, why not)}, the apps' compose files rendered at the same time."""
+def all_release_content(root, release, apps, runner=run_quiet):
+    """{app name: Release}, the apps' folders read at the same time."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(apps))) as pool:
-        futures = {app.name: pool.submit(release_images, root, release, app.stack, runner) for app in apps}
+        futures = {app.name: pool.submit(release_content, root, release, app.stack, runner) for app in apps}
         result = {}
         for name, future in futures.items():
             try:
                 result[name] = future.result()
             except OSError as error:
-                result[name] = (None, f"cannot run git or docker: {error}")
+                why = f"cannot run git: {error}"
+                result[name] = Release(None, why, None, why)
         return result
+
+
+def env_hash(desired, app, local):
+    """(sha256 of the app's env file, None) or (None, why not). The file is read where this run can
+    read it: with --local the file in secrets_dir, otherwise the copy in env_dir. Its content is
+    hashed and dropped, never printed; `why` names the path as the desired state writes it."""
+    if local:
+        shown = desired.env_path(app)
+        path = Path(shown)
+    elif desired.env_dir is not None:
+        shown = f"{desired.env_dir}/{app.stack}.env"
+        path = Path(shown).expanduser()
+    else:
+        return None, "env_dir is not set in the desired state (and this is not --local on the NAS)"
+    try:
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode):
+            return None, f"{shown} is not a regular file"
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError as error:
+        return None, f"cannot read {shown}: {error.strerror or error}"
+    return "sha256:" + sha256_hex(data), None
 
 
 def images_match(wanted, running):
@@ -483,6 +687,9 @@ class AppPlan:
     reasons: list
     diff: list
     notes: list
+    content: dict = dataclasses.field(default_factory=dict)  # the hashes the YAML apply writes carries
+    checks: dict = dataclasses.field(default_factory=dict)  # yaml, files, env, images -> status words
+    overrides: tuple = ()
 
 
 @dataclasses.dataclass
@@ -506,26 +713,98 @@ def query_apps(session):
     return {entry.get("name") or entry.get("id"): entry for entry in found if isinstance(entry, dict)}
 
 
-def plan_app(desired, app, entry, stored, images):
-    wanted_images, why_not = images
-    if entry is None:
-        return AppPlan(app.name, "create", None, ["not installed"], [], [])
-    state = entry.get("state")
+def computed_content(release, env):
+    """The hashes this run computed, and why each missing one was not."""
+    computed = {"files": release.files, "env": env[0]}
+    why_not = {"files": release.files_why, "env": env[1]}
+    return computed, why_not
+
+
+def content_notes(computed, why_not, verb="compared"):
     notes = []
+    for key, label in (("files", "files"), ("env", "env file")):
+        if computed[key] is None:
+            notes.append(f"{label} not {verb}: {why_not[key]}")
+    return notes
+
+
+def plan_app(desired, app, entry, stored, release, env):
+    computed, why_not = computed_content(release, env)
+    checks = {"yaml": "-", "files": "-", "env": "-", "images": "-"}
+    if entry is None:
+        content = {key: value for key, value in computed.items() if value is not None}
+        checks["yaml"] = "missing"
+        notes = content_notes(computed, why_not, "hashed")
+        return AppPlan(app.name, "create", None, ["not installed"], [], notes, content, checks, app.overrides)
+    state = entry.get("state")
     if not entry.get("custom_app"):
+        checks["yaml"] = "not a custom app"
         return AppPlan(
-            app.name, "conflict", state, ["an app of this name exists and is not a custom app: never touched"], [], []
+            app.name,
+            "conflict",
+            state,
+            ["an app of this name exists and is not a custom app: never touched"],
+            [],
+            [],
+            {},
+            checks,
+            app.overrides,
         )
-    want = desired.wrapper_config(app)
+    notes = content_notes(computed, why_not)
+    recorded = stored.get(EXTENSION) if isinstance(stored, dict) else None
+    recorded = recorded if isinstance(recorded, dict) else {}
+    content = {}
+    for key in CONTENT_KEYS:
+        if computed[key] is not None:
+            content[key] = computed[key]
+            checks[key] = (
+                "match" if recorded.get(key) == computed[key] else "differ" if key in recorded else "not recorded"
+            )
+        else:
+            checks[key] = "not compared"
+            if key in recorded:
+                content[key] = recorded[key]  # not computed here: keep what the NAS has recorded
+    want = desired.wrapper_config(app, content)
+    reasons = []
+    without = (
+        {key: value for key, value in (stored or {}).items() if key != EXTENSION}
+        if isinstance(stored, dict)
+        else stored
+    )
+    if without != desired.wrapper_config(app):
+        reasons.append("its YAML differs from the include wrapper")
+        checks["yaml"] = "differs"
+    else:
+        checks["yaml"] = "matches"
+    if checks["files"] == "differ":
+        reasons.append(f"the files of stack/{app.stack}/ in {desired.release} differ from the last apply")
+    elif checks["files"] == "not recorded":
+        reasons.append(f"no hash of the files of stack/{app.stack}/ recorded (installed by hand?)")
+    if checks["env"] == "differ":
+        reasons.append("its env file differs from the one hashed at the last apply")
+    elif checks["env"] == "not recorded":
+        reasons.append("no hash of its env file recorded")
+    if stored != want and not reasons:
+        reasons.append("its content hashes differ from the desired ones")
+    running = {normalize_image(image) for image in (entry.get("active_workloads") or {}).get("images") or []}
+    wanted_images = release.images
+    if wanted_images is None:
+        notes.append(f"images not compared: {release.images_why}")
+        checks["images"] = "not compared"
+    elif state != "RUNNING":
+        checks["images"] = "not running"
+    else:
+        checks["images"] = "match" if images_match(wanted_images, running) else "differ"
     if stored != want:
         diff = list(
             difflib.unified_diff(canonical(stored), canonical(want), "on the NAS (app.config)", "desired", lineterm="")
         )
-        return AppPlan(app.name, "update", state, ["its YAML differs from the include wrapper"], diff, notes)
-    running = {normalize_image(image) for image in (entry.get("active_workloads") or {}).get("images") or []}
-    if wanted_images is None:
-        notes.append(f"images not compared: {why_not}")
-    elif state == "RUNNING" and not images_match(wanted_images, running):
+        if checks["env"] == "differ":
+            notes.append("if apply ran from another machine, its copy of the env file differs from the one read here")
+        if state == "STOPPED":
+            notes.append("STOPPED: apply stores the new YAML and does not start the app")
+        return AppPlan(app.name, "update", state, reasons, diff, notes, content, checks, app.overrides)
+    if checks["images"] == "differ":
         missing = sorted(wanted_images - running)
         extra = sorted(running - wanted_images)
         reason = f"runs images other than {desired.release}'s"
@@ -534,28 +813,29 @@ def plan_app(desired, app, entry, stored, images):
         if extra:
             reason += "; running: " + ", ".join(extra)
         notes.append(f"is the clone at {desired.stacks_dir} checked out at {desired.release}?")
-        return AppPlan(app.name, "redeploy", state, [reason], [], notes)
+        return AppPlan(app.name, "redeploy", state, [reason], [], notes, content, checks, app.overrides)
     if state == "CRASHED":
-        return AppPlan(app.name, "redeploy", state, ["CRASHED"], [], notes)
+        return AppPlan(app.name, "redeploy", state, ["CRASHED"], [], notes, content, checks, app.overrides)
     if state == "STOPPED":
         notes.append("STOPPED: not started by apply (start it in Apps, or find out why it was stopped)")
     elif state not in STATES_IN_STEP:
         notes.append(f"{state}: in transition; run plan again in a minute")
-    return AppPlan(app.name, "none", state, [], [], notes)
+    return AppPlan(app.name, "none", state, [], [], notes, content, checks, app.overrides)
 
 
-def make_plan(session, desired, apps, root=ROOT, runner=run_quiet, images=None):
+def make_plan(session, desired, apps, root=ROOT, runner=run_quiet, release=None, local=False):
     version = check_version(session, desired)
     on_nas = query_apps(session)
-    if images is None:
-        images = all_release_images(root, desired.release, apps, runner)
+    if release is None:
+        release = all_release_content(root, desired.release, apps, runner)
     plans = []
     for app in apps:
         entry = on_nas.get(app.name)
         stored = None
         if entry is not None and entry.get("custom_app"):
             stored = session.call("app.config", app.name)
-        plans.append(plan_app(desired, app, entry, stored, images.get(app.name, (None, "not computed"))))
+        content = release.get(app.name) or Release(None, "not computed", None, "not computed")
+        plans.append(plan_app(desired, app, entry, stored, content, env_hash(desired, app, local)))
     managed = {app.name for app in desired.apps}
     unmanaged = sorted(name for name in on_nas if name not in managed)
     return Plan(version, plans, unmanaged)
@@ -567,6 +847,8 @@ def print_plan(plan, desired, out):
         state = item.state or "-"
         reasons = "; ".join(item.reasons) if item.reasons else "in step"
         out.write(f"{item.name}: {item.action} ({state}) {reasons}\n")
+        for override in item.overrides:
+            out.write(f"    override: {override}\n")
         for line in item.diff:
             out.write(f"    {line}\n")
         for note in item.notes:
@@ -605,14 +887,18 @@ def apply_plan(session, desired, plan, out, dry_run=False, timeout=600, clock=ti
         if dry_run:
             continue
         try:
+            yaml_text = desired.wrapper(app, item.content)
             if item.action == "create":
                 session.call(
                     "app.create",
-                    {"custom_app": True, "app_name": app.name, "custom_compose_config_string": desired.wrapper(app)},
+                    {"custom_app": True, "app_name": app.name, "custom_compose_config_string": yaml_text},
                     job=True,
                 )
             elif item.action == "update":
-                session.call("app.update", app.name, {"custom_compose_config_string": desired.wrapper(app)}, job=True)
+                session.call("app.update", app.name, {"custom_compose_config_string": yaml_text}, job=True)
+                if item.state == "STOPPED":
+                    out.write(f"{item.name}: YAML stored; STOPPED, not started\n")
+                    continue
             elif item.action == "redeploy":
                 session.call("app.redeploy", app.name, job=True)
             state = wait_running(session, app.name, timeout, clock, sleep)
@@ -675,18 +961,29 @@ def sync_issue(plan, desired, out, gh=run_gh):
 # ---------------------------------------------------------------------------
 
 
+def repo_root(args):
+    return ROOT if args.root is None else Path(args.root)
+
+
 def cmd_validate(args, out):
-    desired = load_desired(args.file, ROOT if args.root is None else args.root)
+    desired = load_desired(args.file, repo_root(args))
     out.write(
         f"{args.file}: ok ({len(desired.apps)} apps, release {desired.release}, TrueNAS {desired.truenas_version})\n"
     )
     return EXIT_OK
 
 
-def cmd_render(args, out):
+def cmd_render(args, out, runner):
+    """Each app's YAML as apply would write it for a new app: the hashes this machine can compute."""
     desired = load_desired(args.file, check_files=False)
-    for app in select_apps(desired, [args.app] if args.app else []):
-        out.write(f"# {app.name}\n{desired.wrapper(app)}")
+    apps = select_apps(desired, [args.app] if args.app else [])
+    release = all_release_content(repo_root(args), desired.release, apps, runner)
+    for app in apps:
+        computed, why_not = computed_content(release[app.name], env_hash(desired, app, args.local))
+        for note in content_notes(computed, why_not, "hashed"):
+            print(f"deploy.py: {app.name}: {note}", file=sys.stderr)
+        content = {key: value for key, value in computed.items() if value is not None}
+        out.write(f"# {app.name}\n{desired.wrapper(app, content)}")
     return EXIT_OK
 
 
@@ -703,7 +1000,7 @@ def cmd_plan(args, out, client_factory, runner):
     apps = select_apps(desired, args.app)
 
     def work(session):
-        plan = make_plan(session, desired, apps, runner=runner)
+        plan = make_plan(session, desired, apps, repo_root(args), runner, local=args.local)
         print_plan(plan, desired, out)
         return plan
 
@@ -721,21 +1018,16 @@ def cmd_status(args, out, client_factory, runner):
     desired = load_desired(args.file, check_files=False)
 
     def work(session):
-        return make_plan(session, desired, desired.apps, runner=runner)
+        return make_plan(session, desired, desired.apps, repo_root(args), runner, local=args.local)
 
     plan = with_session(args, "read", work, client_factory)
     out.write(f"TrueNAS {plan.version}; desired release {desired.release}\n")
     for item in plan.apps:
-        config = {"create": "missing", "update": "differs", "conflict": "not a custom app"}.get(item.action, "matches")
-        if any(note.startswith("images not compared") for note in item.notes):
-            images = "not compared"
-        elif item.action == "redeploy" and item.state == "RUNNING":
-            images = "differ"
-        elif item.action in ("none", "redeploy"):
-            images = "match"
-        else:
-            images = "-"
-        out.write(f"{item.name}: state {item.state or '-'}, YAML {config}, images {images}\n")
+        checks = item.checks
+        out.write(
+            f"{item.name}: state {item.state or '-'}, YAML {checks['yaml']}, files {checks['files']}, "
+            f"env {checks['env']}, images {checks['images']}\n"
+        )
     for name in plan.unmanaged:
         out.write(f"{name}: unmanaged\n")
     return EXIT_OK
@@ -744,14 +1036,14 @@ def cmd_status(args, out, client_factory, runner):
 def cmd_apply(args, out, client_factory, runner, clock=time.monotonic, sleep=time.sleep):
     desired = load_desired(args.file, check_files=False)
     apps = select_apps(desired, args.app)
-    images = all_release_images(ROOT, desired.release, apps, runner)
+    release = all_release_content(repo_root(args), desired.release, apps, runner)
 
     def work(session):
-        plan = make_plan(session, desired, apps, runner=runner, images=images)
+        plan = make_plan(session, desired, apps, runner=runner, release=release, local=args.local)
         print_plan(plan, desired, out)
         failures = apply_plan(session, desired, plan, out, args.dry_run, args.timeout, clock, sleep)
         if not args.dry_run:
-            after = make_plan(session, desired, apps, runner=runner, images=images)
+            after = make_plan(session, desired, apps, runner=runner, release=release, local=args.local)
             out.write("after apply:\n")
             print_plan(after, desired, out)
             if after.drifted():
@@ -762,30 +1054,51 @@ def cmd_apply(args, out, client_factory, runner, clock=time.monotonic, sleep=tim
     return EXIT_FAILED if failures else EXIT_OK
 
 
+def add_options(parser, defaults):
+    """The options every command takes. The top-level parser carries the defaults; each command's
+    parser takes the same options with argparse.SUPPRESS as default, so a value given after the
+    command replaces one given before it and an absent one leaves it alone."""
+
+    def default(value):
+        return value if defaults else argparse.SUPPRESS
+
+    parser.add_argument(
+        "--file", default=default(str(DEFAULT_FILE)), help="desired state (default: deploy/truenas.toml)"
+    )
+    parser.add_argument("--config", default=default(str(DEFAULT_CONFIG)), help="connection settings and key files")
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        default=default(False),
+        help="on the NAS as root: the local middleware socket; env files from secrets_dir",
+    )
+    parser.add_argument("--root", default=default(None), help=argparse.SUPPRESS)
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="deploy.py",
-        description="Make the TrueNAS server run what deploy/truenas.toml says (docs/stack-design.md, section 8).",
+        description="Make the TrueNAS server run what deploy/truenas.toml says (docs/stack-design.md, section 8). "
+        "The options --file, --config and --local go before or after the command.",
         epilog="Exit codes: 0 ok, 1 a step failed, 2 usage or configuration, 3 drift (drift only).",
     )
-    parser.add_argument("--file", default=str(DEFAULT_FILE), help="desired state (default: deploy/truenas.toml)")
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="connection settings and key files")
-    parser.add_argument("--local", action="store_true", help="on the NAS as root: the local middleware socket")
-    parser.add_argument("--root", default=None, help=argparse.SUPPRESS)
+    add_options(parser, defaults=True)
+    common = argparse.ArgumentParser(add_help=False)
+    add_options(common, defaults=False)
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
-    commands.add_parser("validate", help="check the desired state and the stack files it names (offline)")
-    render = commands.add_parser("render", help="print each app's TrueNAS YAML")
+    commands.add_parser("validate", parents=[common], help="check the desired state and the stack files it names")
+    render = commands.add_parser("render", parents=[common], help="print each app's TrueNAS YAML (offline)")
     render.add_argument("--app")
-    plan = commands.add_parser("plan", help="what apply would do (read-only key)")
+    plan = commands.add_parser("plan", parents=[common], help="what apply would do (read-only key)")
     plan.add_argument("--app", action="append", default=[])
-    apply = commands.add_parser("apply", help="create, update or redeploy the apps (full-admin key)")
+    apply = commands.add_parser("apply", parents=[common], help="create, update or redeploy the apps (full-admin key)")
     apply.add_argument("--app", action="append", default=[])
     apply.add_argument("--dry-run", action="store_true")
     apply.add_argument("--timeout", type=int, default=600, help="seconds to wait for each app to run")
-    drift = commands.add_parser("drift", help="exit 3 when the NAS differs (read-only key)")
+    drift = commands.add_parser("drift", parents=[common], help="exit 3 when the NAS differs (read-only key)")
     drift.add_argument("--app", action="append", default=[])
     drift.add_argument("--issue", action="store_true", help="keep one open GitHub issue labelled deploy (gh)")
-    commands.add_parser("status", help="one line per app (read-only key)")
+    commands.add_parser("status", parents=[common], help="one line per app (read-only key)")
     return parser.parse_args(argv)
 
 
@@ -796,7 +1109,7 @@ def main(argv=None, out=None, client_factory=default_client_factory, runner=run_
         if args.command == "validate":
             return cmd_validate(args, out)
         if args.command == "render":
-            return cmd_render(args, out)
+            return cmd_render(args, out, runner)
         if args.command in ("plan", "drift"):
             return cmd_plan(args, out, client_factory, runner)
         if args.command == "status":

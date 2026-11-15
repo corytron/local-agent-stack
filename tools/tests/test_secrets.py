@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent
@@ -98,8 +99,9 @@ class TestGenerate(unittest.TestCase):
     def test_without_example(self):
         text = secrets_tool.generate("client", None)
         found = values(text)
-        self.assertEqual(set(found), {"LOCAL_LLM_KEY", "MCP_HUB_TOKEN"})
+        self.assertEqual(set(found), {"LAB_DOMAIN", "LOCAL_LLM_KEY", "MCP_HUB_TOKEN"})
         self.assertIn("--share web.env", text)
+        self.assertTrue(text.startswith("# client.env, written by tools/secrets.py gen client.\n"))
 
     def test_unknown_app(self):
         with self.assertRaises(secrets_tool.UsageError):
@@ -115,11 +117,14 @@ class TestGenerate(unittest.TestCase):
             "web PG_PASSWORD shared",
             "web MCP_HUB_TOKEN secret",
             "edge DNS_PROVIDER_TOKEN provided",
+            "client LAB_DOMAIN shared",
+            "client LOCAL_LLM_KEY provided",
+            "client MCP_HUB_TOKEN shared",
         ):
             self.assertIn(line, out.getvalue())
 
     def test_repository_examples_list_every_generated_secret(self):
-        for app in ("inference", "rag", "web", "edge"):
+        for app in ("inference", "rag", "web", "edge", "client"):
             example = secrets_tool.example_path(app)
             if not example.is_file():
                 continue  # still being written
@@ -127,6 +132,100 @@ class TestGenerate(unittest.TestCase):
             for name in secrets_tool.VARIABLES[app]:
                 with self.subTest(app=app, name=name):
                     self.assertRegex(text, rf"(?m)^#?\s*{name}=")
+
+
+class TestClient(unittest.TestCase):
+    """gen client: clients/client.env.example filled from web.env and a prompt."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.web = self.dir / "web.env"
+        self.web.write_text("LAB_DOMAIN=lab.example.com\nMCP_HUB_TOKEN=HubToken123\nWEBUI_SECRET_KEY=other\n")
+        self.prompts = []
+
+    def ask(self, answer):
+        def prompt(text):
+            self.prompts.append(text)
+            return answer
+
+        return prompt
+
+    def run_gen(self, *argv, answer="sk-local-example-key"):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stderr(err):
+            code = secrets_tool.main(["gen", "client", *argv], out=out, ask=self.ask(answer))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_repository_example_says_where_each_value_comes_from(self):
+        text = secrets_tool.example_path("client").read_text(encoding="utf-8")
+        self.assertEqual(set(values(text)), {"LAB_DOMAIN", "LOCAL_LLM_KEY", "MCP_HUB_TOKEN"})
+        for part in ("edge.env", "chapter 4", "MCP_HUB_TOKEN in web.env", "--share web.env", "--ask LOCAL_LLM_KEY"):
+            self.assertIn(part, text)
+
+    def test_share_copies_the_hub_token_and_the_domain_from_web_env(self):
+        code, text, err = self.run_gen("--share", str(self.web))
+        self.assertEqual(code, 0, err)
+        found = values(text)
+        self.assertEqual(found["MCP_HUB_TOKEN"], "HubToken123")
+        self.assertEqual(found["LAB_DOMAIN"], "lab.example.com")
+        self.assertEqual(found["LOCAL_LLM_KEY"], "sk-local-replace-with-your-litellm-virtual-key")
+        self.assertNotIn("WEBUI_SECRET_KEY", text)
+        self.assertEqual(err, "")
+        self.assertEqual(self.prompts, [])
+
+    def test_without_share_the_placeholders_are_named(self):
+        code, text, err = self.run_gen()
+        self.assertEqual(code, 0)
+        self.assertEqual(values(text)["MCP_HUB_TOKEN"], "replace-with-the-mcp-hub-token")
+        self.assertIn("MCP_HUB_TOKEN is a placeholder: run gen client with --share <web.env>", err)
+
+    def test_ask_reads_the_key_without_printing_it(self):
+        target = self.dir / "client.env"
+        code, text, err = self.run_gen("--share", str(self.web), "--ask", "LOCAL_LLM_KEY", "-o", str(target))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.prompts, ["LOCAL_LLM_KEY: "])
+        self.assertEqual(values(target.read_text())["LOCAL_LLM_KEY"], "sk-local-example-key")
+        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
+        self.assertNotIn("sk-local-example-key", text + err)
+
+    def test_ask_refuses_what_it_cannot_take(self):
+        for argv, answer, message in (
+            (["--ask", "NOPE"], "x", "has no such variable"),
+            (["--ask", "LOCAL_LLM_KEY"], "", "no value entered"),
+            (["--ask", "LOCAL_LLM_KEY"], "sk-local with space", "the value may hold only"),
+            (["--ask", "LOCAL_LLM_KEY"], "sk-local-$(id)", "the value may hold only"),
+        ):
+            with self.subTest(argv=argv, answer=answer):
+                code, text, err = self.run_gen(*argv, answer=answer)
+                self.assertEqual(code, 2)
+                self.assertIn(message, err)
+                self.assertEqual(text, "")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = secrets_tool.main(["gen", "inference", "--ask", "LITELLM_MASTER_KEY"], out=io.StringIO(), ask=str)
+        self.assertEqual(code, 2)
+        self.assertIn("gen generates this value", err.getvalue())
+
+    def test_output_sources_in_a_shell(self):
+        target = self.dir / "client.env"
+        code, _, err = self.run_gen("--share", str(self.web), "--ask", "LOCAL_LLM_KEY", "-o", str(target))
+        self.assertEqual(code, 0, err)
+        done = subprocess.run(
+            [
+                "sh",
+                "-c",
+                'set -eu; . "$1"; printf "%s %s %s" "$LAB_DOMAIN" "$LOCAL_LLM_KEY" "$MCP_HUB_TOKEN"',
+                "sh",
+                target,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, "lab.example.com sk-local-example-key HubToken123")
 
 
 class TestFiles(unittest.TestCase):

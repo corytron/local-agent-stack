@@ -1,0 +1,4 @@
+include:
+  - path: /mnt/tank/ai/stacks/local-agent-stack/stack/edge/compose.yaml
+    env_file: /mnt/tank/ai/secrets/edge.env
+services: {}
