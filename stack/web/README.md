@@ -152,7 +152,9 @@ Details:
   `--ignore-scripts`); the fetch server goes into its own virtual environment from
   [`requirements-fetch.txt`](mcp-hub/requirements-fetch.txt) with `--require-hashes`. Both were
   resolved with nothing published after 2026-11-12. To update, change the versions in
-  `package.json` or `requirements-fetch.in` and regenerate, in the base image:
+  `package.json` or `requirements-fetch.in` and regenerate, in the base image. `package.json`
+  overrides the kb server's nested zod 3.x to 4.6.7 (issue #25, Dependabot alert #1); keep the
+  override until `open-webui-knowledge-mcp-server` itself depends on zod 4.6.6 or later:
 
   ```sh
   cd stack/web/mcp-hub
