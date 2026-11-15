@@ -18,8 +18,8 @@ Table: Model profiles
 
 | Profile | GPU model and context | Memory | Decode, tokens/s | Use for |
 |---|---|---|---|---|
-| Default | Qwen3.8-27B GSQ-RCO IQ3_S with MTP head, 64K, q8_0 KV cache; RAG models on the CPU | About 14.3 GiB VRAM (est.) | 40 to 45; 50 to 65 with MTP (est.) | Agent work and chat |
-| Fast | Qwen3.6-35B-A3B UD-Q4_K_XL, experts of 16 layers in RAM, 64K | About 15.7 GiB VRAM (measured) and 8 GB RAM | 65 to 80 (80 measured) | Interactive edits and short tasks |
+| Default | Qwen3.8-27B GSQ-RCO IQ3_S with MTP head, 64K, q8_0 KV cache; RAG models on the CPU | About 14.3 GiB VRAM for the model's allocations, plus the CUDA context (est.) | 40 to 45; 50 to 65 with MTP (est.) | Agent work and chat |
+| Fast | Qwen3.6-35B-A3B UD-Q4_K_XL, experts of 16 layers in RAM, 64K | About 15.7 GiB VRAM for the whole process, CUDA context included (measured) and 8 GB RAM | 65 to 80 (80 measured) | Interactive edits and short tasks |
 | RAG on GPU | A smaller primary configuration at 32K; embedding and reranker on the GPU | About 2.8 GiB VRAM for the RAG models (est.) | Depends on the primary | RAG-heavy chat in Open WebUI |
 
 ### Default profile with Qwen3.8-27B on the GPU
@@ -52,11 +52,15 @@ Table: Default profile VRAM budget (est., plus or minus 0.5 GiB)
 | KV cache, 64K at q8_0 | 2.1 |
 | Total | about 14.3 |
 
-About 15.5 GiB of the card is usable on a headless server (assumed), which leaves about 1 GiB of
-headroom. `stack/` spends it on the MTP draft context and wins back about 0.6 GiB by keeping the
-token embeddings, a lookup table, on the CPU (`-ot token_embd.weight=CPU`). It runs one 64K slot
-(`-np 1`) with a 6 GiB host-RAM prompt cache (`--cache-ram 6144`). Prompt processing runs at about 900 to 1,500 tokens per second (est.), so a cold
-30,000-token first turn takes 20 to 35 seconds; later turns reuse the prompt cache.
+On a card that drives no display, about 15.5 GiB is left for the model's allocations after the
+CUDA context of the process, about 0.3 GiB (both assumed), which leaves about 1 GiB of headroom
+over the 14.3 GiB above. The fast profile's 15.7 GiB is the total that a published run reported
+for the whole process, CUDA context included, so it compares with the card's total of about
+16 GiB, not with these 15.5 GiB ([VRAM budget](#vram-budget)). `stack/` spends the headroom on the
+MTP draft context and wins back about 0.6 GiB by keeping the token embeddings, a lookup table, on
+the CPU (`-ot token_embd.weight=CPU`). It runs one 64K slot (`-np 1`) with a 6 GiB host-RAM prompt
+cache (`--cache-ram 6144`). Prompt processing runs at about 900 to 1,500 tokens per second (est.),
+so a cold 30,000-token first turn takes 20 to 35 seconds; later turns reuse the prompt cache.
 
 The embedding and reranker models (`Qwen3-Embedding-0.6B` and `Qwen3-Reranker-0.6B`, both Q8_0)
 run on the CPU with `--device none` in llama-swap's persistent `rag` group. They use no VRAM and

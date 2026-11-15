@@ -229,6 +229,39 @@ disagree with a newer release, the source and the release notes win.
 - [Berkeley Function Calling Leaderboard tooling](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard)
 - [ragas](https://github.com/explodinggradients/ragas)
 
+## Component licence texts
+
+The licence of each component in Chapter 1
+([Component licences](#component-licences)), as read on 15 November 2026:
+
+- TrueNAS licences: [build system](https://github.com/truenas/scale-build/blob/HEAD/LICENSE),
+  [web interface](https://github.com/truenas/webui/blob/HEAD/LICENSE) and
+  [middleware](https://github.com/truenas/middleware/blob/HEAD/LICENSE)
+- [NVIDIA open GPU kernel modules: `COPYING`](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/HEAD/COPYING)
+- [llama.cpp licence](https://github.com/ggml-org/llama.cpp/blob/HEAD/LICENSE)
+- [llama-swap licence](https://github.com/mostlygeek/llama-swap/blob/HEAD/LICENSE.md)
+- [LiteLLM licence](https://github.com/BerriAI/litellm/blob/HEAD/LICENSE)
+- [PostgreSQL licence](https://www.postgresql.org/about/licence/)
+- [pgvector licence](https://github.com/pgvector/pgvector/blob/HEAD/LICENSE)
+- [Open WebUI licence](https://github.com/open-webui/open-webui/blob/HEAD/LICENSE) and its
+  [licence history](https://github.com/open-webui/open-webui/blob/HEAD/LICENSE_HISTORY)
+- [docling-serve licence](https://github.com/docling-project/docling-serve/blob/HEAD/LICENSE)
+- [oikb licence](https://github.com/open-webui/oikb/blob/HEAD/LICENSE)
+- [SearXNG licence](https://github.com/searxng/searxng/blob/HEAD/LICENSE)
+- [mcp-proxy licence](https://github.com/sparfenyuk/mcp-proxy/blob/HEAD/LICENSE)
+- [mcp-searxng licence](https://github.com/ihor-sokoliuk/mcp-searxng/blob/HEAD/LICENSE)
+- [MCP reference servers licence](https://github.com/modelcontextprotocol/servers/blob/HEAD/LICENSE)
+  and [`mcp-server-fetch` package metadata](https://github.com/modelcontextprotocol/servers/blob/HEAD/src/fetch/pyproject.toml)
+- [Open WebUI knowledge MCP server licence](https://github.com/RonasIT/open-webui-mcp-server/blob/HEAD/LICENSE)
+- [Caddy licence](https://github.com/caddyserver/caddy/blob/HEAD/LICENSE) and the
+  [caddy-dns modules](https://github.com/caddy-dns)
+- [nvidia_gpu_exporter licence](https://github.com/utkuozdemir/nvidia_gpu_exporter/blob/HEAD/LICENSE)
+- [OpenCode licence](https://github.com/anomalyco/opencode/blob/HEAD/LICENSE)
+- [ssh-mcp licence](https://github.com/tufantunc/ssh-mcp/blob/HEAD/LICENSE)
+- [Qwen Code licence](https://github.com/QwenLM/qwen-code/blob/HEAD/LICENSE)
+- [Claude Code licence](https://github.com/anthropics/claude-code/blob/HEAD/LICENSE.md)
+- Model licences: the model cards under [Model cards and model files](#model-cards-and-model-files)
+
 ## Getting help
 
 For a problem with this guide or the files it installs, open an issue in the project's repository,

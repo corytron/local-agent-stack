@@ -94,6 +94,11 @@ The workstation has an SSH key pair. If `~/.ssh/id_ed25519.pub` does not exist, 
 
 6. Click **Save**.
 
+#### Results
+
+`truenas_admin` holds the workstation's public key and is allowed to log in over SSH. The login is
+verified in step 4 of the next task, once the SSH service runs.
+
 ### Start the SSH service
 
 #### Steps
@@ -175,21 +180,32 @@ verification task.
         nvidia-smi
 
     The header shows `Driver Version: 580.173.02` and `CUDA Version: 13.0`, and the table lists
-    the NVIDIA GeForce RTX 4080.
+    the NVIDIA GeForce RTX 4080. The `Processes` part of the output reads `No running processes found`,
+    because no app uses the GPU yet.
 
-2. Confirm that the Apps service has the driver enabled:
+2. Check that the card drives no display. Make sure that no monitor cable is connected to the
+   RTX 4080, then read its memory use while no app runs:
+
+        nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+
+    `memory.used` is at most a few MiB, and `memory.total` is about 16,000 MiB. A larger
+    `memory.used` with no app running means that something else, such as a display, holds VRAM:
+    the VRAM budget of Chapter 2 assumes a card that drives no display. Move the monitor to
+    another graphics output of the server, if it has one, or expect less room for the models.
+
+3. Confirm that the Apps service has the driver enabled:
 
         midclt call docker.config
 
     The output contains `"nvidia": true`.
 
-3. Confirm the Docker runtime:
+4. Confirm the Docker runtime:
 
         sudo docker info | grep -i runtime
 
     The output lists `nvidia` among the runtimes and shows `Default Runtime: nvidia`.
 
-4. Run `nvidia-smi` inside a test container. The image is built on CUDA 13.0, the newest version
+5. Run `nvidia-smi` inside a test container. The image is built on CUDA 13.0, the newest version
    this driver supports:
 
         sudo docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 nvidia-smi
@@ -200,7 +216,7 @@ verification task.
 
 #### Results
 
-The GPU is visible on the host and inside containers.
+The GPU is visible on the host and inside containers, and its memory is free for the models.
 
 If `nvidia-smi` reports that no devices were found, clear **Install NVIDIA Drivers**, click
 **Save**, select it again and click **Save**. Then check the kernel and middleware logs:
@@ -318,10 +334,13 @@ Table: ARC cap by installed memory
 
 | Installed memory | `zfs_arc_max` value | Size |
 |---|---|---|
-| 32 GB | `4294967296` | 4 GiB |
 | 64 GB (reference system) | `12884901888` | 12 GiB |
 | 64 GB, more expert offload | `8589934592` | 8 GiB |
 | 128 GB | `25769803776` | 24 GiB |
+
+A server with less than 64 GB is below the minimum of this guide and is not supported: the model
+profiles, the services and the ZFS ARC do not fit together
+([Minimum requirements](#minimum-requirements)).
 
 ### Add the zfs_arc_max tunable
 
@@ -460,6 +479,11 @@ user (UID 568) Modify with inheritance. A 32K record size suits PostgreSQL data 
 
     The values are `1M`, `lz4`, `off` and `metadata`.
 
+#### Results
+
+`tank/ai` and `tank/ai/models` exist, and the model dataset stores large files with 1M records,
+LZ4 compression and no access times, and keeps only their metadata in the ARC.
+
 ### Create the appdata datasets
 
 #### Steps
@@ -484,6 +508,11 @@ user (UID 568) Modify with inheritance. A 32K record size suits PostgreSQL data 
 
     The list shows `tank/ai/appdata` and its five children; `litellm-db` and `pgvector` have
     record size `32K`.
+
+#### Results
+
+Each stateful service has its own dataset under `tank/ai/appdata`, with the **Apps** preset, so
+that the `apps` user (UID 568) can write to it. The two PostgreSQL datasets use 32K records.
 
 ### Create the rag-docs, stacks and secrets datasets
 
@@ -806,8 +835,8 @@ Table: Secrets files
 
 #### Prerequisites
 
-The workstation has Python 3 and a clone of the repository at the same release tag. If it has no
-clone yet, create one:
+The workstation has Python 3.11 or later ([Workstation requirements](#workstation-requirements))
+and a clone of the repository at the same release tag. If it has no clone yet, create one:
 
 ```
 git clone --branch <release-tag> https://github.com/corytron/local-agent-stack.git ~/local-agent-stack
@@ -857,6 +886,14 @@ git clone --branch <release-tag> https://github.com/corytron/local-agent-stack.g
 7. Leave the placeholders that you provide for now. Chapter 5 completes `edge.env`
    ([Complete edge.env](#complete-edgeenv)), and Chapter 6 completes `web.env` before Open WebUI
    first starts and `rag.env` after it.
+
+#### Results
+
+`~/.config/local-agent-stack/secrets/` holds `inference.env`, `rag.env`, `web.env` and
+`edge.env`, readable only by you, with every generated secret filled in and the shared values
+identical in `rag.env` and `web.env`. These files are the workstation's copies of the server's
+secrets: keep them, and back them up with the rest of the workstation state
+([Back up the workstation files](#back-up-the-workstation-files)).
 
 ### Copy the environment files to TrueNAS
 

@@ -33,6 +33,7 @@ Table: Parity of the agent loop and context
 | Todo list | OpenCode `experimental.todo` | Partial | Behind an experimental flag |
 | Extended thinking and effort levels | Qwen3.8 reasoning effort (`low`, `medium`, `xhigh`); `local-fast` turns thinking off | Partial | No adaptive reasoning; `medium` is the recommended level for agents |
 | Prompt caching | llama.cpp prefix cache and prompt cache in host RAM | Partial | `cache_control` has no effect. Editing earlier history makes the hybrid model process the whole prompt again |
+| Parallel tool calls in one turn | `llama-server` tool calling | Partial | On the OpenAI route, llama.cpp makes parallel calls only when the request sets `"parallel_tool_calls": true`; on the Anthropic route the default follows the chat template. Local models make them less reliably than Claude. Whether OpenCode and Claude Code ask for them was not verified. If an agent's parallel calls arrive broken or duplicated, tell it to make one tool call per turn; the evaluation suites test parallel calls on the OpenAI route ([Evaluation suites](#evaluation-suites)) |
 
 ### Project memory parity
 
@@ -89,7 +90,7 @@ Table: Parity of permissions and sandboxing
 | Claude Code | This stack (component) | Parity | Notes |
 |---|---|---|---|
 | Permission modes with allow, ask and deny rules | Ordered allow, ask and deny rules; `policies`; `opencode run --auto` | Partial | No named mode cycle such as `acceptEdits`, and no automatic approval classifier |
-| Operating-system sandbox for shell commands | None in OpenCode | None | Run OpenCode as an unprivileged user or in the container `ghcr.io/anomalyco/opencode:2.3.0`. Qwen Code has a bubblewrap sandbox |
+| Operating-system sandbox for shell commands | None in OpenCode | None | Run OpenCode as a dedicated unprivileged user ([Using gh from agents](#using-gh-from-agents)). This guide runs no container on a workstation, so it does not cover OpenCode's container image. Qwen Code has a bubblewrap sandbox (Appendix B) |
 | Telemetry opt-out | OpenCode documents no telemetry; updates and the models.dev catalog download are turned off | Full | |
 
 ### Plan mode
@@ -133,7 +134,7 @@ Table: Parity of SSH and remote use
 | Claude Code | This stack (component) | Parity | Notes |
 |---|---|---|---|
 | Commands on remote hosts through `ssh` in the shell tool, with permission prompts | `ssh-mcp` 2.26.0 on the workstation (stdio): policy, host-key pinning, approval prompts, audit log | Full | Stricter than plain `ssh`. Approval prompts need MCP elicitation in the harness; without it, `ssh-mcp` refuses destructive commands |
-| Remote Control: driving a session from another device | `ssh c4dev` and OpenCode in that terminal, resumed with `opencode --continue` after a dropped connection; or OpenCode installed on the other device (Linux or macOS) against the same gateway | Partial | No background service: `clients/install.sh` keeps OpenCode's service disabled, because nothing of the stack runs on a workstation full time, so a session lives only as long as its terminal. Claude Code's Remote Control is turned off when it uses a non-Anthropic base URL |
+| Remote Control: driving a session from another device | `ssh c4dev` and OpenCode in that terminal, resumed with `opencode --continue` after a dropped connection; or OpenCode installed on the other device (Linux or macOS) against the same gateway | Partial | No background service: `clients/install.sh` keeps OpenCode's service disabled, because nothing of the stack runs on a workstation full time, so a session lives only as long as its terminal. Never run `opencode pair --remote`: it exposes the session's server through an internet tunnel. Claude Code's Remote Control is turned off when it uses a non-Anthropic base URL |
 
 ### GitHub integration
 

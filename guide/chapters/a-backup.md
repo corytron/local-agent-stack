@@ -7,7 +7,8 @@ This appendix describes how to protect the stack's data on TrueNAS SCALE 25.10 a
 back. ZFS snapshots on the server give fast, frequent restore points; replication copies them to a
 second pool or a second TrueNAS system; nightly logical dumps of the two PostgreSQL databases add a
 portable copy that restores into any newer PostgreSQL; and a configuration file restores the
-TrueNAS settings themselves.
+TrueNAS settings themselves. The files that exist only on the workstation, such as the keys and
+settings of `deploy.py` and the SSH tool, get an encrypted archive of their own.
 
 Set up the tasks after you complete Chapter 3, and run the test restores at least once a month and
 after every release update.
@@ -30,6 +31,7 @@ Table: Backup scope
 | TrueNAS settings: users, API keys, shares, tunables, init scripts, data protection tasks | TrueNAS configuration database | Configuration file downloaded before every update |
 | Model files | `tank/ai/models` | Not backed up; download them again ([Download the model files](#download-the-model-files)) |
 | Container images and app definitions | The hidden `ix-apps` dataset | Not backed up; images are pulled again and each app's YAML is four lines (Chapters 4 to 6) |
+| Workstation files: `client.env`, the copies of the secrets files, the LiteLLM keys of the workstations, `desired.toml`, the settings and API keys of `deploy.py`, the SSH policy with its pinned host keys, the SSH tool's key, the evaluation results and baselines | `~/.config/local-agent-stack/`, `~/.config/ssh-mcp/`, `~/.ssh/` and the clone on the workstation | An encrypted archive after every change ([Workstation state](#workstation-state)) |
 
 Restore the secrets from the same point in time as the databases. LiteLLM cannot read the
 credentials in its database with a different `LITELLM_SALT_KEY`, and the PostgreSQL passwords are
@@ -343,6 +345,121 @@ encrypted.
 
 The file is in the browser's download folder. Move it to encrypted storage. To restore it on a
 reinstalled server, use **Manage Configuration** > **Upload File**.
+
+## Workstation state
+
+Some state of the stack exists only on the workstation. The snapshots and the replica of the
+server do not contain it. The following table lists it, with what you lose without a backup and
+how to recreate it. The OpenCode binary, the links that `clients/install.sh` places,
+the check tools and the virtual environment of `deploy.py` are not in the list: their installation
+tasks create them again.
+
+Table: Workstation files to back up
+
+| File or folder | Contents | Without a backup |
+|---|---|---|
+| `~/.config/local-agent-stack/secrets/` | Copies of `inference.env`, `rag.env`, `web.env` and `edge.env`; the LiteLLM keys of the workstations, such as `litellm-c4dev.key` | Copy the server files back from `/mnt/tank/ai/secrets` or its snapshots. Delete lost LiteLLM keys and create new ones ([Generate the workstation keys](#generate-the-workstation-keys)) |
+| `~/.config/local-agent-stack/client.env` | The domain, this workstation's LiteLLM key and the MCP hub token | Create it again ([Create client.env](#create-clientenv)) |
+| `~/.config/local-agent-stack/desired.toml` | Your desired state for `deploy.py`, with its `overrides` lines | Create it again ([Create your desired-state file](#create-your-desired-state-file)) |
+| `~/.config/local-agent-stack/truenas.toml`, `truenas-ca.pem`, `truenas-read.key`, `truenas-apply.key` | The connection settings, the trusted certificate and the API keys of `deploy.py` | Create the settings again ([Create the connection settings](#create-the-connection-settings)); delete the lost keys in TrueNAS and create new ones ([Create the API keys and store them on the workstation](#create-the-api-keys-and-store-them-on-the-workstation)) |
+| `~/.config/ssh-mcp/config.toml` (on a Mac, `~/Library/Application Support/ssh-mcp/config.toml`) | The SSH policy, with the pinned host key (`trustedHostKey`) of each remote host | Pin every host key again ([Pin the host key and edit the policy](#pin-the-host-key-and-edit-the-policy)) |
+| `~/.ssh/agent_ed25519`, `~/.ssh/agent_ed25519.pub` | The SSH tool's key pair | Create a new key and replace the public key on every remote host ([Create the agent key](#create-the-agent-key), [Prepare the remote host](#prepare-the-remote-host)) |
+| `~/.ssh/known_hosts` | The host keys that `ssh` accepted, including the server's | Confirm each host key again at the next login |
+| `~/.local/share/ssh-mcp/` | The SSH tool's tamper-evident audit log | The record of past commands is lost |
+| `evals/results/` and `evals/baselines/` in the clone `~/local-agent-stack` | Evaluation results and baselines; untracked in a clone that follows the release tags | Record new baselines ([Record an evaluation baseline](#record-an-evaluation-baseline)) |
+
+Keep your own SSH key, `~/.ssh/id_ed25519`, with your other personal keys. Without it, add a new
+public key to `truenas_admin` ([Add the workstation key to truenas_admin](#add-the-workstation-key-to-truenas_admin)).
+
+!!! warning
+    The archive holds every key of the stack: the gateway's master key, the database passwords, the
+    DNS provider token, the TrueNAS API keys and the SSH tool's private key. Encrypt it with a
+    strong passphrase, keep it in encrypted storage outside the workstation, and never place it in
+    the repository or the `rag-docs` share.
+
+### Back up the workstation files
+
+#### About this task
+
+The task writes the files of the table into one archive encrypted with a passphrase. Repeat it
+after every change to them: a new key, a new host in the SSH policy, a new baseline. The commands
+are for a Linux workstation such as `c4dev`. On a Mac, replace `.config/ssh-mcp` with
+`"Library/Application Support/ssh-mcp"` in step 2, and leave out `--ignore-failed-read`, which
+the Mac's `tar` does not accept, together with every folder that does not exist.
+
+#### Steps
+
+1. Change to your home directory:
+
+        cd ~
+
+2. Write the encrypted archive. `openssl` asks for the passphrase twice:
+
+        tar -czf - --ignore-failed-read .config/local-agent-stack .config/ssh-mcp .ssh/agent_ed25519 .ssh/agent_ed25519.pub .ssh/known_hosts .local/share/ssh-mcp local-agent-stack/evals/results local-agent-stack/evals/baselines | openssl enc -aes-256-cbc -pbkdf2 -salt -out ~/workstation-backup-$(date +%F).tar.gz.enc
+
+    `tar` warns about a folder that does not exist yet, such as `evals/baselines` before
+    Chapter 9, and leaves it out.
+
+3. List the archive's contents to check that it can be decrypted:
+
+        openssl enc -d -aes-256-cbc -pbkdf2 -in ~/workstation-backup-$(date +%F).tar.gz.enc | tar -tzf - | head -n 20
+
+    The list starts with `.config/local-agent-stack/` and its files.
+
+4. Move the archive to encrypted storage outside the workstation, then delete the local copy:
+
+        rm ~/workstation-backup-$(date +%F).tar.gz.enc
+
+#### Results
+
+An encrypted copy of the workstation's state is stored outside the workstation, and you know its
+passphrase.
+
+### Restore the workstation files
+
+#### Prerequisites
+
+- The workstation has a clone of the repository at the release that the server runs
+  (`~/local-agent-stack`), and the software of Chapter 2
+  ([Workstation requirements](#workstation-requirements)).
+- The archive from [Back up the workstation files](#back-up-the-workstation-files), copied to the
+  home directory as `<archive>`.
+
+#### Steps
+
+1. Restore the files with their permissions:
+
+        cd ~
+        openssl enc -d -aes-256-cbc -pbkdf2 -in <archive> | tar -xpzf -
+
+2. Check the modes of the key files and of `client.env`:
+
+        stat -c '%a %n' ~/.config/local-agent-stack/*.key ~/.config/local-agent-stack/client.env ~/.config/local-agent-stack/secrets/* ~/.ssh/agent_ed25519
+
+    Each line starts with `600`.
+
+3. Run the client installer again, so that it links the configuration and the commands and adds
+   the profile block ([Run the installer](#run-the-installer)). It keeps the restored
+   `client.env` and SSH policy:
+
+        ~/local-agent-stack/clients/install.sh
+
+4. Check the desired state of `deploy.py`:
+
+        cd ~/local-agent-stack
+        python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml validate
+
+    The output ends with `ok (4 apps, release <release-tag>, TrueNAS 25.10.8)`.
+
+5. Delete the archive from the home directory:
+
+        rm ~/<archive>
+
+#### Results
+
+The workstation has its keys, settings and evaluation baselines back. Check the connection to the
+server with `deploy.py status` ([Check the connection with deploy.py status](#check-the-connection-with-deploypy-status))
+and the client with a first request ([Check the client from the shell](#check-the-client-from-the-shell)).
 
 ## Restore procedures
 

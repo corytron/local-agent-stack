@@ -56,18 +56,19 @@ Table: Fixed prompt before the first task token
 | Item | Tokens | Basis |
 |---|---|---|
 | OpenCode 2.3.0 system prompt and tool schemas | 5,340 | Measured: first headless request, no memory file |
-| This repository's `CLAUDE.md` (95 lines, 6.1 KB) | about 1,500 | Estimate at about 4 bytes per token |
+| A memory file of about 100 lines and 7 KB | about 1,800 | Estimate at about 4 bytes per token |
 | Memory files of a long-lived Claude Code project (33 KB) | about 8,000 | Same estimate |
 
 At the estimated prefill rate of the default model, 900 to 1,500 tokens per second (Appendix B),
-a new agent context with OpenCode's prompt and a 1,500-token memory file (about 6,800 tokens)
+a new agent context with OpenCode's prompt and a 1,800-token memory file (about 7,100 tokens)
 costs 5 to 8 seconds before it reads a single file. With an 8,000-token memory file (about 13,300
 tokens) it costs 9 to 15 seconds, and each parallel agent pays it again.
 Long rule files are also followed less reliably by local models as the context grows.
 
 Keep the memory file within these limits:
 
-- Under 200 lines, and preferably under 2,000 to 3,000 tokens (about 8,000 to 12,000 bytes).
+- Under 150 lines, the limit that the template states, and preferably under 2,000 to 3,000 tokens
+  (about 8,000 to 12,000 bytes).
 - Only rules that are true for every task. Move detail into the contracts under `docs/` and into
   skills (`.opencode/skills/<id>/SKILL.md`; OpenCode also reads `.claude/skills/`), which load on
   demand.
@@ -120,8 +121,15 @@ that each harness loads them.
     If the project already has a `CLAUDE.md`, move its rules into `AGENTS.md` first, then keep
     only the `@AGENTS.md` line and the Claude Code section in `CLAUDE.md`.
 
-3. Edit `AGENTS.md`: fill in the project's purpose, its commands and its layout, and delete the
-   sections that do not apply.
+3. Edit `AGENTS.md`: replace every CAPITALISED placeholder of the template, such as
+   `PROJECT_NAME`, `ONE_SENTENCE_WHAT_THIS_PROJECT_IS` and `PUBLIC_OR_PRIVATE`, with the project's
+   own values, fill in its commands and its layout, and delete the sections that do not apply.
+   Then confirm that no placeholder is left:
+
+        grep -nE '\b[A-Z][A-Z0-9]+(_[A-Z0-9]+)+\b' AGENTS.md CLAUDE.md
+
+    The command prints no line that is a template placeholder. Names that the project really uses
+    in capitals, such as environment variables, can remain.
 
     !!! warning
         In a public repository, write only placeholders for addresses, domains, keys and names:
@@ -132,7 +140,8 @@ that each harness loads them.
 
         wc -l -c AGENTS.md CLAUDE.md
 
-    `AGENTS.md` should be under 200 lines and under about 12,000 bytes.
+    `AGENTS.md` is under 150 lines, the limit that the template states, and preferably under
+    about 12,000 bytes.
 
 5. Optional: for a large area of the project, add a nested pair, for example `stack/AGENTS.md`
    and a `stack/CLAUDE.md` that contains `@AGENTS.md`. The closest `AGENTS.md` to the edited file
@@ -443,13 +452,34 @@ Discussions and the labels.
         gh project create --owner <owner> --title "<project title>"
         gh project list --owner <owner>
 
-5. Create each label listed in `.github/labels.json`, for example the `question` label for
-   decisions that need you.
+5. Create the labels. The Local Agent Stack repository keeps its labels in `.github/labels.json`,
+   one entry per label with its name, colour and description:
 
-        gh label create question --color d876e3 \
-          --description "Decision needed from the owner" --force
+    {{ include .github/labels.json }}
 
-6. List the Discussions categories.
+    Four labels are used by tools, not only by people: `question` marks decisions that need you;
+    `deploy` is the label of the issue that `deploy.py drift --issue` keeps open (Chapter 10);
+    Renovate adds `dependencies` and `stack` to its image updates, and Dependabot adds
+    `dependencies` and `ci` to its updates of actions and check tools. Copy the file into your
+    repository as `.github/labels.json`, adapt the topic labels (`models`, `gpu`, `rag` and so on)
+    to the project, and keep those four. Then create every label in the file, from the root of
+    your repository:
+
+        python3 -c 'import json; [print(l["name"], l["color"], l["description"], sep="\t") for l in json.load(open(".github/labels.json"))]' |
+          while IFS=$'\t' read -r name color description; do
+            gh label create "$name" --color "$color" --description "$description" --force
+          done
+
+    `--force` updates a label that already exists, so the command can run again after you change
+    the file.
+
+6. Check the labels.
+
+        gh label list --limit 100
+
+    The list contains every label of `.github/labels.json`.
+
+7. List the Discussions categories.
 
         gh api graphql -f o=<owner> -f r=<repo> -f query='
           query($o: String!, $r: String!) {
@@ -654,9 +684,16 @@ to a registry.
 `tools/setup-checks.sh` installs the pinned check tools without `sudo`, in three parallel lanes,
 into the repository's own tool directory (`~/.local/share/local-agent-stack/check-tools` unless
 `LAS_TOOLS_DIR` says otherwise). Python tools are installed from hash-pinned requirements;
-actionlint and gitleaks are verified against pinned SHA-256 sums. The script also points Git at
-the repository's hooks. The `pre-push` hook refuses any push to `main`, including its deletion,
-and runs `tools/check.sh --only secrets yaml shell python` before anything leaves c4dev.
+actionlint and gitleaks are verified against pinned SHA-256 sums. The pinned actionlint and
+gitleaks downloads are Linux x86_64 builds, so the script works only on Linux on x86_64: run it on
+`c4dev`, not on a Mac. It also links each tool into `~/.local/bin` when no command of that name
+exists there yet; an existing command is never replaced.
+
+The script also points Git at the repository's hooks (`git config core.hooksPath tools/hooks`).
+The `pre-push` hook refuses any push to `main`, including its deletion, and runs
+`tools/check.sh --only secrets yaml shell python` before anything leaves c4dev:
+
+{{ include tools/hooks/pre-push }}
 
 #### Steps
 
@@ -675,6 +712,11 @@ and runs `tools/check.sh --only secrets yaml shell python` before anything leave
         tools/check.sh
 
     Each check reports `ok` or `skip`.
+
+#### Results
+
+The check tools are installed, and every push from this clone runs the hook first. A push to
+`main` stops with `pre-push: refusing to push ... main changes only through a pull request`.
 
 !!! warning
     `git push --no-verify` bypasses the hook. Use it only in an emergency, and say so in the pull
@@ -833,22 +875,41 @@ written for the person who installs the stack, with the issue number:
 - The smoke test can check the fast profile and leaves the default model loaded (#42).
 ```
 
-The release workflow builds the release notes from `CHANGELOG.md`. Read
-`.github/workflows/release.yml` before your first release to see how it uses the `Unreleased`
-section.
+The release workflow, `.github/workflows/release.yml`, uses this section as follows:
+
+- **The notes are the section.** The notes of the GitHub release are the text under
+  `## Unreleased`, under the title `Local Agent Stack <version>` (for example
+  `Local Agent Stack 1.1`), followed by one sentence about the attached files and their
+  attestations.
+- **An empty section fails the release.** When `## Unreleased` holds no list item (a line that
+  starts with a hyphen or an asterisk and a space), the workflow stops with
+  `CHANGELOG.md: the '## Unreleased' entry is empty; a release needs its changes listed there`,
+  and no release is created.
+- **A pull request closes the section afterwards.** The workflow does not change `CHANGELOG.md`.
+  After a release, a pull request moves the lines from `## Unreleased` under a new heading for the
+  release, `## v1.1` in the example below, and leaves `## Unreleased` empty for the next release
+  ([Cut a release](#cut-a-release), step 7).
 
 ### Cut a release
 
 #### Prerequisites
 
 - Every pull request for the release is merged, and the checks on `main` passed.
-- `## Unreleased` lists every change.
+- `## Unreleased` lists every change, as list items ([Changelog entries](#changelog-entries)).
+- `version` in `guide/guide.yaml` is the release's number without the `v`, for example `"1.1"`.
+  The workflow refuses a tag whose number differs, so that the guide's cover always names its
+  release.
 
 #### About this task
 
-A release is a tag `vX.Y` on `main`. Pushing the tag starts `.github/workflows/release.yml`, which
-builds the guide PDF and `stack-vX.Y.tar.gz`, writes `SHA256SUMS.txt` and attaches all three to a
-GitHub release. The example uses `v1.1`.
+A release is a tag `vX.Y` on a commit of `main`; a prerelease is a tag `vX.Y-beta.N`. Pushing the
+tag starts `.github/workflows/release.yml`. Its first job checks the tag's form and that the commit
+is on `main`, checks `guide/guide.yaml`, runs `tools/check.sh --strict`, and builds the guide PDF,
+`stack-vX.Y.tar.gz` (a `git archive` of `stack/`, `clients/` and `deploy/` at the tag),
+`SHA256SUMS.txt` and the notes. Its second job checks the files against `SHA256SUMS.txt`, signs a
+build provenance attestation for the PDF and the bundle, and creates the GitHub release with the
+files attached; running the workflow again for the same tag updates that release. The example uses
+`v1.1`.
 
 #### Steps
 
@@ -857,6 +918,10 @@ GitHub release. The example uses `v1.1`.
         git switch main
         git pull --ff-only
         sed -n '/^## Unreleased/,/^## [^U]/p' CHANGELOG.md
+        grep -E '^version:' guide/guide.yaml
+
+    The first command prints the list of changes under `## Unreleased`; the last prints
+    `version: "1.1"`.
 
 2. Tag `main` and push the tag.
 
@@ -877,23 +942,40 @@ GitHub release. The example uses `v1.1`.
     The list contains the guide PDF (`local-agent-stack-<version>-deployment-guide.pdf`),
     `stack-v1.1.tar.gz` and `SHA256SUMS.txt`.
 
-5. Download the assets and verify the checksums.
+5. Download the assets and verify the checksums and the provenance.
 
         mkdir -p build/release/v1.1
         gh release download v1.1 --dir build/release/v1.1
         cd build/release/v1.1 && sha256sum -c SHA256SUMS.txt
+        gh attestation verify stack-v1.1.tar.gz --repo <owner>/<repo>
 
-    Every line ends with `OK`.
+    Every line of `sha256sum` ends with `OK`, and `gh attestation verify` reports a successful
+    verification. Return to the root of the repository with `cd -`.
 
 6. Archive the release in Discussions.
 
-        gh release view v1.1 --json body --jq .body > notes.md
-        gh discussion create --category Announcements --title "Release v1.1" --body-file notes.md
+        gh release view v1.1 --json body --jq .body > build/notes-v1.1.md
+        gh discussion create --category Announcements --title "Release v1.1" --body-file build/notes-v1.1.md
+
+7. Close the changelog section in a pull request: create a branch from `main`, move the lines
+   under `## Unreleased` in `CHANGELOG.md` under a new heading `## v1.1` placed right below it,
+   and leave `## Unreleased` empty.
+
+        git switch -c docs/changelog-v1.1-<N>
+        git add CHANGELOG.md
+        git commit -m "Changelog: v1.1 (#<N>)"
+        git push -u origin docs/changelog-v1.1-<N>
+        gh pr create --base main --title "Changelog: v1.1" --body "Closes #<N>"
+
+    `<N>` is the issue of the release. Merge the pull request as in
+    [Finish a pull request](#finish-a-pull-request). The next release then starts from an empty
+    `## Unreleased`, which pull requests fill again.
 
 #### Results
 
-The release `v1.1` carries the guide PDF, the stack bundle and their checksums, and its notes are
-archived under **Announcements**.
+The release `v1.1` carries the guide PDF, the stack bundle and their checksums, with signed
+provenance; its notes are archived under **Announcements**, and `CHANGELOG.md` on `main` lists the
+release under its own heading.
 
 #### Next steps
 
@@ -942,6 +1024,11 @@ illustrative; `tools/smoke.py` does not have that option.
 
     The output is the pull request URL, ending in `/pull/43`.
 
+#### Results
+
+Issue 42 is on the board, the branch `feat/fast-profile-smoke-42` carries the reviewed contract as
+its first commit, and draft pull request 43 tracks it.
+
 ### Example: research and the parallel build
 
 #### Steps
@@ -986,6 +1073,12 @@ illustrative; `tools/smoke.py` does not have that option.
         git commit -m "Smoke test: check the fast profile (#42)"
         git push
 
+#### Results
+
+Pull request 43 holds the contract, the research note and one integrated commit with the code, its
+tests, the guide change and the changelog line, and `tools/check.sh` passed on it. The CI checks of
+the pull request start with the push.
+
 ### Example: review, merge and release
 
 #### Steps
@@ -1022,7 +1115,8 @@ illustrative; `tools/smoke.py` does not have that option.
    ([Review code scanning alerts](#review-code-scanning-alerts)).
 
 7. When the release is due, cut it ([Cut a release](#cut-a-release)). The changelog line from
-   step 6 of the previous task appears in its notes.
+   step 6 of the previous task appears in its notes, and step 7 of that release task moves it
+   under the release's own heading.
 
 #### Results
 

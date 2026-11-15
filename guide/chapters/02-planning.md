@@ -2,9 +2,10 @@ title: Planning the deployment
 
 # Planning the deployment
 
-This chapter describes the hardware the stack is sized for, how the GPU memory and the system
-memory are budgeted, the host names and ports the stack uses, and the accounts and tokens you need
-before you start. It ends with a checklist to complete before you continue with Chapter 3.
+This chapter describes the hardware the stack is sized for, the software the workstation needs,
+how the GPU memory and the system memory are budgeted, the host names and ports the stack uses,
+the accounts and tokens you need before you start, and how the stack is exposed and protected. It
+ends with a checklist to complete before you continue with Chapter 3.
 
 ## Hardware requirements and the reference system
 
@@ -22,7 +23,7 @@ Table: Reference system
 | Memory | Two 32 GB DDR5-4800 RDIMMs (64 GB, 62.3 GiB usable) | Two of eight channels populated |
 | GPU | NVIDIA GeForce RTX 4080, 16 GB | Ada architecture, compute capability 8.9, 716.8 GB/s memory bandwidth, PCIe 4.0 x16, 320 W board power |
 | Storage | Pool `tank` on SSD or NVMe | Holds the apps, the models and the stack's datasets |
-| Workstation | `c4dev` (`192.0.2.20`), Ubuntu Linux | Runs the coding agent while you use it; other clients log in to it over SSH, and a Mac can also run its own copy of the agent |
+| Workstation | `c4dev` (`192.0.2.20`), Ubuntu 26.04 LTS on x86_64 | Runs the coding agent while you use it; other clients log in to it over SSH, and a Mac can also run its own copy of the agent |
 
 ### Minimum requirements
 
@@ -34,13 +35,68 @@ Table: Minimum requirements
 | GPU architecture | NVIDIA Turing or newer | TrueNAS 25.10 builds the driver from NVIDIA's open kernel modules, which support Turing and newer only |
 | GPU memory | 16 GB | The model profiles in this guide are sized for 16 GB. Other sizes need other models |
 | GPU assignment | Not isolated | TrueNAS offers **Install NVIDIA Drivers** only for a GPU that is not isolated. A GPU isolated for a virtual machine cannot be used by apps |
-| System memory | 64 GB | The memory budget in this chapter assumes 62.3 GiB usable |
+| Display on the GPU | None | The VRAM budget assumes that the card drives no display. Chapter 3 checks it ([Verify the GPU on the host and in a container](#verify-the-gpu-on-the-host-and-in-a-container)) |
+| System memory | 64 GB | The memory budget in this chapter assumes 62.3 GiB usable. Less memory is not supported: the ZFS ARC cap, the document parser's limits and the fast profile are sized for 64 GB. More memory is supported ([Memory upgrade to four channels](#memory-upgrade-to-four-channels)) |
+| Host Secure Boot | Off | Forum reports say that the TrueNAS 25.10 host does not boot with Secure Boot on (reported, not verified). Turn it off in the firmware setup before you install or reinstall TrueNAS |
 | Free space on the apps pool | About 36 GB for the models, plus the container images | See the model files table below |
 
 !!! warning
     Do not move the system to TrueNAS 27 release candidates while you follow this guide. A change of
     the NVIDIA driver branch changes which container images can start. Stay on 25.10.8 and repeat
     the CUDA compatibility check before any later upgrade.
+
+### Workstation requirements
+
+The workstation runs the coding agent, the repository's tools and the commands of this guide that
+do not run on the server. Nothing of the stack runs on it as a service, container or timer.
+
+Table: Workstation software
+
+| Software | Version | Needed for |
+|---|---|---|
+| Operating system | Ubuntu 24.04 LTS or later, or macOS; x86_64 or arm64 | `clients/install.sh` and OpenCode (Chapter 7). The reference workstation runs Ubuntu 26.04 LTS on x86_64. A Windows computer reaches the agent only over SSH to a Linux workstation |
+| Git | A current release | Cloning and updating the repository |
+| OpenSSH client: `ssh`, `scp`, `ssh-keygen` | A current release | Access to TrueNAS (Chapter 3) and the SSH tool (Chapter 7) |
+| `curl`, `tar`, `openssl` | A current release | `clients/install.sh` stops without them; several checks in this guide use `curl` and `openssl` |
+| Python | 3.11 or later, with the `venv` module (package `python3-venv` on Ubuntu) | `tools/secrets.py`, `smoke.py`, `eval.py`, and `deploy.py` in its own virtual environment |
+| Node.js and npm | 20.6 or later | The SSH tool `ssh-mcp`; without it the installer skips the SSH tool and installs everything else. Qwen Code (Appendix B) needs Node.js 22 or later |
+| Docker CLI with the Compose plugin | `docker compose` (v5.6.0 checked); no Docker daemon | The image comparison of `deploy.py plan` and `drift` (Chapter 10), and the `compose` check of `tools/check.sh` (Chapter 8) |
+| GitHub CLI, `gh` | 2.103.2 checked | The project workflow (Chapter 8) and `deploy.py drift --issue` |
+| Check tools of `tools/setup-checks.sh` | Pinned by the script | The repository checks (Chapter 8); the script supports Linux on x86_64 only |
+| A web browser | A current release | Open WebUI and the TrueNAS web interface |
+| Claude Code | 2.1.325 checked | Only for the optional Claude Code path (Chapter 7) |
+
+OpenCode itself needs no Node.js: `clients/install.sh` installs its native build for Linux or
+macOS on x86_64 or arm64.
+
+!!! note
+    Ubuntu 24.04 LTS ships Node.js 18.19 in its archive (`nodejs` 18.19.1, checked on
+    packages.ubuntu.com on 15 November 2026), which is older than the SSH tool needs. On 24.04,
+    install Node.js 20.6 or later from another source, such as the official binaries on
+    nodejs.org. Ubuntu 26.04 LTS ships Node.js 22, so `sudo apt install nodejs npm` is enough
+    there.
+
+### Support matrix
+
+Table: Support matrix
+
+| Item | Supported | Status in this release |
+|---|---|---|
+| TrueNAS SCALE 25.10.6 to 25.10.8 | Yes; the guide is written for 25.10.8 | Not yet run on the server ([Validation status and known issues](#validation-status-and-known-issues)) |
+| TrueNAS SCALE 25.10.0 to 25.10.5 | No | NVIDIA driver 570 |
+| TrueNAS 27 | No | A new driver branch, no REST API and Docker 29; see the warning above |
+| NVIDIA GeForce RTX 4080 16 GB | Yes; the reference GPU | Figures are estimates; the fast profile's figures were measured by others on an RTX 4080 SUPER |
+| Other NVIDIA GPUs with 16 GB, Turing or newer | Expected to work with the same profiles (assumed) | Not tested; speeds differ |
+| GPUs with less than 16 GB | No | The model profiles do not fit |
+| System memory 64 GB in two channels | Yes; the reference system | Not yet run |
+| System memory 128 GB or more | Yes ([Memory upgrade to four channels](#memory-upgrade-to-four-channels)) | Not tested |
+| System memory below 64 GB | No | The memory budget does not fit |
+| Workstation: Ubuntu 26.04 LTS, x86_64 | Yes; the reference workstation | Repository checks, tests and the MCP hub image build ran here; not yet run against the stack |
+| Workstation: Ubuntu 24.04 LTS or later, x86_64 or arm64 | Yes | Not tested; needs Node.js from outside the archive on 24.04 |
+| Workstation: macOS, Apple silicon or Intel | Yes, through the macOS path of `clients/install.sh` | The macOS path has not been run on a Mac |
+| Workstation: Windows | Only over SSH to a Linux workstation, and a browser | `clients/install.sh` does not run on Windows |
+| OpenCode 2.3.0 | Yes; the primary coding agent | Not yet run against the gateway |
+| Claude Code 2.1.325 | Optional; Anthropic does not support it with non-Claude models | Not yet run against the gateway |
 
 ## Sizing the GPU and system memory
 
@@ -77,8 +133,8 @@ Table: VRAM budget per model
 
 | llama-swap id | Placement | Context and KV cache | VRAM (GiB) | System RAM |
 |---|---|---|---|---|
-| `coder` | All layers on the GPU | 65,536 tokens, `q8_0` | About 14.3 (estimate) | Prompt cache only |
-| `coder-moe` | GPU, with the experts of 16 layers in system RAM (`--n-cpu-moe 16`) | 65,536 tokens, `q8_0` | About 15.7 (measured on an RTX 4080 SUPER) | About 8 GB of experts |
+| `coder` | All layers on the GPU | 65,536 tokens, `q8_0` | About 14.3 (estimate of the model's allocations; the CUDA context comes on top) | Prompt cache only |
+| `coder-moe` | GPU, with the experts of 16 layers in system RAM (`--n-cpu-moe 16`) | 65,536 tokens, `q8_0` | About 15.7 (measured by others on an RTX 4080 SUPER; the whole process, CUDA context included) | About 8 GB of experts |
 | `embed` | CPU only (`--device none`) | Not applicable | 0 | About 1.3 GiB |
 | `rerank` | CPU only (`--device none`) | Not applicable | 0 | About 1.3 GiB |
 
@@ -90,8 +146,23 @@ Table: VRAM of the coder model at 64K context
 | Recurrent state of the Gated DeltaNet layers | 0.15 |
 | Compute buffer | About 0.7 |
 | KV cache, 65,536 tokens at `q8_0` | 2.1 |
-| Total | About 14.3 |
-| Usable on a headless RTX 4080 after the CUDA context | About 15.5 (assumed) |
+| Total of the model's allocations | About 14.3 |
+| CUDA context of the `llama-server` process | About 0.3 (assumed) |
+| Card total that `nvidia-smi` reports | About 16.0 (16,376 MiB, assumed) |
+| Usable for the model's allocations on a card that drives no display, after the CUDA context | About 15.5 (assumed) |
+
+The two figures in the per-model table are not measured the same way. The `coder` estimate counts
+only what the model allocates: weights, recurrent state, compute buffer and KV cache. Each
+`llama-server` process that uses the GPU also holds a CUDA context, and `nvidia-smi` counts it in
+the process's memory. The `coder-moe` figure is the total that a published run reported for the
+whole process (assumed to be the `nvidia-smi` reading), so it compares with the card's total of
+about 16.0 GiB, not with the 15.5 GiB left for a model's own allocations. The `--n-cpu-moe` value
+sets how much of `coder-moe` stays on the GPU; in the same run, `--n-cpu-moe 14` overflowed VRAM.
+Chapter 4 reads the real totals on your card
+([Check GPU memory and processes](#check-gpu-memory-and-processes)).
+
+A monitor attached to the card takes VRAM for the display and leaves less for the models. The
+budget assumes a card that drives no display, which Chapter 3 checks.
 
 The KV cache of Qwen3.8-27B is small for a 27B model: only 16 of its 64 layers keep a KV cache.
 That is what makes 64K context fit next to the weights. Longer contexts cost VRAM as follows.
@@ -256,6 +327,7 @@ Table: Ports published on the TrueNAS server
 | Port | Service | Notes |
 |---|---|---|
 | 443/tcp | `caddy` (`ai-edge`) | HTTPS for every host name |
+| 443/udp | `caddy` (`ai-edge`) | HTTP/3 for every host name |
 | 80/tcp | `caddy` (`ai-edge`) | Redirects to HTTPS |
 | 8443/tcp, 8080/tcp | TrueNAS web interface | Moved from 443 and 80 in Chapter 3 ([Change the web interface ports](#change-the-web-interface-ports)) |
 | 22/tcp | SSH | Administration and deployment from the workstation |
@@ -299,18 +371,22 @@ gateway ([Use OpenCode from the Mac](#use-opencode-from-the-mac)); the Windows V
 ### Outbound connections
 
 Inference, retrieval and the tools run without internet access. The following connections leave
-the LAN.
+the LAN; a firewall between the LAN and the internet must allow them.
 
 Table: Outbound connections
 
-| Destination | From | Purpose |
-|---|---|---|
-| Container registries (`ghcr.io`, Docker Hub) | TrueNAS | Pulling the images at installation and update |
-| Hugging Face | TrueNAS | Downloading the model files |
-| GitHub | TrueNAS and the workstation | Cloning and updating the repository |
-| Your DNS provider's API and the ACME certificate authority | `caddy` | Issuing and renewing certificates (DNS-01) |
-| Public search engines | `searxng` | Web search |
-| Package registries | The workstation | Installing OpenCode and `ssh-mcp` |
+| Destination | From | Port | Purpose |
+|---|---|---|---|
+| Container registries: `ghcr.io` and Docker Hub (`docker.io`) | TrueNAS | 443/tcp | Pulling the images at installation and update, and the base images of an image built on the server |
+| Hugging Face and the servers it redirects downloads to | TrueNAS | 443/tcp | Downloading the model files |
+| GitHub (`github.com`) | TrueNAS and the workstation | 443/tcp | Cloning and updating the repository; release assets |
+| Your DNS provider's API and the ACME certificate authority | `caddy` | 443/tcp | Issuing and renewing certificates (DNS-01) |
+| Public DNS resolvers `1.1.1.1` and `1.0.0.1`, or the ones you set in `ACME_RESOLVERS` | `caddy` | 53/udp and 53/tcp | Checking the challenge record during DNS-01. A firewall that blocks or redirects outbound DNS to these addresses breaks certificate issuance |
+| Public search engines | `searxng` | 443/tcp | Web search |
+| Any public web server whose page a tool is asked to read | `mcp-hub` (its `fetch` and `web_url_read` tools) and `open-webui` on TrueNAS; OpenCode's `webfetch` on the workstation | 443/tcp, and 80/tcp for `http://` addresses | Reading web pages and remote documents for the models |
+| npm registry (`registry.npmjs.org`) | The workstation | 443/tcp | Installing OpenCode, `ssh-mcp` and, optionally, Qwen Code |
+| PyPI and GitHub release downloads | The workstation | 443/tcp | The check tools of `tools/setup-checks.sh`, and the TrueNAS API client that `deploy.py` uses |
+| npm registry, PyPI, the Go module proxy and GitHub | TrueNAS | 443/tcp | Only when you build the MCP hub image or the Caddy image on the server instead of pulling it |
 
 ## Accounts, keys and tokens
 
@@ -375,9 +451,52 @@ root).
     `~/.config/local-agent-stack/` on the workstation. Never copy them into the git clone, and never
     paste a key into an issue or a chat.
 
+## Security overview
+
+The stack serves the LAN only, and it keeps its credentials in two places: the dataset
+`tank/ai/secrets` on the server (`/mnt/tank/ai/secrets`, owned by root, mode 0700) and
+`~/.config/local-agent-stack/` on the workstation (your user, mode 0700). This topic summarizes
+the exposure and the credentials; the linked sections give the details and the procedures.
+
+### Network exposure
+
+- Of the stack's containers, only `caddy` publishes ports on the server: 80/tcp, which only
+  redirects, and 443 over TCP and UDP. Every host name behind it asks for its own credential,
+  except `search.lab.example.com`: SearXNG has no login
+  ([What the edge exposes](#what-the-edge-exposes)).
+- Caddy closes every connection from an address outside `EDGE_ALLOWED_CIDRS`, by default the
+  private address ranges ([LAN-only access guard](#lan-only-access-guard)). TrueNAS has no host
+  firewall in its web interface, so do not forward any port from your router to the server.
+- The TrueNAS web interface (8443 and 8080), SSH (22) and SMB (445) are TrueNAS's own services.
+  Caddy does not proxy them, and its guard does not apply to them.
+- The containers reach each other by name on `ai-net`; their ports are not published.
+- The connections that leave the LAN are listed in [Outbound connections](#outbound-connections).
+
+### Credentials and who holds them
+
+Table: Credentials of the stack
+
+| Credential | Kept in | Grants |
+|---|---|---|
+| The `truenas_admin` password and the workstation's SSH key | The password with you; the key in `~/.ssh/` on the workstation | Full control of the server, with `sudo` ([Enable SSH access to TrueNAS](#enable-ssh-access-to-truenas)) |
+| TrueNAS API keys of `deploy-read` and `deploy-apply` | `truenas-read.key` and `truenas-apply.key` on the workstation | Read-only administration (`deploy-read`) and full administration (`deploy-apply`); an API key bypasses two-factor authentication ([Create TrueNAS API keys for deploy.py](#create-truenas-api-keys-for-deploypy)) |
+| `LITELLM_MASTER_KEY` | `inference.env` | Every function of the gateway, including the LiteLLM Admin UI at `https://llm.lab.example.com/ui`, which any client inside `EDGE_ALLOWED_CIDRS` can open ([Workstation keys and where they go](#workstation-keys-and-where-they-go)) |
+| LiteLLM virtual keys | `client.env` of each workstation; `LITELLM_WEBUI_KEY` in `web.env` | The model names and limits of that key |
+| `LLAMA_SWAP_API_KEY` | `inference.env`; also Open WebUI's reranker setting if you followed [Point the reranker at llama-swap](#point-the-reranker-at-llama-swap) | The llama-swap API and UI at `https://models.lab.example.com`, without per-key limits or usage logs |
+| `MCP_HUB_TOKEN` | `web.env` and every `client.env` | Every tool of the MCP hub. All clients share the one token, so the hub cannot tell them apart |
+| Open WebUI accounts, and the API keys of the `indexer` and `kb-reader` users | Open WebUI; `OIKB_TOKEN` in `rag.env`, `KB_READER_TOKEN` in `web.env` | Chats, documents and knowledge bases, as that user |
+| `DNS_PROVIDER_TOKEN` | `edge.env` | The DNS records of your zone; scope the token to the one zone |
+| The SSH tool's key `~/.ssh/agent_ed25519` | The workstation | Commands on the hosts in the SSH policy, as a restricted user ([How the SSH tool is protected](#how-the-ssh-tool-is-protected)) |
+| The internal CA's root key, only with Appendix D | `tank/ai/appdata/caddy` | Certificates that every client trusts |
+
+The workstation also keeps copies of the four server files under
+`~/.config/local-agent-stack/secrets/`. Appendix A backs up both locations
+([Data to back up](#data-to-back-up)), and the rotation procedures are in Chapters 4 and 6.
+
 ## Pre-deployment checklist
 
-Complete every item before you continue with Chapter 3.
+Complete every item before you continue with Chapter 3, except the items whose check names a later
+chapter: complete those in that chapter.
 
 Table: Pre-deployment checklist
 
@@ -386,13 +505,18 @@ Table: Pre-deployment checklist
 | TrueNAS SCALE is 25.10.6 or later (25.10.8 recommended) | **Dashboard**, System Information card; or `midclt call system.version` in **System** > **Shell** | ☐ |
 | A configuration backup is saved | **System** > **Advanced Settings** > **Manage Configuration** > **Download File**, with **Export Password Secret Seed** selected | ☐ |
 | The NVIDIA GPU is not isolated | **System** > **Advanced Settings** > **Isolated GPU Device(s)** lists no device | ☐ |
+| The RTX 4080 drives no display | No monitor is connected to the card; Chapter 3 checks it ([Verify the GPU on the host and in a container](#verify-the-gpu-on-the-host-and-in-a-container)) | ☐ |
+| Secure Boot is off, if you install or reinstall TrueNAS | The server's firmware setup ([Minimum requirements](#minimum-requirements)) | ☐ |
+| The server has at least 64 GB of memory, in two channels at 4800 MT/s | [Check the memory configuration](#check-the-memory-configuration) | ☐ |
 | The apps pool is on SSD or NVMe | **Apps** > **Configuration** > **Choose Pool** | ☐ |
 | The apps pool has at least 36 GB free for models, plus room for images | **Storage** | ☐ |
-| The memory modules are in two channels at 4800 MT/s | [Check the memory configuration](#check-the-memory-configuration) | ☐ |
-| SSH from the workstation to `truenas_admin` works with a key | `ssh truenas_admin@192.0.2.10` from `c4dev` | ☐ |
-| Ports 80 and 443 on the server are free for Caddy after the UI moves | Planned in Chapter 3 ([Move the TrueNAS web UI to ports 8080 and 8443](#move-the-truenas-web-ui-to-ports-8080-and-8443)) | ☐ |
+| SSH from the workstation to `truenas_admin` works with a key | `ssh truenas_admin@192.0.2.10` from `c4dev`, or set it up in Chapter 3 ([Enable SSH access to TrueNAS](#enable-ssh-access-to-truenas)) | ☐ |
+| Ports 80 and 443 on the server can be given to Caddy | Chapter 3 moves the TrueNAS web interface to 8080 and 8443 ([Move the TrueNAS web UI to ports 8080 and 8443](#move-the-truenas-web-ui-to-ports-8080-and-8443)) | ☐ |
 | The Docker address pool does not overlap your LAN | **Apps** > **Installed** > **Configuration** > **Settings** | ☐ |
 | You can add A records in your local DNS server or router | Your router or DNS server | ☐ |
 | Your domain is at a supported DNS provider, with an API token for the zone | Your DNS provider | ☐ |
-| The server can reach the internet for images, models and certificates | Outbound connections table | ☐ |
-| A GitHub account is ready, if you use the workflow in Chapter 8 | github.com | ☐ |
+| The server can reach the internet for images, models and certificates, including DNS to `1.1.1.1` and `1.0.0.1` on port 53 | [Outbound connections](#outbound-connections) | ☐ |
+| The workstation has Git, the OpenSSH client, `curl`, `tar`, `openssl` and Python 3.11 or later with `venv` | `git --version`, `ssh -V`, `python3 --version` on the workstation ([Workstation requirements](#workstation-requirements)) | ☐ |
+| The workstation has Node.js 20.6 or later and npm, for the SSH tool | `node --version`; or install it before Chapter 7 | ☐ |
+| The workstation has the Docker CLI with the Compose plugin, for `deploy.py` | `docker compose version`; or install it before Chapter 10 | ☐ |
+| `gh` is installed and a GitHub account is ready, if you use the workflow in Chapter 8 | `gh --version`; github.com | ☐ |
