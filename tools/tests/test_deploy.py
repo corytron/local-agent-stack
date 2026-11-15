@@ -13,6 +13,7 @@ import textwrap
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 TOOLS = Path(__file__).resolve().parent.parent
 REPO = TOOLS.parent
@@ -278,6 +279,25 @@ class TestDesiredState(Workspace):
             [("ai-inference", "inference"), ("ai-rag", "rag"), ("ai-web", "web"), ("ai-edge", "edge")],
         )
         self.assertEqual(desired.env_dir, "~/.config/local-agent-stack/secrets")
+        self.assertIs(desired.content_hashes, True)
+
+    def test_content_hashes_setting(self):
+        self.assertIs(deploy.load_desired(self.desired, self.dir).content_hashes, True)
+        self.desired.write_text(DESIRED.replace("schema = 1\n", "schema = 1\ncontent_hashes = false\n"))
+        self.assertIs(deploy.load_desired(self.desired, self.dir).content_hashes, False)
+        self.desired.write_text(DESIRED.replace("schema = 1\n", 'schema = 1\ncontent_hashes = "no"\n'))
+        with self.assertRaises(deploy.ConfigError) as caught:
+            deploy.load_desired(self.desired, self.dir)
+        self.assertIn("content_hashes must be true or false, not 'no'", str(caught.exception))
+
+    def test_validate_says_when_the_hashes_are_off(self):
+        self.desired.write_text(DESIRED.replace("schema = 1\n", "schema = 1\ncontent_hashes = false\n"))
+        for argv in (["validate"], ["validate", "--no-hashes"]):
+            with self.subTest(argv=argv):
+                out = io.StringIO()
+                code = deploy.main(["--file", str(self.desired), "--root", str(self.dir), *argv], out=out)
+                self.assertEqual(code, 0)
+                self.assertIn("ok (2 apps, release v1.0, TrueNAS 25.10.8, content hashes off)", out.getvalue())
 
     def test_problems_are_all_reported(self):
         self.desired.write_text(
@@ -364,24 +384,27 @@ class TestDesiredState(Workspace):
 
 
 class TestOptions(Workspace):
-    """--file, --config, --local (and the hidden --root) before or after the command."""
+    """--file, --config, --local, --no-hashes (and the hidden --root) before or after the command."""
 
     def test_defaults(self):
         args = deploy.parse_args(["status"])
         self.assertEqual(args.file, str(deploy.DEFAULT_FILE))
         self.assertEqual(args.config, str(deploy.DEFAULT_CONFIG))
         self.assertIs(args.local, False)
+        self.assertIs(args.no_hashes, False)
         self.assertIsNone(args.root)
 
     def test_before_and_after_the_command(self):
         for argv in (
-            ["--file", "F", "--config", "C", "--local", "drift", "--app", "x"],
-            ["drift", "--file", "F", "--config", "C", "--local", "--app", "x"],
-            ["--file", "F", "drift", "--app", "x", "--config", "C", "--local"],
+            ["--file", "F", "--config", "C", "--local", "--no-hashes", "drift", "--app", "x"],
+            ["drift", "--file", "F", "--config", "C", "--local", "--no-hashes", "--app", "x"],
+            ["--file", "F", "--no-hashes", "drift", "--app", "x", "--config", "C", "--local"],
         ):
             with self.subTest(argv=argv):
                 args = deploy.parse_args(argv)
-                self.assertEqual((args.file, args.config, args.local, args.app), ("F", "C", True, ["x"]))
+                self.assertEqual(
+                    (args.file, args.config, args.local, args.no_hashes, args.app), ("F", "C", True, True, ["x"])
+                )
 
     def test_after_the_command_wins(self):
         self.assertEqual(deploy.parse_args(["--file", "before", "plan", "--file", "after"]).file, "after")
@@ -921,6 +944,183 @@ class TestOverrides(Workspace):
         self.assertEqual(client.apps["ai-web"]["stored"], wrapper_of("web", (WEB_OVERRIDE,)))
 
 
+class TestWithoutHashes(Workspace):
+    """content_hashes = false (or --no-hashes): the bare include wrapper, YAML and images compared only."""
+
+    BARE = (
+        "include:\n"
+        "  - path: /mnt/tank/ai/stacks/local-agent-stack/stack/{stack}/compose.yaml\n"
+        "    env_file: /mnt/tank/ai/secrets/{stack}.env\n"
+        "services: {{}}\n"
+    )
+
+    def setUp(self):
+        super().setUp()
+        # Everything a run with the hashes on would see as changed: env copies that differ from what
+        # the NAS recorded, and release files other than the recorded ones.
+        envs = self.dir / "envs"
+        envs.mkdir()
+        for stack in ("inference", "web"):
+            (envs / f"{stack}.env").write_text(f"KEY={SECRET}\n")
+        self.tars["web"] = {"compose.yaml": b"services:\n  s:\n    volumes:\n      - ./c.yaml:/c\n", "c.yaml": b"new"}
+        self.write(content_hashes="false", env_dir=str(envs))
+
+    def write(self, content_hashes=None, env_dir=None, overrides=False):
+        text = DESIRED
+        if content_hashes is not None:
+            text = text.replace("schema = 1\n", f"schema = 1\ncontent_hashes = {content_hashes}\n")
+        if env_dir is not None:
+            text = text.replace("schema = 1\n", f'schema = 1\nenv_dir = "{env_dir}"\n')
+        if overrides:
+            text = text.replace('stack = "web"\n', f'stack = "web"\noverrides = ["{WEB_OVERRIDE}"]\n')
+        self.desired.write_text(text)
+
+    def in_step(self, **stored):
+        """Both apps installed with the bare wrapper (or the given stored YAML) and the release's images."""
+        return FakeClient(
+            {
+                "ai-inference": app_entry(
+                    "ai-inference", "inference", images=["x/y:1"], stored=stored.get("inference")
+                ),
+                "ai-web": app_entry("ai-web", "web", images=WEB_IMAGES, stored=stored.get("web")),
+            }
+        )
+
+    IMAGES = {"inference": ["x/y:1"], "web": WEB_IMAGES}
+
+    def test_render_is_the_bare_wrapper_and_reads_nothing(self):
+        def runner(command, **_kwargs):
+            raise AssertionError(f"render without hashes ran {command}")
+
+        out = io.StringIO()
+        with redirect_stderr(io.StringIO()) as err:
+            code = deploy.main(["--file", str(self.desired), "render"], out=out, runner=runner)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            out.getvalue(),
+            "# ai-inference\n" + self.BARE.format(stack="inference") + "# ai-web\n" + self.BARE.format(stack="web"),
+        )
+        self.assertEqual(err.getvalue(), "")
+
+    def test_no_hashes_option_overrides_the_file(self):
+        self.write(env_dir=str(self.dir / "envs"))  # content_hashes left at its default, true
+        for argv in (["--no-hashes", "render", "--app", "ai-web"], ["render", "--app", "ai-web", "--no-hashes"]):
+            with self.subTest(argv=argv):
+                out = io.StringIO()
+                with redirect_stderr(io.StringIO()):
+                    code = deploy.main(["--file", str(self.desired), *argv], out=out, runner=self.with_tag)
+                self.assertEqual(code, 0)
+                self.assertEqual(out.getvalue(), "# ai-web\n" + self.BARE.format(stack="web"))
+        code, text = self.run_main(self.in_step(), "drift", "--no-hashes", images=self.IMAGES)
+        self.assertEqual(code, 0, text)
+
+    def test_render_keeps_the_overrides(self):
+        self.write(content_hashes="false", overrides=True)
+        out = io.StringIO()
+        code = deploy.main(["--file", str(self.desired), "render", "--app", "ai-web"], out=out, runner=self.with_tag)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            out.getvalue(),
+            "# ai-web\n"
+            "include:\n"
+            "  - path:\n"
+            "      - /mnt/tank/ai/stacks/local-agent-stack/stack/web/compose.yaml\n"
+            f"      - {WEB_OVERRIDE}\n"
+            "    env_file: /mnt/tank/ai/secrets/web.env\n"
+            "services: {}\n",
+        )
+
+    def test_drift_compares_yaml_and_images_only_and_says_so_once(self):
+        with mock.patch.object(deploy, "env_hash", side_effect=AssertionError("an env file was read")):
+            code, text = self.run_main(self.in_step(), "drift", images=self.IMAGES)
+        self.assertEqual(code, 0, text)
+        self.assertIn("ai-inference: none (RUNNING) in step\n", text)
+        self.assertIn("ai-web: none (RUNNING) in step\n", text)
+        self.assertEqual(text.count(deploy.HASHES_OFF_NOTE), 1)
+        self.assertTrue(text.startswith(f"TrueNAS 25.10.8; desired release v1.0\nnote: {deploy.HASHES_OFF_NOTE}\n"))
+        self.assertNotIn("files not", text)
+        self.assertNotIn("env file not", text)
+        self.assertTrue(text.endswith("drift: none\n"))
+
+    def test_status_shows_no_files_or_env(self):
+        code, text = self.run_main(self.in_step(), "status", images=self.IMAGES)
+        self.assertEqual(code, 0)
+        self.assertEqual(text.count(deploy.HASHES_OFF_NOTE), 1)
+        self.assertIn("ai-inference: state RUNNING, YAML matches, files -, env -, images match\n", text)
+        self.assertIn("ai-web: state RUNNING, YAML matches, files -, env -, images match\n", text)
+
+    def test_images_are_still_compared(self):
+        images = {"inference": ["x/y:2"], "web": WEB_IMAGES}
+        code, text = self.run_main(self.in_step(), "drift", images=images)
+        self.assertEqual(code, 3)
+        self.assertIn("ai-inference: redeploy (RUNNING) runs images other than v1.0's; wanted: x/y:2", text)
+        code, text = self.run_main(self.in_step(), "drift")  # the tag is not in this clone
+        self.assertEqual(code, 0, text)
+        self.assertIn("note: images not compared: tag v1.0 is not in this clone", text)
+        self.assertNotIn("files not compared", text)
+
+    def test_apply_creates_with_the_bare_wrapper(self):
+        client = FakeClient({"ai-web": app_entry("ai-web", "web", images=WEB_IMAGES)})
+        # The fake app.create starts no containers: a release without images for inference matches.
+        code, text = self.run_main(client, "apply", images={"inference": [], "web": WEB_IMAGES})
+        self.assertEqual(code, 0, text)
+        create = [call for call in client.calls if call[0] == "app.create"]
+        self.assertEqual(
+            create[0][1][0],
+            {
+                "custom_app": True,
+                "app_name": "ai-inference",
+                "custom_compose_config_string": self.BARE.format(stack="inference"),
+            },
+        )
+        self.assertNotIn("app.update", [call[0] for call in client.calls])
+        self.assertEqual(text.count(deploy.HASHES_OFF_NOTE), 1)  # plan and the plan after apply: once
+        self.assertIn("after apply:", text)
+        for shown in (text, self.stderr, json.dumps(client.calls)):
+            self.assertNotIn(SECRET, shown)
+
+    def test_recorded_hashes_are_removed_once(self):
+        stored = {
+            "inference": wrapper_of("inference"),
+            "web": wrapper_of("web", files="sha256:" + "1" * 64, env="sha256:" + "2" * 64),
+        }
+        client = self.in_step(**stored)
+        code, text = self.run_main(client, "status", images=self.IMAGES)
+        self.assertIn("ai-web: state RUNNING, YAML differs, files -, env -, images match\n", text)
+        code, text = self.run_main(client, "apply", images=self.IMAGES)
+        self.assertEqual(code, 0, text)
+        self.assertIn(
+            "ai-web: update (RUNNING) its YAML carries an x-local-agent-stack block, which apply removes while "
+            "content hashes are off",
+            text,
+        )
+        self.assertIn("ai-inference: none (RUNNING) in step", text)
+        update = [call for call in client.calls if call[0] == "app.update"]
+        self.assertEqual([call[1][0] for call in update], ["ai-web"])
+        self.assertEqual(update[0][1][1]["custom_compose_config_string"], self.BARE.format(stack="web"))
+        self.assertEqual(client.apps["ai-web"]["stored"], wrapper_of("web"))
+        code, text = self.run_main(client, "drift", images=self.IMAGES)
+        self.assertEqual(code, 0, text)
+
+    def test_turning_the_hashes_back_on_records_them(self):
+        client = self.in_step()
+        self.write(content_hashes="true", env_dir=str(self.dir / "envs"))
+        code, text = self.run_main(client, "drift", images=self.IMAGES)
+        self.assertEqual(code, 3)
+        self.assertIn("ai-web: update (RUNNING) no hash of the files of stack/web/ recorded", text)
+        self.assertNotIn(deploy.HASHES_OFF_NOTE, text)
+        code, text = self.run_main(client, "apply", images=self.IMAGES)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(set(client.apps["ai-web"]["stored"]["x-local-agent-stack"]), {"files", "env"})
+
+    def test_drift_issue_carries_the_note(self):
+        desired = deploy.load_desired(self.desired, self.dir)
+        apps = [deploy.AppPlan("ai-web", "redeploy", "RUNNING", ["runs images other than v1.0's"], [], [])]
+        body = deploy.issue_body(deploy.Plan("25.10.8", apps, [], hashes=False), desired)
+        self.assertIn(f"Note: {deploy.HASHES_OFF_NOTE}.", body)
+        self.assertNotIn("Note:", deploy.issue_body(deploy.Plan("25.10.8", apps, []), desired))
+
+
 class TestTrueNASAppFiles(unittest.TestCase):
     """stack/<stack>/truenas-app.yaml is what the guide installs by hand: exactly what deploy.py
     renders for the repository's desired state, minus the content hashes."""
@@ -958,6 +1158,19 @@ class TestTrueNASAppFiles(unittest.TestCase):
                 self.assertIn(f"\nx-local-agent-stack:\n  files: {FAKE_FILES_HASH}\n", rendered)
                 text = (REPO / "stack" / app.stack / "truenas-app.yaml").read_text(encoding="utf-8")
                 self.assertEqual(strip_extension(rendered), f"# {app.name}\n{text}")
+
+    def test_render_without_hashes_is_the_file_byte_for_byte(self):
+        for app in self.desired.apps:
+            with self.subTest(app=app.name):
+                out = io.StringIO()
+                code = deploy.main(
+                    ["render", "--app", app.name, "--no-hashes", "--file", str(self.file)],
+                    out=out,
+                    runner=lambda command, **_: self.fail(f"ran {command}"),
+                )
+                self.assertEqual(code, 0)
+                text = (REPO / "stack" / app.stack / "truenas-app.yaml").read_text(encoding="utf-8")
+                self.assertEqual(out.getvalue(), f"# {app.name}\n{text}")
 
     @unittest.skipIf(yaml is None, "PyYAML is not installed")
     def test_wrapper_parses_to_wrapper_config(self):

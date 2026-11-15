@@ -28,6 +28,14 @@ secrets_dir = "/mnt/tank/ai/secrets"
 # deploy.py reads the files in secrets_dir instead and ignores this setting.
 env_dir = "~/.config/local-agent-stack/secrets"
 
+# Optional, default true: whether apply records the content hashes (the x-local-agent-stack block
+# below) in each app's YAML. Set it to false only if TrueNAS refuses the block (guide chapter 10,
+# "Update the apps without content hashes"): render and apply then write the include wrapper alone,
+# plan and drift compare the YAML and the images only, and a change to the release's files or to an
+# env file is not detected, so you redeploy the apps it touches by hand. The option --no-hashes
+# does the same for one run.
+content_hashes = true
+
 # One table per TrueNAS custom app, in the order apply installs them (inference first: the web
 # app talks to LiteLLM; edge last: it proxies the others). Each app's YAML in TrueNAS is
 #   include:
@@ -37,9 +45,10 @@ env_dir = "~/.config/local-agent-stack/secrets"
 #   x-local-agent-stack:
 #     files: sha256:...   (the release's compose.yaml and the files it mounts)
 #     env: sha256:...     (the env file)
-# The first four lines are stack/<stack>/truenas-app.yaml. An app that runs with compose override
-# files on the NAS lists them in its table, and apply keeps them: `path` becomes a list, the
-# release's compose file first, then each override. For example:
+# The first four lines are stack/<stack>/truenas-app.yaml; with content_hashes = false they are
+# the whole YAML. An app that runs with compose override files on the NAS lists them in its table,
+# and apply keeps them: `path` becomes a list, the release's compose file first, then each
+# override. For example:
 #   overrides = ["/mnt/tank/ai/appdata/llama-swap/fallback.override.yaml"]   (ai-inference)
 #   overrides = ["/mnt/tank/ai/appdata/caddy/internal-ca.override.yaml"]     (ai-edge)
 [apps.ai-inference]

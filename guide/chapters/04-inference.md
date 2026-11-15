@@ -636,8 +636,8 @@ for a minute or more.
 2. Confirm that the running `coder` process uses the new configuration, by printing its command
    line:
 
-        sudo docker exec llama-swap sh -c 'curl -fsS \
-          -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/running' |
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/running' |
           python3 -c "import json, sys; \
             [print(m['model'], '|', ' '.join(m['cmd'].split())) \
              for m in json.load(sys.stdin)['running']]"
@@ -659,9 +659,10 @@ you expect. Clients that sent requests during the redeploy retry once the model 
 ## Verify the models load
 
 These checks run on TrueNAS. The `llama-swap` container has `curl` and is on `ai-net`, so it can
-reach both llama-swap and `litellm:4000`. Keys never appear on a command line: llama-swap's key is
-expanded inside the container from its own environment, and the LiteLLM key is passed to `curl` on
-standard input.
+reach both llama-swap and `litellm:4000`. Keys never appear on a command line. For llama-swap's
+key, the shell inside the container reads it from the container's own environment, and its
+built-in `printf` hands the header to `curl` on standard input (`-H @-`). The LiteLLM key is passed
+to `curl` on standard input from the TrueNAS shell.
 
 ### Check the health endpoints
 
@@ -675,8 +676,8 @@ standard input.
 
 2. List the loaded models and their state:
 
-        sudo docker exec llama-swap sh -c 'curl -fsS \
-          -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/running' |
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/running' |
           python3 -c "import json, sys; \
             [print(m['model'], m['state']) for m in json.load(sys.stdin)['running']]"
 
@@ -783,9 +784,10 @@ with the master key, through the same names that clients will use.
 
         echo '{"model": "coder-fast", "max_tokens": 256, "messages": [{"role": "user",
           "content": "Write a Python function that checks whether a number is prime."}]}' |
-          sudo docker exec -i llama-swap sh -c 'curl -sS -d @- \
-            -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" \
-            -H "Content-Type: application/json" http://127.0.0.1:8080/v1/chat/completions' |
+          sudo docker exec -i llama-swap sh -c 'body=$(cat)
+            printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+            curl -sS -d "$body" -H @- -H "Content-Type: application/json" \
+              http://127.0.0.1:8080/v1/chat/completions' |
           python3 -c "import json, sys; t = json.load(sys.stdin)['timings']; \
             print({k: t.get(k) for k in ('prompt_n', 'predicted_n', 'predicted_per_second', \
             'draft_n', 'draft_n_accepted')})"
@@ -1203,8 +1205,8 @@ it on both sides at once. A copy outside the app, such as Open WebUI's reranker 
 5. Check that llama-swap accepts the new key, which the command reads from the container's
    environment:
 
-        sudo docker exec llama-swap sh -c 'curl -sS -o /dev/null -w "%{http_code}\n" \
-          -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/running'
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -sS -o /dev/null -w "%{http_code}\n" -H @- http://127.0.0.1:8080/running'
 
     The output is `200`.
 
@@ -1398,9 +1400,10 @@ allow several minutes per row.
 
         echo '{"model": "coder-fast", "max_tokens": 16,
           "messages": [{"role": "user", "content": "Reply with the single word OK."}]}' |
-          sudo docker exec -i llama-swap sh -c 'curl -sS -o /dev/null -w "%{http_code}\n" \
-            -d @- -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" \
-            -H "Content-Type: application/json" http://127.0.0.1:8080/v1/chat/completions'
+          sudo docker exec -i llama-swap sh -c 'body=$(cat)
+            printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+            curl -sS -o /dev/null -w "%{http_code}\n" -d "$body" -H @- \
+              -H "Content-Type: application/json" http://127.0.0.1:8080/v1/chat/completions'
 
     The output is `200` once the model has loaded.
 
@@ -1619,8 +1622,8 @@ To see whether the chat template of `coder` declares parallel tool calls, ask it
 for its properties:
 
 ```
-sudo docker exec llama-swap sh -c 'curl -fsS \
-  -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/upstream/coder/props' |
+sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+  curl -fsS -H @- http://127.0.0.1:8080/upstream/coder/props' |
   python3 -c "import json, sys; \
     print(json.load(sys.stdin)['chat_template_caps'].get('supports_parallel_tool_calls'))"
 ```
@@ -1940,8 +1943,8 @@ This task switches from the TrueNAS shell, to see the swap and its cost. From Ch
 
 3. List the loaded models:
 
-        sudo docker exec llama-swap sh -c 'curl -fsS \
-          -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/running' |
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/running' |
           python3 -c "import json, sys; \
             [print(m['model'], m['state']) for m in json.load(sys.stdin)['running']]"
 

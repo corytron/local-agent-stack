@@ -313,7 +313,7 @@ Table: OpenCode and the endpoint
 |---|---|---|
 | `opencode: command not found` | The shell profile block is not loaded yet | Open a new terminal. If the problem stays, check that `~/.bashrc` (or `~/.zshrc`) holds the block that starts with `# >>> local-agent-stack` |
 | OpenCode cannot reach `https://llm.<domain>` | `LAB_DOMAIN` is unset or still the placeholder | Check `echo $LAB_DOMAIN`, then edit `~/.config/local-agent-stack/client.env` and open a new terminal |
-| OpenCode gets HTTP 401 | `LOCAL_LLM_KEY` is the placeholder or wrong | Put your LiteLLM virtual key into `client.env`; test it with `curl -s -H "Authorization: Bearer $LOCAL_LLM_KEY" https://llm.$LAB_DOMAIN/v1/models` |
+| OpenCode gets HTTP 401 | `LOCAL_LLM_KEY` is the placeholder or wrong | Put your LiteLLM virtual key into `client.env`; test it with `curl -s -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") https://llm.$LAB_DOMAIN/v1/models` |
 | `opencode models` lists no `local/` model | OpenCode cannot reach the gateway, or the key allows none of the names | Run the `curl` test above; it lists the names the key allows |
 | Requests overflow the 64K window, or compaction never starts | The model's context is not declared | Keep `limit.context` at 65536 in `opencode.jsonc`, as the stack ships it |
 | OpenCode warns about a second configuration file | An `opencode.json` sits next to the linked `opencode.jsonc` | Run `clients/install.sh` again; it moves the file aside |
@@ -365,7 +365,8 @@ Table: deploy.py problems
 | `note: env file not compared: cannot read ~/.config/local-agent-stack/secrets/<stack>.env` | Your copy of the environment file is missing, or `env_dir` names another folder | Restore the copy from the server's file, or correct `env_dir` in your desired-state file |
 | `note: env file not compared: env_dir is not set in the desired state` | Your desired-state file has no `env_dir` line | Add `env_dir = "~/.config/local-agent-stack/secrets"`, as in [Create your desired-state file](#create-your-desired-state-file) |
 | `plan` reports `update (RUNNING) no hash of the files of stack/<stack>/ recorded (installed by hand?)` | The app was installed by hand from `truenas-app.yaml` and has no content hashes yet | [Record the content hashes](#record-the-content-hashes) |
-| `apply` reports `<app>: FAILED: app.update:` with `Invalid compose configuration` for every app | The Compose version of TrueNAS refused the `x-local-agent-stack` block that holds the content hashes; nothing changed on the server | Do not repeat the apply; follow [Update the apps without content hashes](#update-the-apps-without-content-hashes) |
+| `apply` reports `<app>: FAILED: app.update:` with `Invalid compose configuration` for every app | The Compose version of TrueNAS refused the `x-local-agent-stack` block that holds the content hashes; nothing changed on the server | Do not repeat the apply; set `content_hashes = false` in your desired-state file, as in [Update the apps without content hashes](#update-the-apps-without-content-hashes) |
+| `plan` reports `update ... its YAML carries an x-local-agent-stack block, which apply removes while content hashes are off` | Your desired-state file sets `content_hashes = false` (or you passed `--no-hashes`), and the app's YAML still holds the hashes of an earlier `apply` | Expected once after the switch: `apply` removes the block and recreates the app's containers. If you did not mean to switch the hashes off, set `content_hashes = true` again (or drop `--no-hashes`) before you run `apply` |
 | `plan` reports `update ... its env file differs from the one hashed at the last apply`, and you changed nothing | Your copy of the environment file differs from the one hashed at the last apply, or (with `--local`) the server's file differs from the copy that the workstation hashed | Compare the checksums of both copies as in steps 1 and 2 of [Record the content hashes](#record-the-content-hashes), make them identical, then run `apply` |
 | `plan` reports `update ... its YAML differs from the include wrapper` for `ai-edge` or `ai-inference` | The app runs with an override file that your desired-state file does not list: the internal CA of Appendix D, or the `coder` fallback of Chapter 4 | Add an `overrides` line to the app's table, as in [Create your desired-state file](#create-your-desired-state-file). Do not run `apply` before: it would replace the YAML and drop the override |
 | `validate` reports `apps.<app>.overrides ...` | An `overrides` entry is not an absolute path, is not in a list, or is listed twice | Write `overrides = ["/mnt/tank/ai/appdata/..."]` with each path once |
@@ -564,7 +565,8 @@ swapping.
 
 4. Verify that `coder` is loaded:
 
-        sudo docker exec llama-swap sh -c 'curl -fsS -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/running'
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/running'
 
     The list shows `coder`, `embed` and `rerank`.
 

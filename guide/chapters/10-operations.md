@@ -177,9 +177,11 @@ reports `update`, and `apply` writes the new YAML, which recreates the app's con
     workstation, for both wrapper shapes. The Compose version that TrueNAS 25.10 bundles was not
     tried. TrueNAS checks every custom app's YAML with `docker compose config` before it stores it,
     so if that version refuses the block, the first `apply` that records the hashes fails for every
-    app, and each app keeps its previous YAML and its running containers.
+    app, and each app keeps its previous YAML and its running containers. The setting
+    `content_hashes = false` in the desired-state file then makes `deploy.py` write the YAML
+    without the block, at the cost of no longer detecting changed files and environment files.
     [Update the apps without content hashes](#update-the-apps-without-content-hashes) describes the
-    symptom and how to keep operating the stack.
+    symptom, the switch and the way back.
 
 An app that runs with compose override files, such as the internal CA of Appendix D or the `coder`
 fallback of Chapter 4, lists them in its `overrides` line in the desired-state file. Its `path`
@@ -208,9 +210,17 @@ Table: deploy.py commands
 | `drift [--app <app>]... [--issue]` | Runs `plan` and exits with code 3 when the server differs; `--issue` keeps one GitHub issue labelled `deploy` up to date (needs `gh`) | Read-only |
 | `status` | Prints one line per app: state, YAML, files, environment file, images | Read-only |
 
-`--app` can be repeated. The options `--file`, `--config` and `--local` can stand before or after
-the command: `deploy.py --local drift` and `deploy.py drift --local` are the same. If an option is
-written on both sides, the value after the command wins.
+`--app` can be repeated. The options `--file`, `--config`, `--local` and `--no-hashes` can stand
+before or after the command: `deploy.py --local drift` and `deploy.py drift --local` are the same.
+If an option is written on both sides, the value after the command wins.
+
+The desired-state file's setting `content_hashes` (default `true`) decides whether `deploy.py`
+writes and compares the content hashes. With `content_hashes = false`, `render` and `apply` write
+the include wrapper without the `x-local-agent-stack` block, `plan` and `drift` compare only the
+YAML and the images and print a note that changed files and environment files are not detected, and
+`status` shows `files -` and `env -`. The option `--no-hashes` does the same for one command. Use
+the setting and the option only as
+[Update the apps without content hashes](#update-the-apps-without-content-hashes) describes.
 
 For each app, `plan` decides one action:
 
@@ -219,7 +229,7 @@ Table: deploy.py plan actions
 | Action | When | What apply does |
 |---|---|---|
 | `create` | The app does not exist | Creates the custom app with the wrapper and its hashes |
-| `update` | The stored YAML differs from the wrapper, or one of its content hashes: the release's files of the app or its environment file changed, or no hash is recorded yet | Replaces the YAML; TrueNAS recreates every container of a running app. A stopped app only gets the new YAML |
+| `update` | The stored YAML differs from the wrapper, or one of its content hashes: the release's files of the app or its environment file changed, or no hash is recorded yet. With `content_hashes = false`, also a YAML that still carries the `x-local-agent-stack` block | Replaces the YAML; TrueNAS recreates every container of a running app. A stopped app only gets the new YAML |
 | `redeploy` | The YAML and its hashes match, but the app runs images other than the release's, or it is `CRASHED` | Redeploys the app |
 | `conflict` | An app of that name exists and is a catalog app | Nothing; reported only |
 | `none` | The app is in step | Nothing. A `STOPPED` app is reported and not started, because someone stopped it on purpose |
@@ -247,7 +257,8 @@ Table: deploy.py exit codes
     `deploy.py` detects changed images, a changed app YAML, changed files under `stack/<stack>/`
     that the app mounts, and changed environment files (your copy in `env_dir`, or the server's
     file with `--local`). It does not detect override files, files that only an override mounts,
-    or the MCP hub's build files. Redeploy the app by hand after such a change, as in
+    or the MCP hub's build files. With `content_hashes = false`, it detects only changed images
+    and a changed app YAML. Redeploy the app by hand after a change that it does not detect, as in
     [Redeploy one app](#redeploy-one-app).
 
 !!! note
@@ -427,7 +438,9 @@ at this release:
 
 4. Keep `env_dir`. It names the folder of your copies of the environment files, which Chapter 3
    created; `deploy.py` computes each app's `env` hash from `<env_dir>/<stack>.env`. Without the
-   line, the environment files are not compared.
+   line, the environment files are not compared. Keep `content_hashes = true` as well; set it to
+   `false` only as [Update the apps without content hashes](#update-the-apps-without-content-hashes)
+   describes.
 
 5. If an app runs with a compose override file, add an `overrides` line to its table, below its
    `stack` line. The guide creates three override files:
@@ -496,8 +509,8 @@ and their override files, and passes `validate`.
     `not recorded` means that the app's YAML carries no content hashes yet; the next task records
     them. Once they are recorded, each line reads `files match, env match`. An app that is not
     installed yet shows `state -, YAML missing, files -, env -, images -`, and a field that cannot
-    be computed on this machine shows `not compared`. Apps of other projects appear as
-    `<name>: unmanaged`.
+    be computed on this machine shows `not compared`. With `content_hashes = false`, every app
+    shows `files -, env -`. Apps of other projects appear as `<name>: unmanaged`.
 
 3. Show the plan:
 
@@ -597,13 +610,30 @@ Use this task only if TrueNAS refused the content hashes in
 bundles was not tested with the `x-local-agent-stack` block. TrueNAS validates a custom app's YAML
 with `docker compose config` before it stores the YAML or touches a container (checked in the
 TrueNAS middleware source at tag `TS-25.10.8`), so a refused apply leaves every app with the
-four-line wrapper of `stack/<stack>/truenas-app.yaml` and its containers running.
-
-The apps then work, but `deploy.py` cannot record which release files and environment file each
-app runs. `plan` reports every app as `update` with the reason
+four-line wrapper of `stack/<stack>/truenas-app.yaml` and its containers running. Until you switch
+the hashes off, `plan` reports every app as `update` with the reason
 `no hash of the files of stack/<stack>/ recorded`, `apply` fails for each of them in the same way,
-and `drift` always reports drift. `status`, the app states and the image comparison stay correct.
-Until a release of this repository changes this, operate the stack as follows.
+and `drift` always reports drift.
+
+The setting `content_hashes = false` in your desired-state file makes `deploy.py` work without the
+block:
+
+- `render` and `apply` write exactly the include wrapper: the four lines of
+  `stack/<stack>/truenas-app.yaml`, or the list of paths of an app with `overrides`.
+- `plan` and `drift` compare the app's YAML and its running images with the release, report the app
+  states as before, and print one note under their first line:
+  `note: content hashes are off (content_hashes = false or --no-hashes): changes to the release's files and to the env files are not detected; redeploy the apps they touch by hand`.
+- `status` shows `files -` and `env -` for every app, and `deploy.py` no longer reads your copies of
+  the environment files.
+
+What you lose: `deploy.py` no longer notices a changed file that an app mounts, such as
+`llama-swap/config.yaml`, `litellm/config.yaml`, `oikb/oikb.yaml`, the files under `searxng/` or
+the `Caddyfile`, nor a changed environment file. A release that changes an `image:` line is still
+detected, as `redeploy`, because the running images then differ from the release's. You redeploy
+the other changed apps by hand. If an app's YAML still carries the block from an earlier `apply`,
+`plan` reports it as `update` with the reason
+`its YAML carries an x-local-agent-stack block, which apply removes while content hashes are off`,
+and `apply` writes the YAML without the block, which recreates the app's containers once.
 
 #### Steps
 
@@ -618,33 +648,108 @@ Until a release of this repository changes this, operate the stack as follows.
 2. Report the problem to the project as an issue. Include the TrueNAS version and the `FAILED`
    lines of the apply, with your domain and addresses replaced by the guide's placeholders.
 
-3. Do not run `deploy.py apply`, and do not create the cron job of
-   [Scheduled drift checks on TrueNAS](#scheduled-drift-checks-on-truenas): it would report drift
-   every day. Use `deploy.py status` and `plan` to read the server, and ignore `files not recorded`,
-   `env not recorded` and an `update` whose only reasons are hashes that are not recorded.
+3. Open `~/.config/local-agent-stack/desired.toml` in a text editor, change the `content_hashes`
+   line to the following, and save the file:
 
-4. For each release update, follow [Updating to a new release](#updating-to-a-new-release), but
-   replace the `plan` and `apply` steps of [Apply the release](#apply-the-release) with a redeploy
-   by hand of every app that the release or your environment files touch: the apps whose folder
-   under `stack/` changed (step 5 of
-   [Check a release before you install it](#check-a-release-before-you-install-it)) and the apps
-   whose environment file you changed. Redeploy them one at a time, in the order `ai-inference`,
-   `ai-rag`, `ai-web`, `ai-edge`, as in [Redeploy one app](#redeploy-one-app). A redeploy reads the
-   compose file, the mounted files and the environment file again, and pulls images that the
-   server lacks.
+        content_hashes = false
 
-5. After the redeploys, check the images:
+4. Validate the file:
+
+        python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml validate
+
+    The output ends with `ok (4 apps, release v1.0, TrueNAS 25.10.8, content hashes off)`.
+
+5. If you copied your desired-state file to TrueNAS for the drift cron job
+   ([Check that deploy.py runs on TrueNAS](#check-that-deploypy-runs-on-truenas)), copy it again:
+
+        scp ~/.config/local-agent-stack/desired.toml truenas_admin@192.0.2.10:/mnt/tank/ai/stacks/desired.toml
+
+6. Check for drift:
+
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml drift
+
+    The second line of the output is the note that content hashes are off. Every app shows
+    `none (RUNNING) in step`, and the output ends with `drift: none`. With the Caddy image built on
+    the server, add `--app ai-inference --app ai-rag --app ai-web` after `drift`, as the note in
+    [How deploy.py works](#how-deploypy-works) explains.
+
+7. Display the status:
 
         ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml status
 
-    Every app shows `images match`. An app that shows `images differ` still runs the old images;
-    redeploy it again.
+    Every app shows `state RUNNING, YAML matches, files -, env -, images match`.
 
 #### Results
 
-The apps run the release with the four-line wrapper, and `deploy.py status` confirms their states
-and images. Changes of the release files and the environment files reach the server through a
-redeploy by hand, because the server records no hashes of them.
+`deploy.py` manages the apps with the include wrapper alone: `plan`, `apply`, `drift`, `status` and
+the drift cron job work, and compare the YAML, the images and the app states. Changes of the
+release's files and of the environment files reach the server only through a redeploy by hand.
+
+#### Next steps
+
+While `content_hashes = false` is set, operate the stack as follows:
+
+- For each release update, follow [Updating to a new release](#updating-to-a-new-release). In
+  [Apply the release](#apply-the-release), `plan` shows `redeploy` only for the apps whose images
+  changed, and `apply` redeploys them. Then redeploy by hand, as in step 5 of that task, every other
+  app whose folder under `stack/` changed (step 5 of
+  [Check a release before you install it](#check-a-release-before-you-install-it)) and every other
+  app whose environment file you changed. A redeploy reads the compose file, the mounted files and
+  the environment file again.
+- After you change an environment file outside a release update, for example when you rotate a
+  secret, redeploy its app as in [Redeploy one app](#redeploy-one-app), unless the task that you
+  follow ends with that redeploy. An app reads the new values only at its next redeploy.
+- When a release of this project or of TrueNAS resolves the issue of step 2, turn the hashes back
+  on with [Turn the content hashes back on](#turn-the-content-hashes-back-on).
+
+### Turn the content hashes back on
+
+#### Prerequisites
+
+- `deploy.py drift` reports `drift: none` with `content_hashes = false`.
+- No agent or Open WebUI user is working: the task recreates the containers of every app once.
+
+#### About this task
+
+The first `apply` with the hashes on records them in every app's YAML, which recreates every
+container of each app once. If TrueNAS still refuses the block, every app reports `FAILED` and keeps
+its YAML and its running containers, as in the first attempt, and you switch the hashes off again.
+
+#### Steps
+
+1. Open `~/.config/local-agent-stack/desired.toml` in a text editor, change the `content_hashes`
+   line to the following, and save the file:
+
+        content_hashes = true
+
+2. Validate the file:
+
+        cd ~/local-agent-stack
+        python3 tools/deploy.py --file ~/.config/local-agent-stack/desired.toml validate
+
+    The output ends with `ok (4 apps, release v1.0, TrueNAS 25.10.8)`, without
+    `content hashes off`.
+
+3. Record the hashes: follow [Record the content hashes](#record-the-content-hashes) from step 1.
+
+    If every app prints `<app>: FAILED: app.update:` with `Invalid compose configuration`,
+    TrueNAS still refuses the block: set `content_hashes = false` again and repeat steps 4 to 7 of
+    [Update the apps without content hashes](#update-the-apps-without-content-hashes).
+
+4. If you copied your desired-state file to TrueNAS for the drift cron job, copy it again:
+
+        scp ~/.config/local-agent-stack/desired.toml truenas_admin@192.0.2.10:/mnt/tank/ai/stacks/desired.toml
+
+5. Display the status:
+
+        ~/.local/share/local-agent-stack/deploy-venv/bin/python tools/deploy.py --file ~/.config/local-agent-stack/desired.toml status
+
+    Every app shows `files match, env match`.
+
+#### Results
+
+Every app's YAML records the hashes of its files and its environment file again, and `plan` reports
+`update` for an app whose release files or environment file change.
 
 ## Updating to a new release
 
@@ -656,7 +761,9 @@ verifies the result. Plan for a few minutes of interruption per app;
 Before the first update, record the content hashes as in
 [Record the content hashes](#record-the-content-hashes): `status` shows `files match, env match`
 for every app. Without them, `apply` cannot tell which apps the release changes, and updates every
-app.
+app. If TrueNAS refused the hashes and your desired-state file sets `content_hashes = false`, follow
+the changes that the next steps of
+[Update the apps without content hashes](#update-the-apps-without-content-hashes) list.
 
 ### Prepare for a release update
 
@@ -830,7 +937,9 @@ before it moves to the next. A new published image reaches the server this way t
 pins it in the compose file, which changes the app's `files` hash. Some changes remain manual,
 because `deploy.py` does not detect them: a new build of an image that you build on the server, and
 an override copy that you refreshed in [Update the clones](#update-the-clones). With the local Caddy image, name the other apps with
-`--app` in steps 2 to 4 (see the note in [How deploy.py works](#how-deploypy-works)).
+`--app` in steps 2 to 4 (see the note in [How deploy.py works](#how-deploypy-works)). With
+`content_hashes = false`, `apply` redeploys only the apps whose images changed, and step 5 covers
+every other app that the release or your environment files changed.
 
 #### Steps
 
@@ -868,8 +977,11 @@ an override copy that you refreshed in [Update the clones](#update-the-clones). 
 
 5. Redeploy by hand each app that `apply` did not change and that needs it: `ai-web` after a new
    hub image built in step 1, `ai-edge` after a new local Caddy image, and an app whose override
-   copy you refreshed. Do one app at a time, in the
-   order `ai-inference`, `ai-rag`, `ai-web`, `ai-edge`:
+   copy you refreshed. With `content_hashes = false`, also every app whose folder under `stack/`
+   changed (step 5 of
+   [Check a release before you install it](#check-a-release-before-you-install-it)) or whose
+   environment file you changed. Do one app at a time, in the order `ai-inference`, `ai-rag`,
+   `ai-web`, `ai-edge`:
 
         sudo midclt call -j app.redeploy <app>
 
@@ -1008,7 +1120,7 @@ stack is scheduled on a workstation.
 
 On TrueNAS, `deploy.py --local` talks to the local middleware socket as `root`, so it needs no API
 key and no certificate. It reads the environment files in `/mnt/tank/ai/secrets` for the `env`
-hashes and ignores `env_dir`. If your workstation copies differ from the server's files, the check
+hashes and ignores `env_dir`; with `content_hashes = false` it reads none of them. If your workstation copies differ from the server's files, the check
 reports the app as drifted, with the note
 `if apply ran from another machine, its copy of the env file differs from the one read here`: keep
 both copies identical, as [Add new variables to the secrets files](#add-new-variables-to-the-secrets-files)
@@ -1253,7 +1365,8 @@ Table: Effect of a redeploy
 
 `deploy.py apply` updates an app whenever its release files, its environment file or its images
 change. Redeploy an app by hand for the changes that `deploy.py` does not detect: a changed override
-file or override copy, an image that you rebuilt on the server, and a branch deployed for testing.
+file or override copy, an image that you rebuilt on the server, a branch deployed for testing and,
+with `content_hashes = false`, changed release files and environment files.
 
 #### Steps
 
@@ -1704,9 +1817,12 @@ address must join `ai-net`; the stack does not include one.
 
 #### Steps
 
-1. List the loaded models:
+1. List the loaded models. The shell inside the container reads the key from the container's
+   environment, and its built-in `printf` passes it to `curl` on standard input, so the key never
+   appears in a command line or the process list:
 
-        sudo docker exec llama-swap sh -c 'curl -fsS -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/running'
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/running'
 
     The output lists `coder`, `embed` and `rerank` with the state `ready`, or `coder-moe` instead of
     `coder` while a client uses the fast profile.
@@ -1721,7 +1837,8 @@ address must join `ai-net`; the stack does not include one.
 
 3. Read the Prometheus metrics of the `coder` process:
 
-        sudo docker exec llama-swap sh -c 'curl -fsS -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://127.0.0.1:8080/upstream/coder/metrics' | grep -m10 '^llamacpp:'
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/upstream/coder/metrics' | grep -m10 '^llamacpp:'
 
     The lines include the requests in progress and the token counters of `llama-server`.
 

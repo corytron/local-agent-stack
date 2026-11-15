@@ -17,6 +17,8 @@ are the same; an option written on both sides takes the value written after the 
   --config FILE   the connection settings (default: ~/.config/local-agent-stack/truenas.toml)
   --local         on the NAS itself, as root: the local middleware socket, no key and no settings
                   file; the env files are read from secrets_dir
+  --no-hashes     run as if the desired state said content_hashes = false (see "Without content
+                  hashes" below), whatever it says
 
 What runs where (owner, 2026-11-15): nothing of this stack runs on the workstation full time (no
 timers, no daemons), so drift is an on-demand command: run it by hand or by an agent, and after
@@ -46,6 +48,8 @@ clone and passes it with --file):
   env_dir = "~/.config/local-agent-stack/secrets"
                                             optional: where this machine keeps copies of the env
                                             files (<env_dir>/<stack>.env), for the env hash
+  content_hashes = true                     optional, default true; false leaves the content hashes
+                                            out (see "Without content hashes" below)
   [apps.ai-edge]                            one table per TrueNAS custom app, in apply's order
   stack = "edge"                            a folder under stack/
   overrides = ["/mnt/tank/ai/appdata/caddy/internal-ca.override.yaml"]
@@ -53,9 +57,10 @@ clone and passes it with --file):
                                             release's compose file, in this order
 
 Each app is a TrueNAS custom app whose YAML is the include wrapper of docs/stack-design.md,
-section 4, followed by the content hashes. For the default paths and an app without overrides,
-stack/<stack>/truenas-app.yaml holds the first four lines byte for byte (what the guide installs by
-hand, and what render prints after its "# <app>" line, minus the hashes):
+section 4, followed by the content hashes (none with content_hashes = false). For the default paths
+and an app without overrides, stack/<stack>/truenas-app.yaml holds the first four lines byte for
+byte (what the guide installs by hand, and what render prints after its "# <app>" line, minus the
+hashes):
 
   include:
     - path: <stacks_dir>/stack/<stack>/compose.yaml
@@ -101,6 +106,16 @@ hand. Compose accepts any top-level key that starts with x- and ignores it (Comp
 `docker compose config` with Compose v5.6.0 on c4dev accepted both wrapper shapes with the
 extension; the Compose version TrueNAS bundles was not tried).
 
+Without content hashes. TrueNAS checks a custom app's YAML with `docker compose config` before it
+stores it, so a bundled Compose that refused the extension would fail every app.create and
+app.update that carries it. For that case, `content_hashes = false` in the desired state (or
+--no-hashes on one run) leaves the hashes out: render and apply write exactly the include wrapper,
+for an app without overrides the four lines of stack/<stack>/truenas-app.yaml, and an app whose
+stored YAML still carries the extension is an update that removes it. plan and drift compare the
+YAML and the images only and say once that changes to the release's files and to the env files are
+not detected (redeploy those apps by hand); the env files are not read, and status shows `files -`
+and `env -`. Turning the hashes back on makes every app an update once, which records them.
+
 The workstation's connection settings (~/.config/local-agent-stack/truenas.toml, mode 0600, never
 in the repository; the TrueNAS web interface and its API move to port 8443 in the guide's
 chapter 3):
@@ -142,7 +157,8 @@ WEBSOCKET_CLIENT_CA_BUNDLE (websocket-client reads it when no CA is given in cod
 What plan decides, per app (apply never deletes anything; "edge cases before automation"):
   create    the app does not exist                          -> app.create
   update    its stored YAML differs from the wrapper: the include (paths, overrides, env_file),
-            or a content hash (the release's files or the env file changed, or not recorded)
+            or a content hash (the release's files or the env file changed, or not recorded;
+            without content hashes: an extension still stored)
                                                             -> app.update (recreates the containers
                                                                of a running app)
   redeploy  the YAML matches but the images it runs are not the release's, or it CRASHED
@@ -191,7 +207,16 @@ RELEASE_RE = re.compile(r"^v[0-9]+\.[0-9]+(-beta\.[1-9][0-9]*)?$")
 VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)+$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 ENV_DIR_RE = re.compile(r"^(/|~/)[A-Za-z0-9._/-]+$")
-DESIRED_KEYS = {"schema", "release", "truenas_version", "stacks_dir", "secrets_dir", "env_dir", "apps"}
+DESIRED_KEYS = {
+    "schema",
+    "release",
+    "truenas_version",
+    "stacks_dir",
+    "secrets_dir",
+    "env_dir",
+    "content_hashes",
+    "apps",
+}
 APP_KEYS = {"stack", "overrides"}
 CONFIG_KEYS = {"uri", "read_user", "read_key_file", "apply_user", "apply_key_file", "ca_file"}
 STATES_IN_STEP = {"RUNNING"}
@@ -202,6 +227,10 @@ POLL_SECONDS = 5
 # The top-level Compose extension that carries the content hashes, and its keys in YAML order.
 EXTENSION = "x-local-agent-stack"
 CONTENT_KEYS = ("files", "env")
+HASHES_OFF_NOTE = (
+    "content hashes are off (content_hashes = false or --no-hashes): changes to the release's files "
+    "and to the env files are not detected; redeploy the apps they touch by hand"
+)
 # A ./path in compose.yaml (bind-mount sources); keys whose ./paths are build inputs are skipped.
 SOURCE_RE = re.compile(r"(?<![\w./-])\./[\w.-][\w./-]*")
 BUILD_KEYS = {"build", "context", "dockerfile"}
@@ -235,6 +264,7 @@ class Desired:
     secrets_dir: str
     apps: list  # of App, in the file's order
     env_dir: str | None = None  # as written in the file (may start with ~/); never expanded for display
+    content_hashes: bool = True  # false: the YAML carries no x-local-agent-stack block (docstring)
 
     def compose_path(self, app):
         return f"{self.stacks_dir}/stack/{app.stack}/compose.yaml"
@@ -303,6 +333,9 @@ def load_desired(path, root=ROOT, check_files=True):
         problems.append(
             f"env_dir must be a folder like ~/.config/local-agent-stack/secrets or /abs/path, not {env_dir!r}"
         )
+    content_hashes = data.get("content_hashes", True)
+    if not isinstance(content_hashes, bool):
+        problems.append(f"content_hashes must be true or false, not {content_hashes!r}")
     apps = []
     table = data.get("apps")
     if not isinstance(table, dict) or not table:
@@ -338,7 +371,13 @@ def load_desired(path, root=ROOT, check_files=True):
         apps.append(App(name, stack, tuple(overrides)))
     if problems:
         raise ConfigError(f"{path}: " + "; ".join(problems))
-    return Desired(release, version, data["stacks_dir"], data["secrets_dir"], apps, env_dir)
+    return Desired(release, version, data["stacks_dir"], data["secrets_dir"], apps, env_dir, content_hashes)
+
+
+def hashes_on(args, desired):
+    """Whether this run records and compares the content hashes: the desired state's content_hashes,
+    unless --no-hashes turns them off."""
+    return desired.content_hashes and not args.no_hashes
 
 
 def select_apps(desired, names):
@@ -697,6 +736,7 @@ class Plan:
     version: str | None
     apps: list  # of AppPlan
     unmanaged: list  # app names on the NAS the desired state does not name
+    hashes: bool = True  # false: content hashes off, YAML and images compared only
 
     def drifted(self):
         return any(item.action != "none" or item.state not in STATES_IN_STEP for item in self.apps)
@@ -728,13 +768,18 @@ def content_notes(computed, why_not, verb="compared"):
     return notes
 
 
-def plan_app(desired, app, entry, stored, release, env):
-    computed, why_not = computed_content(release, env)
+def plan_app(desired, app, entry, stored, release, env, hashes=True):
+    """One app's action. With hashes off, the release's files hash and env are ignored: the YAML
+    wanted is the bare include wrapper, and files and env stay "-"."""
+    if hashes:
+        computed, why_not = computed_content(release, env)
+    else:
+        computed, why_not = dict.fromkeys(CONTENT_KEYS), {}
     checks = {"yaml": "-", "files": "-", "env": "-", "images": "-"}
     if entry is None:
         content = {key: value for key, value in computed.items() if value is not None}
         checks["yaml"] = "missing"
-        notes = content_notes(computed, why_not, "hashed")
+        notes = content_notes(computed, why_not, "hashed") if hashes else []
         return AppPlan(app.name, "create", None, ["not installed"], [], notes, content, checks, app.overrides)
     state = entry.get("state")
     if not entry.get("custom_app"):
@@ -750,11 +795,11 @@ def plan_app(desired, app, entry, stored, release, env):
             checks,
             app.overrides,
         )
-    notes = content_notes(computed, why_not)
+    notes = content_notes(computed, why_not) if hashes else []
     recorded = stored.get(EXTENSION) if isinstance(stored, dict) else None
     recorded = recorded if isinstance(recorded, dict) else {}
     content = {}
-    for key in CONTENT_KEYS:
+    for key in CONTENT_KEYS if hashes else ():
         if computed[key] is not None:
             content[key] = computed[key]
             checks[key] = (
@@ -773,6 +818,9 @@ def plan_app(desired, app, entry, stored, release, env):
     )
     if without != desired.wrapper_config(app):
         reasons.append("its YAML differs from the include wrapper")
+        checks["yaml"] = "differs"
+    elif not hashes and stored != want:
+        reasons.append(f"its YAML carries an {EXTENSION} block, which apply removes while content hashes are off")
         checks["yaml"] = "differs"
     else:
         checks["yaml"] = "matches"
@@ -823,7 +871,7 @@ def plan_app(desired, app, entry, stored, release, env):
     return AppPlan(app.name, "none", state, [], [], notes, content, checks, app.overrides)
 
 
-def make_plan(session, desired, apps, root=ROOT, runner=run_quiet, release=None, local=False):
+def make_plan(session, desired, apps, root=ROOT, runner=run_quiet, release=None, local=False, hashes=True):
     version = check_version(session, desired)
     on_nas = query_apps(session)
     if release is None:
@@ -835,14 +883,22 @@ def make_plan(session, desired, apps, root=ROOT, runner=run_quiet, release=None,
         if entry is not None and entry.get("custom_app"):
             stored = session.call("app.config", app.name)
         content = release.get(app.name) or Release(None, "not computed", None, "not computed")
-        plans.append(plan_app(desired, app, entry, stored, content, env_hash(desired, app, local)))
+        env = env_hash(desired, app, local) if hashes else (None, None)  # off: the env file is not read
+        plans.append(plan_app(desired, app, entry, stored, content, env, hashes))
     managed = {app.name for app in desired.apps}
     unmanaged = sorted(name for name in on_nas if name not in managed)
-    return Plan(version, plans, unmanaged)
+    return Plan(version, plans, unmanaged, hashes)
 
 
-def print_plan(plan, desired, out):
+def print_header(plan, desired, out, note=True):
+    """The first line of plan and status, and once per run the note that the hashes are off."""
     out.write(f"TrueNAS {plan.version}; desired release {desired.release}\n")
+    if note and not plan.hashes:
+        out.write(f"note: {HASHES_OFF_NOTE}\n")
+
+
+def print_plan(plan, desired, out, note=True):
+    print_header(plan, desired, out, note)
     for item in plan.apps:
         state = item.state or "-"
         reasons = "; ".join(item.reasons) if item.reasons else "in step"
@@ -926,6 +982,8 @@ def issue_body(plan, desired):
             continue
         why = "; ".join(item.reasons + item.notes) or "-"
         lines.append(f"| {item.name} | {item.action} | {item.state or '-'} | {why.replace('|', '/')} |")
+    if not plan.hashes:
+        lines += ["", f"Note: {HASHES_OFF_NOTE}."]
     lines += ["", "Fix with `tools/deploy.py plan`, then `tools/deploy.py apply`; this issue closes itself on the"]
     lines.append("next `tools/deploy.py drift --issue` that finds no drift.")
     return "\n".join(lines) + "\n"
@@ -967,16 +1025,23 @@ def repo_root(args):
 
 def cmd_validate(args, out):
     desired = load_desired(args.file, repo_root(args))
+    off = "" if hashes_on(args, desired) else ", content hashes off"
     out.write(
-        f"{args.file}: ok ({len(desired.apps)} apps, release {desired.release}, TrueNAS {desired.truenas_version})\n"
+        f"{args.file}: ok ({len(desired.apps)} apps, release {desired.release}, "
+        f"TrueNAS {desired.truenas_version}{off})\n"
     )
     return EXIT_OK
 
 
 def cmd_render(args, out, runner):
-    """Each app's YAML as apply would write it for a new app: the hashes this machine can compute."""
+    """Each app's YAML as apply would write it for a new app: the hashes this machine can compute,
+    or with the hashes off the include wrapper alone (nothing is read from git or the env files)."""
     desired = load_desired(args.file, check_files=False)
     apps = select_apps(desired, [args.app] if args.app else [])
+    if not hashes_on(args, desired):
+        for app in apps:
+            out.write(f"# {app.name}\n{desired.wrapper(app)}")
+        return EXIT_OK
     release = all_release_content(repo_root(args), desired.release, apps, runner)
     for app in apps:
         computed, why_not = computed_content(release[app.name], env_hash(desired, app, args.local))
@@ -998,9 +1063,10 @@ def with_session(args, role, work, client_factory):
 def cmd_plan(args, out, client_factory, runner):
     desired = load_desired(args.file, check_files=False)
     apps = select_apps(desired, args.app)
+    hashes = hashes_on(args, desired)
 
     def work(session):
-        plan = make_plan(session, desired, apps, repo_root(args), runner, local=args.local)
+        plan = make_plan(session, desired, apps, repo_root(args), runner, local=args.local, hashes=hashes)
         print_plan(plan, desired, out)
         return plan
 
@@ -1016,12 +1082,13 @@ def cmd_plan(args, out, client_factory, runner):
 
 def cmd_status(args, out, client_factory, runner):
     desired = load_desired(args.file, check_files=False)
+    hashes = hashes_on(args, desired)
 
     def work(session):
-        return make_plan(session, desired, desired.apps, repo_root(args), runner, local=args.local)
+        return make_plan(session, desired, desired.apps, repo_root(args), runner, local=args.local, hashes=hashes)
 
     plan = with_session(args, "read", work, client_factory)
-    out.write(f"TrueNAS {plan.version}; desired release {desired.release}\n")
+    print_header(plan, desired, out)
     for item in plan.apps:
         checks = item.checks
         out.write(
@@ -1037,15 +1104,16 @@ def cmd_apply(args, out, client_factory, runner, clock=time.monotonic, sleep=tim
     desired = load_desired(args.file, check_files=False)
     apps = select_apps(desired, args.app)
     release = all_release_content(repo_root(args), desired.release, apps, runner)
+    hashes = hashes_on(args, desired)
 
     def work(session):
-        plan = make_plan(session, desired, apps, runner=runner, release=release, local=args.local)
+        plan = make_plan(session, desired, apps, runner=runner, release=release, local=args.local, hashes=hashes)
         print_plan(plan, desired, out)
         failures = apply_plan(session, desired, plan, out, args.dry_run, args.timeout, clock, sleep)
         if not args.dry_run:
-            after = make_plan(session, desired, apps, runner=runner, release=release, local=args.local)
+            after = make_plan(session, desired, apps, runner=runner, release=release, local=args.local, hashes=hashes)
             out.write("after apply:\n")
-            print_plan(after, desired, out)
+            print_plan(after, desired, out, note=False)
             if after.drifted():
                 failures += 1
         return failures
@@ -1072,6 +1140,12 @@ def add_options(parser, defaults):
         default=default(False),
         help="on the NAS as root: the local middleware socket; env files from secrets_dir",
     )
+    parser.add_argument(
+        "--no-hashes",
+        action="store_true",
+        default=default(False),
+        help="as content_hashes = false: no x-local-agent-stack block; YAML and images compared only",
+    )
     parser.add_argument("--root", default=default(None), help=argparse.SUPPRESS)
 
 
@@ -1079,7 +1153,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="deploy.py",
         description="Make the TrueNAS server run what deploy/truenas.toml says (docs/stack-design.md, section 8). "
-        "The options --file, --config and --local go before or after the command.",
+        "The options --file, --config, --local and --no-hashes go before or after the command.",
         epilog="Exit codes: 0 ok, 1 a step failed, 2 usage or configuration, 3 drift (drift only).",
     )
     add_options(parser, defaults=True)

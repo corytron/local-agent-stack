@@ -183,7 +183,7 @@ set -a; . ~/.config/local-agent-stack/client.env; set +a
 
 3. List the model names that your key may use:
 
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" https://llm.$LAB_DOMAIN/v1/models |
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") https://llm.$LAB_DOMAIN/v1/models |
           python3 -c "import json, sys; \
             print(' '.join(sorted(m['id'] for m in json.load(sys.stdin)['data'])))"
 
@@ -191,7 +191,7 @@ set -a; . ~/.config/local-agent-stack/client.env; set +a
 
 4. Display your key's record:
 
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" https://llm.$LAB_DOMAIN/key/info |
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") https://llm.$LAB_DOMAIN/key/info |
           python3 -c "import json, sys; i = json.load(sys.stdin)['info']; \
             print(i.get('key_alias'), i.get('status'), i.get('spend'), i.get('models'))"
 
@@ -199,7 +199,7 @@ set -a; . ~/.config/local-agent-stack/client.env; set +a
 
 5. Ask `local-coder`, the agent model with thinking on, a question in the OpenAI format:
 
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" -H 'Content-Type: application/json' \
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") -H 'Content-Type: application/json' \
           -d '{"model": "local-coder", "max_tokens": 2048, "messages": [{"role": "user",
                "content": "What is 17 * 23? Answer with the number only."}]}' \
           https://llm.$LAB_DOMAIN/v1/chat/completions |
@@ -213,7 +213,7 @@ set -a; . ~/.config/local-agent-stack/client.env; set +a
 
 6. Ask `local-sonnet` the same question in the Anthropic format, as Claude Code does:
 
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" -H 'Content-Type: application/json' \
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") -H 'Content-Type: application/json' \
           -H 'anthropic-version: 2023-06-01' \
           -d '{"model": "local-sonnet", "max_tokens": 2048, "messages": [{"role": "user",
                "content": "What is 17 * 23? Answer with the number only."}]}' \
@@ -227,7 +227,7 @@ set -a; . ~/.config/local-agent-stack/client.env; set +a
 
 7. Request an embedding:
 
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" -H 'Content-Type: application/json' \
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") -H 'Content-Type: application/json' \
           -d '{"model": "local-embed", "input": "local agent stack"}' \
           https://llm.$LAB_DOMAIN/v1/embeddings |
           python3 -c "import json, sys; \
@@ -237,7 +237,7 @@ set -a; . ~/.config/local-agent-stack/client.env; set +a
 
 8. Rerank two documents:
 
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" -H 'Content-Type: application/json' \
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") -H 'Content-Type: application/json' \
           -d '{"model": "local-rerank", "query": "What is pgvector?", "top_n": 2,
                "documents": ["pgvector adds vector search to PostgreSQL.",
                              "Bananas are yellow."]}' \
@@ -306,7 +306,7 @@ answer, embeddings and reranking work, and an invalid key is refused.
 5. Send an MCP `initialize` request to the hub's `fetch` server with the token:
 
         curl -sS https://mcp.$LAB_DOMAIN/servers/fetch/mcp \
-          -H "Authorization: Bearer $MCP_HUB_TOKEN" -H 'Content-Type: application/json' \
+          -H @<(printf 'Authorization: Bearer %s\n' "$MCP_HUB_TOKEN") -H 'Content-Type: application/json' \
           -H 'Accept: application/json, text/event-stream' \
           -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize",
                "params": {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -369,7 +369,7 @@ returns a structured tool call with valid JSON arguments, not text.
 
 2. Send it:
 
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" -H 'Content-Type: application/json' \
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") -H 'Content-Type: application/json' \
           -d @/tmp/toolcall-openai.json -o /tmp/toolcall-openai.out \
           https://llm.$LAB_DOMAIN/v1/chat/completions
 
@@ -387,7 +387,7 @@ returns a structured tool call with valid JSON arguments, not text.
 
         sed 's/"local-coder"/"local-fast"/' /tmp/toolcall-openai.json \
           > /tmp/toolcall-openai-fast.json
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" -H 'Content-Type: application/json' \
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") -H 'Content-Type: application/json' \
           -d @/tmp/toolcall-openai-fast.json -o /tmp/toolcall-openai.out \
           https://llm.$LAB_DOMAIN/v1/chat/completions
 
@@ -438,7 +438,7 @@ the OpenAI route in every run.
 
 2. Send it:
 
-        curl -sS -H "Authorization: Bearer $LOCAL_LLM_KEY" -H 'Content-Type: application/json' \
+        curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$LOCAL_LLM_KEY") -H 'Content-Type: application/json' \
           -H 'anthropic-version: 2023-06-01' \
           -d @/tmp/toolcall-anthropic.json -o /tmp/toolcall-anthropic.out \
           https://llm.$LAB_DOMAIN/v1/messages
@@ -626,9 +626,10 @@ of `bench.sh` is three), so that one slow run weighs less in each speed.
 
         echo '{"model": "coder-fast", "max_tokens": 16,
           "messages": [{"role": "user", "content": "Reply with the single word OK."}]}' |
-          sudo docker exec -i llama-swap sh -c 'curl -sS -o /dev/null -w "%{http_code}\n" \
-            -d @- -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" \
-            -H "Content-Type: application/json" http://127.0.0.1:8080/v1/chat/completions'
+          sudo docker exec -i llama-swap sh -c 'body=$(cat)
+            printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+            curl -sS -o /dev/null -w "%{http_code}\n" -d "$body" -H @- \
+              -H "Content-Type: application/json" http://127.0.0.1:8080/v1/chat/completions'
 
     The output is `200` once the model has loaded.
 
