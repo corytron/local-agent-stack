@@ -123,8 +123,9 @@ in the agent's hand-back.
 ## 6. Secrets (names only; values never in git)
 
 `inference.env`: `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `LITELLM_DB_PASSWORD`, `LLAMA_SWAP_API_KEY`.
-`rag.env`: `PG_PASSWORD`, `DOCLING_API_KEY`, `OIKB_TOKEN` (an Open WebUI API key).
-`web.env`: `WEBUI_SECRET_KEY`, `PG_PASSWORD` (same value as rag), `LITELLM_WEBUI_KEY`, `SEARXNG_SECRET`, `MCP_HUB_TOKEN`.
+`rag.env`: `PG_PASSWORD` (URL-safe), `DOCLING_API_KEY`, `OIKB_TOKEN` (the `indexer` user's Open WebUI key), `OIKB_KB_ID` (not secret), optional `OIKB_API_KEY`.
+`web.env`: `LAB_DOMAIN`, `WEBUI_SECRET_KEY`, `PG_PASSWORD` (same value as rag), `DOCLING_API_KEY` (same as rag), `LITELLM_WEBUI_KEY` (a LiteLLM virtual key allowed local-coder/fast/coder-moe/embed/rerank), `SEARXNG_SECRET`, `MCP_HUB_TOKEN` (`[A-Za-z0-9-._~+/]` only), `KB_READER_TOKEN` (the `kb-reader` user's key; empty until created), optional `SEARXNG_CONTACT_URL`.
+Open WebUI reads most settings only on its first start (PersistentConfig), so `web.env` must be complete before the first install; later changes to those go through the Admin Panel (`stack/web/README.md`).
 `edge.env`: `LAB_DOMAIN`, `ACME_EMAIL`, `DNS_PROVIDER`, `DNS_PROVIDER_TOKEN`.
 Workstation: `~/.config/local-agent-stack/client.env` with `LOCAL_LLM_KEY`, `MCP_HUB_TOKEN`.
 `tools/secrets.py gen <app>` prints a new `<app>.env` with random values for every generated

@@ -1,0 +1,34 @@
+# oikb daemon configuration for the ai-rag app (stack/rag/compose.yaml mounts this file
+# read-only at /config/oikb.yaml). oikb 0.6.0 keeps an Open WebUI knowledge base in step with
+# the rag-docs dataset: every interval it sends a SHA-256 manifest of the folder to Open WebUI's
+# sync/diff endpoint, uploads only added or changed files, and removes deleted ones.
+#
+# ${VAR} and ${VAR:-default} are replaced from the container environment when the daemon
+# starts (oikb docs/guide.md, "Environment Variable Interpolation"). OIKB_KB_ID is the ID of
+# the knowledge base, copied from its URL in Open WebUI (Workspace > Knowledge); until it is
+# set, every sync fails with an error in the log and nothing else happens.
+
+defaults:
+  interval: 15m
+  # Uploads in parallel; each one is parsed by docling and embedded on the CPU, so keep it low.
+  concurrency: 2
+  filter:
+    max-size: 100mb
+    exclude:
+      - "**/.git/**"
+      - "**/node_modules/**"
+      - "**/.zfs/**"
+      - "**/.recycle/**"
+      - "**/@eaDir/**"
+      - "**/~$*"
+      - "**/._*"
+      - "**/*.tmp"
+      - "**/.DS_Store"
+
+sources:
+  # The whole rag-docs dataset (mounted read-only at /data/docs) into one knowledge base. To
+  # split it, add entries with a subfolder as source and their own kb-id; entries that share a
+  # kb-id are synced together as one manifest.
+  - name: rag-docs
+    source: /data/docs
+    kb-id: ${OIKB_KB_ID:-set-OIKB_KB_ID-in-rag.env}

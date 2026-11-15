@@ -1,0 +1,82 @@
+# SearXNG settings for the ai-web app (stack/web/compose.yaml), mounted read-only at
+# /etc/searxng/settings.yml. Only the differences from SearXNG's own defaults are listed:
+# use_default_settings merges this file over the defaults, and engine entries merge by name.
+#
+# Not set here on purpose:
+#   server.secret_key  comes from SEARXNG_SECRET (web.env); the default is refused at start-up.
+#   server.base_url    comes from SEARXNG_BASE_URL (https://search.<LAB_DOMAIN>/).
+#   port and address   the container's server (granian) listens on [::]:8080; compose attaches
+#                      it to ai-net only and publishes no port.
+
+use_default_settings: true
+
+general:
+  instance_name: "searxng-local"
+
+server:
+  # LAN-only instance reached through Caddy and by containers on ai-net. The limiter would
+  # throttle the API clients (Open WebUI, mcp-searxng) and needs Valkey; leave it off unless
+  # the instance is ever exposed beyond the LAN.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  # json is required: without it Open WebUI and mcp-searxng get HTTP 403 from /search.
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 5.0
+
+engines:
+  # General web results come from the defaults (DuckDuckGo, Brave, Wikipedia, Wikidata).
+  # No Google or Bing scraping: the main google, bing and qwant engines already ship disabled
+  # and are listed so that a change in SearXNG's defaults cannot turn them on silently; the
+  # Google and Bing side engines below ship enabled in this SearXNG version and are turned off.
+  - name: google
+    disabled: true
+  - name: bing
+    disabled: true
+  - name: qwant
+    disabled: true
+  - name: google cse
+    disabled: true
+  - name: google cse images
+    disabled: true
+  - name: google news
+    disabled: true
+  - name: google videos
+    disabled: true
+  - name: google scholar
+    disabled: true
+  - name: bing images
+    disabled: true
+  - name: bing news
+    disabled: true
+  - name: bing videos
+    disabled: true
+  # Tor (.onion) engines cannot load without a Tor proxy and log an error at every start.
+  - name: ahmia
+    inactive: true
+  - name: torch
+    inactive: true
+  # Developer sources that ship disabled; useful to a coding agent.
+  - name: npm
+    disabled: false
+  - name: crates.io
+    disabled: false
+  - name: pkg.go.dev
+    disabled: false
+  - name: gitlab
+    disabled: false
+  - name: codeberg
+    disabled: false
+  - name: huggingface
+    disabled: false
+  - name: hackernews
+    disabled: false
