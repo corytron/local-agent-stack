@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- MCP hub: the knowledge-base server's zod is lifted to 4.6.7, fixing a memory-exhaustion advisory (high) in zod 3.x (#25).
+
 ## v1.0 (2026-11-15)
 
 - Public under the Apache License 2.0.
