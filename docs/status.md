@@ -1,5 +1,8 @@
 # Status
 
+- 2026-11-15: **v1.2 released** (https://github.com/corytron/local-agent-stack/releases/tag/v1.2):
+  TrueNAS UI on its own ports with a port inventory, UniFi UDM-Pro SE DNS, images on CPU
+  projectors, Open WebUI memory (issues 31, 32, 33); guide revision A02.
 - 2026-11-15: **v1.1 released** (https://github.com/corytron/local-agent-stack/releases/tag/v1.1):
   the MCP hub image rebuilt with zod 4.6.7 (#25, high advisory); guide revision A01.
 - 2026-11-15: **v1.0 released** (https://github.com/corytron/local-agent-stack/releases/tag/v1.0):
