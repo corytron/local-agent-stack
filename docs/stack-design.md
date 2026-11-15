@@ -49,8 +49,8 @@ reach them by name on `ai-net`.
 | `ai-web` | `stack/web/compose.yaml` | `open-webui`, `searxng`, `mcp-hub` | 8080, 8080, 8096 | none |
 | `ai-edge` | `stack/edge/compose.yaml` | `caddy`, `gpu-exporter` | 443/80 published; 9835 | exporter only |
 
-Only `caddy` publishes ports (443, and 80 for redirects). The TrueNAS web UI moves to 8080/8443
-first (guide chapter 3).
+Only `caddy` publishes ports (443, and 80 for redirects). The TrueNAS web UI keeps its own ports
+(the owner's: 444 HTTPS, 81 redirect); `tools/port-inventory.sh` checks that 80/443 are free (#31).
 
 ## 3. Hostnames (placeholders; the reader substitutes their domain)
 

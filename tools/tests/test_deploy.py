@@ -206,7 +206,7 @@ class Workspace(unittest.TestCase):
         self.config = self.dir / "conf" / "truenas.toml"
         self.config.parent.mkdir()
         self.config.write_text(
-            'uri = "wss://192.0.2.10:8443/api/current"\n'
+            'uri = "wss://192.0.2.10:444/api/current"\n'
             'read_user = "deploy-read"\nread_key_file = "read.key"\n'
             'apply_user = "deploy-apply"\napply_key_file = "apply.key"\n'
         )
@@ -465,10 +465,47 @@ class TestConnection(Workspace):
         self.assertEqual(
             params[0], {"mechanism": "API_KEY_PLAIN", "username": "deploy-read", "api_key": "1-read-not-a-real-key"}
         )
-        self.assertEqual(self.uris, ["wss://192.0.2.10:8443/api/current"])
+        self.assertEqual(self.uris, ["wss://192.0.2.10:444/api/current"])
         self.assertTrue(client.closed)
         writes = [call for call in client.calls if call[0] in ("app.create", "app.update", "app.redeploy")]
         self.assertEqual(writes, [])
+
+    def test_uri_is_used_as_written(self):
+        # The port is the TrueNAS web interface's HTTPS port, whatever the reader set it to; deploy.py
+        # adds, removes and checks no port.
+        for uri in ("wss://192.0.2.10:9443/api/current", "wss://truenas.lab.example.com/api/current"):
+            with self.subTest(uri=uri):
+                self.config.write_text(self.config.read_text().replace(self.config_uri(), uri))
+                self.uris = []
+                client = FakeClient(
+                    {"ai-inference": app_entry("ai-inference", "inference"), "ai-web": app_entry("ai-web", "web")}
+                )
+                code, _ = self.run_main(client, "plan")
+                self.assertEqual(code, 0)
+                self.assertEqual(self.uris, [uri])
+
+    def config_uri(self):
+        return self.config.read_text().split('uri = "', 1)[1].split('"', 1)[0]
+
+    def test_connection_failure_names_the_port(self):
+        def refuse(uri):
+            self.uris.append(uri)
+            raise ConnectionRefusedError("[Errno 111] Connection refused")
+
+        with redirect_stderr(io.StringIO()) as err:
+            code = deploy.main(
+                ["--file", str(self.desired), "--config", str(self.config), "plan"],
+                out=io.StringIO(),
+                client_factory=refuse,
+                runner=lambda command, **_kwargs: self.fake_runner(command, None),
+            )
+        self.assertEqual(code, 1)
+        self.assertEqual(self.uris, ["wss://192.0.2.10:444/api/current"])
+        message = err.getvalue()
+        self.assertIn("cannot connect to the NAS: [Errno 111] Connection refused", message)
+        self.assertIn("wss://192.0.2.10:444/api/current", message)
+        self.assertIn("HTTPS port, System > General Settings > GUI", message)
+        self.assertNotIn("not-a-real-key", message)
 
     def test_failed_login(self):
         client = FakeClient(login="AUTH_ERR")

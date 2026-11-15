@@ -38,7 +38,7 @@ Table: Minimum requirements
 | Display on the GPU | None | The VRAM budget assumes that the card drives no display. Chapter 3 checks it ([Verify the GPU on the host and in a container](#verify-the-gpu-on-the-host-and-in-a-container)) |
 | System memory | 64 GB | The memory budget in this chapter assumes 62.3 GiB usable. Less memory is not supported: the ZFS ARC cap, the document parser's limits and the fast profile are sized for 64 GB. More memory is supported ([Memory upgrade to four channels](#memory-upgrade-to-four-channels)) |
 | Host Secure Boot | Off | Forum reports say that the TrueNAS 25.10 host does not boot with Secure Boot on (reported, not verified). Turn it off in the firmware setup before you install or reinstall TrueNAS |
-| Free space on the apps pool | About 36 GB for the models, plus the container images | See the model files table below |
+| Free space on the apps pool | About 37 GB (34.5 GiB) for the model files, plus the container images | See the model files table below |
 
 !!! warning
     Do not move the system to TrueNAS 27 release candidates while you follow this guide. A change of
@@ -95,6 +95,8 @@ Table: Support matrix
 | Workstation: Ubuntu 24.04 LTS or later, x86_64 or arm64 | Yes | Not tested; needs Node.js from outside the archive on 24.04 |
 | Workstation: macOS, Apple silicon or Intel | Yes, through the macOS path of `clients/install.sh` | The macOS path has not been run on a Mac |
 | Workstation: Windows | Only over SSH to a Linux workstation, and a browser | `clients/install.sh` does not run on Windows |
+| Local DNS: UniFi gateway (UDM-Pro SE), UniFi Network 9.4 or later | Yes; the worked example of Chapter 5 | Labels checked against UniFi Network 9.4; the same path assumed for 10.6 and 11.0 |
+| Local DNS: another router or DNS server that can hold A records | Yes | The same five records; Chapter 5 gives the rules, not the menus |
 | OpenCode 2.3.0 | Yes; the primary coding agent | Not yet run against the gateway |
 | Claude Code 2.1.325 | Optional; Anthropic does not support it with non-Claude models | Not yet run against the gateway |
 
@@ -108,17 +110,21 @@ marked as measured; Chapter 9 measures them on your system
 
 ### Model files and disk space
 
-All four model files come from public Hugging Face repositories.
+The stack serves six files from public Hugging Face repositories: the four models, and the vision
+projectors (`mmproj-*`) with which the two chat models read images. Chapter 4 downloads them
+([Download the model files](#download-the-model-files)).
 
 Table: Model files
 
 | File | Hugging Face repository | Size |
 |---|---|---|
 | `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` | `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF` | 12.12 GB |
+| `mmproj-Qwen3.8-27B-Q8_0.gguf` (projector of `coder`) | `ggml-org/Qwen3.8-27B-GGUF` | 0.63 GB |
 | `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | `unsloth/Qwen3.6-35B-A3B-GGUF` | 22.36 GB |
+| `mmproj-Qwen3.6-35B-A3B-Q8_0.gguf` (projector of `coder-moe`) | `ggml-org/Qwen3.6-35B-A3B-GGUF` | 0.61 GB |
 | `Qwen3-Embedding-0.6B-Q8_0.gguf` | `Qwen/Qwen3-Embedding-0.6B-GGUF` | 0.64 GB |
 | `qwen3-reranker-0.6b-q8_0.gguf` | `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF` | 0.64 GB |
-| Total | | 35.76 GB |
+| Total | | 37.00 GB (34.5 GiB) |
 
 The container images need additional space in the apps pool. The document parser image alone
 (`docling-serve-cpu`) is about 4.4 GB.
@@ -133,8 +139,8 @@ Table: VRAM budget per model
 
 | llama-swap id | Placement | Context and KV cache | VRAM (GiB) | System RAM |
 |---|---|---|---|---|
-| `coder` | All layers on the GPU | 65,536 tokens, `q8_0` | About 14.3 (estimate of the model's allocations; the CUDA context comes on top) | Prompt cache only |
-| `coder-moe` | GPU, with the experts of 16 layers in system RAM (`--n-cpu-moe 16`) | 65,536 tokens, `q8_0` | About 15.7 (measured by others on an RTX 4080 SUPER; the whole process, CUDA context included) | About 8 GB of experts |
+| `coder` | All layers on the GPU; the vision projector on the CPU | 65,536 tokens, `q8_0` | About 14.3 (estimate of the model's allocations; the CUDA context comes on top) | Prompt cache, and the vision projector, about 1 to 1.5 GiB |
+| `coder-moe` | GPU, with the experts of 16 layers in system RAM (`--n-cpu-moe 16`); the vision projector on the CPU | 65,536 tokens, `q8_0` | About 15.7 (measured by others on an RTX 4080 SUPER; the whole process, CUDA context included) | About 8 GB of experts, and the vision projector, about 1 to 1.5 GiB |
 | `embed` | CPU only (`--device none`) | Not applicable | 0 | About 1.3 GiB |
 | `rerank` | CPU only (`--device none`) | Not applicable | 0 | About 1.3 GiB |
 
@@ -180,8 +186,10 @@ Table: VRAM of the coder model by context length
     The estimates carry about ±0.5 GiB of uncertainty, and they include the weights of the MTP
     head but not any working memory that speculative decoding adds; Unsloth's documentation puts
     MTP's extra need at 1 to 2 GB. Chapter 4 checks the real usage with `nvidia-smi` after the model
-    loads ([Check GPU memory and processes](#check-gpu-memory-and-processes)). Loading the model's vision projector would add 0.59 GiB (`Q8_0`) or 0.87 GiB (`F16`), so
-    the default profile does not load it.
+    loads ([Check GPU memory and processes](#check-gpu-memory-and-processes)). The vision
+    projector is not in these figures: the stack loads it into system RAM and runs it on the CPU
+    (`--no-mmproj-offload`). On the GPU it would take 0.59 GiB (`Q8_0`) or 0.87 GiB (`BF16` or
+    `F16`) of the VRAM that the 64K context needs.
 
 !!! note
     Keep the KV cache at `q8_0`. llama.cpp's documentation warns that `q4_0` can substantially
@@ -200,12 +208,13 @@ Table: System RAM budget (GiB, estimates)
 | TrueNAS operating system, middleware and Docker | About 4 | About 4 | |
 | ZFS ARC | 12 | 12 | Capped in Chapter 3 |
 | llama-swap: prompt cache and host buffers | About 8 | About 8 | Keeps idle conversations ready for reuse |
+| Vision projector of the loaded chat model | About 1 to 1.5 | About 1 to 1.5 | Weights (0.6 GiB) and compute buffer; only one of the two projectors is loaded at a time, never both |
 | `embed` and `rerank` on the CPU | About 2.6 | About 2.6 | |
 | `coder-moe` experts in system RAM | 0 | About 8 | `--n-cpu-moe 16` |
 | LiteLLM and its PostgreSQL | About 2 | About 2 | |
 | `ai-rag` and `ai-web` services | About 14 | About 14 | Includes the document parser at up to 8 GB |
-| Total | About 43 | About 51 | |
-| Free of 62.3 GiB | About 20 | About 12 | Page cache and load spikes |
+| Total | About 44 | About 52 | |
+| Free of 62.3 GiB | About 18 | About 10 | Page cache and load spikes |
 
 ### Memory channels and bandwidth
 
@@ -287,7 +296,8 @@ affected because it runs entirely on the GPU.
 ## Network, DNS names and ports
 
 The stack is reached only on the LAN. Every service has a host name under your domain; the names
-resolve to the TrueNAS server through your local DNS, and Caddy serves them all on port 443.
+resolve to the TrueNAS server through your local DNS, and Caddy serves them all on port 443. The
+TrueNAS web interface keeps ports of its own.
 
 ### Placeholder values
 
@@ -300,7 +310,9 @@ Table: Placeholder values
 |---|---|
 | `192.0.2.10` | LAN address of the TrueNAS server (`truenas.lab.example.com`) |
 | `192.0.2.20` | LAN address of the workstation `c4dev` |
-| `lab.example.com` | Your domain, a zone at your DNS provider (`LAB_DOMAIN`) |
+| `192.0.2.1` | LAN address of the gateway and local DNS server, a UniFi Dream Machine Pro SE in the worked example |
+| `<ui-https-port>`, `<ui-http-port>` | The HTTPS and HTTP ports of the TrueNAS web interface; `444` and `81` in this guide's examples |
+| `lab.example.com` | Your lab domain (`LAB_DOMAIN`), in a zone at your DNS provider (`example.com`) |
 | `tank` | The ZFS pool that holds the apps, the models and the stack's datasets |
 | `sk-local-...` | An API key; the real values are generated during deployment |
 
@@ -316,11 +328,36 @@ Table: Host names
 | `mcp.lab.example.com` | `mcp-hub:8096` | OpenCode, Open WebUI |
 | `search.lab.example.com` | `searxng:8080` | Administrators (optional) |
 
-Chapter 5 adds an A record for each name in your local DNS server or router, pointing to
-`192.0.2.10` ([Add the host names to local DNS](#add-the-host-names-to-local-dns)). The names do not need public DNS records: Caddy obtains the certificates through the
-DNS-01 challenge, which only needs an API token for the zone at your DNS provider.
+The names use split-horizon DNS: they resolve on the LAN only, and the public zone does not know
+them. Chapter 5 sets them up ([Create the local DNS records](#create-the-local-dns-records)):
+
+- **Local records.** Your local DNS server holds one A record per name, five in all, each pointing
+  to `192.0.2.10`. In the worked example, the server is a UniFi Dream Machine Pro SE (UDM-Pro SE),
+  where each record is a **Host (A)** DNS policy in the UniFi Network application
+  (**Settings** > **Policy Table**). UniFi has no wildcard records, so each name needs its own.
+- **A fixed address for TrueNAS.** The records point to one address, so the server keeps it: a
+  fixed IP address in UniFi, or a DHCP reservation in another DNS server.
+- **Clients ask the local DNS server.** Every network hands out the gateway as its DNS server, which
+  is the UniFi default. Browsers keep a secure DNS setting that falls back to it
+  ([Browsers and DNS over HTTPS](#browsers-and-dns-over-https)), and the TrueNAS server stays out of
+  every UniFi Content Filter and Ad Blocking policy, which would redirect the DNS queries of the
+  certificate checks ([Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection)).
+- **No public records.** The public zone at your DNS provider holds no record for the lab names.
+  Caddy obtains the certificates through the DNS-01 challenge, which only needs an API token for
+  the zone and writes a temporary TXT record under `_acme-challenge`. If the zone has a wildcard
+  record, one marker record at the lab domain keeps it from answering for the lab names
+  ([Check the public zone](#check-the-public-zone)).
+- **IPv4 only.** The names get no AAAA records, so clients with IPv6 connect over IPv4.
 
 ### Server ports
+
+The stack needs three ports on the server, all for Caddy: 80/tcp, 443/tcp and 443/udp. Nothing else
+may hold them. The TrueNAS web interface and the other services of the server keep their own
+ports. Before anything is installed, Chapter 3 runs `tools/port-inventory.sh`, which lists every
+listening port, the ports that containers publish and the web interface's ports, and says whether
+the three ports are free ([Check the ports for the edge proxy](#check-the-ports-for-the-edge-proxy)).
+The web interface moves only if it holds port 80 or 443, as it does after a new TrueNAS
+installation.
 
 Table: Ports published on the TrueNAS server
 
@@ -329,7 +366,7 @@ Table: Ports published on the TrueNAS server
 | 443/tcp | `caddy` (`ai-edge`) | HTTPS for every host name |
 | 443/udp | `caddy` (`ai-edge`) | HTTP/3 for every host name |
 | 80/tcp | `caddy` (`ai-edge`) | Redirects to HTTPS |
-| 8443/tcp, 8080/tcp | TrueNAS web interface | Moved from 443 and 80 in Chapter 3 ([Change the web interface ports](#change-the-web-interface-ports)) |
+| `<ui-https-port>`/tcp, `<ui-http-port>`/tcp | TrueNAS web interface | Its own ports, other than 80 and 443: `444` and `81` in this guide's examples ([Change the web interface ports](#change-the-web-interface-ports), only if it holds 80 or 443) |
 | 22/tcp | SSH | Administration and deployment from the workstation |
 | 445/tcp | SMB | The `rag-docs` document share |
 
@@ -381,8 +418,9 @@ Table: Outbound connections
 | Hugging Face and the servers it redirects downloads to | TrueNAS | 443/tcp | Downloading the model files |
 | GitHub (`github.com`) | TrueNAS and the workstation | 443/tcp | Cloning and updating the repository; release assets |
 | Your DNS provider's API and the ACME certificate authority | `caddy` | 443/tcp | Issuing and renewing certificates (DNS-01) |
-| Public DNS resolvers `1.1.1.1` and `1.0.0.1`, or the ones you set in `ACME_RESOLVERS` | `caddy` | 53/udp and 53/tcp | Checking the challenge record during DNS-01. A firewall that blocks or redirects outbound DNS to these addresses breaks certificate issuance |
+| Public DNS resolvers `1.1.1.1` and `1.0.0.1`, or the ones you set in `ACME_RESOLVERS` | `caddy` | 53/udp and 53/tcp | Checking the challenge record during DNS-01. A firewall that blocks or redirects outbound DNS to these addresses breaks certificate issuance, and so does a UniFi Content Filter or Ad Blocking policy that covers the server |
 | Public search engines | `searxng` | 443/tcp | Web search |
+| Any public web server whose image a request names by its web address | `llama-swap` (`llama-server`) | 443/tcp, and 80/tcp for `http://` addresses | Only for an image sent as an `http(s)://` address instead of the image data, for example by a script: `llama-server` downloads it (at most 10 MB, within 10 seconds) and refuses addresses that are not public. Open WebUI, OpenCode and Claude Code send the image data itself |
 | Any public web server whose page a tool is asked to read | `mcp-hub` (its `fetch` and `web_url_read` tools) and `open-webui` on TrueNAS; OpenCode's `webfetch` on the workstation | 443/tcp, and 80/tcp for `http://` addresses | Reading web pages and remote documents for the models |
 | npm registry (`registry.npmjs.org`) | The workstation | 443/tcp | Installing OpenCode, `ssh-mcp` and, optionally, Qwen Code |
 | PyPI and GitHub release downloads | The workstation | 443/tcp | The check tools of `tools/setup-checks.sh`, and the TrueNAS API client that `deploy.py` uses |
@@ -400,12 +438,13 @@ Table: Accounts and credentials you provide
 | A domain at a supported DNS provider | Host names and certificates (`LAB_DOMAIN`, `DNS_PROVIDER`) | The edge image includes the modules `cloudflare`, `route53`, `digitalocean`, `porkbun`, `namecheap`, `duckdns`, `desec` and `ovh` |
 | An API token for that DNS zone | DNS-01 challenge (`DNS_PROVIDER_TOKEN`) | Scope it to the one zone. Some providers need more than one credential; Chapter 5 names the variables ([Credentials by DNS provider](#credentials-by-dns-provider)) |
 | An email address | ACME account of the certificates (`ACME_EMAIL`) | |
+| An administrator login to the UniFi Network application, or to your local DNS server | The local DNS records, the server's fixed address and the Content Filter check (Chapter 5) | |
 | The TrueNAS administrator `truenas_admin`, with the workstation's SSH public key | Shell access and deployment over SSH | **Credentials** > **Users**: **Public SSH Key** and **SSH Access** |
 | An SMB user | Copying documents to the `rag-docs` share | An SMB share cannot be reached as `root` or a built-in user |
 | Two TrueNAS API keys, roles READONLY_ADMIN and FULL_ADMIN | `tools/deploy.py`: the read-only key for plan, drift and status; the full key only for apply | Created in Chapter 3 ([Create TrueNAS API keys for deploy.py](#create-truenas-api-keys-for-deploypy)) and stored in `~/.config/local-agent-stack/` on the workstation; Chapter 10 configures `deploy.py` with them |
 | A GitHub account | The project workflow in Chapter 8: issues, pull requests and CI | Not needed to clone the public repository |
 
-A Hugging Face account is not needed. The four model repositories are public and not gated
+A Hugging Face account is not needed. The six model repositories are public and not gated
 (checked on 15 November 2026), so the files download without signing in.
 
 Table: Secrets created during deployment
@@ -467,8 +506,9 @@ the exposure and the credentials; the linked sections give the details and the p
 - Caddy closes every connection from an address outside `EDGE_ALLOWED_CIDRS`, by default the
   private address ranges ([LAN-only access guard](#lan-only-access-guard)). TrueNAS has no host
   firewall in its web interface, so do not forward any port from your router to the server.
-- The TrueNAS web interface (8443 and 8080), SSH (22) and SMB (445) are TrueNAS's own services.
-  Caddy does not proxy them, and its guard does not apply to them.
+- The TrueNAS web interface (`<ui-https-port>` and `<ui-http-port>`, 444 and 81 in this guide's
+  examples), SSH (22) and SMB (445) are TrueNAS's own services. Caddy does not proxy them, and its
+  guard does not apply to them.
 - The containers reach each other by name on `ai-net`; their ports are not published.
 - The connections that leave the LAN are listed in [Outbound connections](#outbound-connections).
 
@@ -509,11 +549,15 @@ Table: Pre-deployment checklist
 | Secure Boot is off, if you install or reinstall TrueNAS | The server's firmware setup ([Minimum requirements](#minimum-requirements)) | ☐ |
 | The server has at least 64 GB of memory, in two channels at 4800 MT/s | [Check the memory configuration](#check-the-memory-configuration) | ☐ |
 | The apps pool is on SSD or NVMe | **Apps** > **Configuration** > **Choose Pool** | ☐ |
-| The apps pool has at least 36 GB free for models, plus room for images | **Storage** | ☐ |
+| The apps pool has at least 37 GB (34.5 GiB) free for the model files, plus room for the container images | **Storage** | ☐ |
 | SSH from the workstation to `truenas_admin` works with a key | `ssh truenas_admin@192.0.2.10` from `c4dev`, or set it up in Chapter 3 ([Enable SSH access to TrueNAS](#enable-ssh-access-to-truenas)) | ☐ |
-| Ports 80 and 443 on the server can be given to Caddy | Chapter 3 moves the TrueNAS web interface to 8080 and 8443 ([Move the TrueNAS web UI to ports 8080 and 8443](#move-the-truenas-web-ui-to-ports-8080-and-8443)) | ☐ |
+| Ports 80/tcp, 443/tcp and 443/udp on the server are free for Caddy | Chapter 3 runs the port inventory ([Run the port inventory](#run-the-port-inventory)); the TrueNAS web interface keeps its own ports and moves only if it holds 80 or 443 | ☐ |
 | The Docker address pool does not overlap your LAN | **Apps** > **Installed** > **Configuration** > **Settings** | ☐ |
-| You can add A records in your local DNS server or router | Your router or DNS server | ☐ |
+| You can add A records in your local DNS server | UniFi Network 9.4 or later: **Settings** > **Control Plane** > **Updates** shows the version, and the records go in **Settings** > **Policy Table**; or your DNS server (Chapter 5, [Add the host names to local DNS](#add-the-host-names-to-local-dns)) | ☐ |
+| The TrueNAS server has a fixed LAN address | UniFi: **Client Devices** > the server > **Settings** > **Fixed IP Address** (Chapter 5, [Give the TrueNAS server a fixed IP address](#give-the-truenas-server-a-fixed-ip-address)) | ☐ |
+| The clients' networks hand out the gateway as DNS server | UniFi: **Settings** > **Networks** > **DNS Server** at its default (Chapter 5, [Check the DNS server of each network](#check-the-dns-server-of-each-network)) | ☐ |
+| No UniFi Content Filter or Ad Blocking policy covers the TrueNAS server | **Settings** > **CyberSecure** > **Content Filter**, the **Source** of each policy (Chapter 5, [Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection)) | ☐ |
+| The public zone holds no record for the lab names, and no wildcard answers for them | Chapter 5, [Check the public zone](#check-the-public-zone) | ☐ |
 | Your domain is at a supported DNS provider, with an API token for the zone | Your DNS provider | ☐ |
 | The server can reach the internet for images, models and certificates, including DNS to `1.1.1.1` and `1.0.0.1` on port 53 | [Outbound connections](#outbound-connections) | ☐ |
 | The workstation has Git, the OpenSSH client, `curl`, `tar`, `openssl` and Python 3.11 or later with `venv` | `git --version`, `ssh -V`, `python3 --version` on the workstation ([Workstation requirements](#workstation-requirements)) | ☐ |

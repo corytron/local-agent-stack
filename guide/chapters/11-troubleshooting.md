@@ -41,9 +41,10 @@ can contain request details: review them before you share them, as described in
         git -C /mnt/tank/ai/stacks/local-agent-stack describe --tags --always > "$D/release.txt"
         git -C /mnt/tank/ai/stacks/local-agent-stack status --porcelain >> "$D/release.txt"
 
-3. Record the containers, the network, the memory and the datasets:
+3. Record the containers, the network, the ports, the memory and the datasets:
 
         sudo docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}' > "$D/containers.txt"
+        sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh > "$D/ports.txt" 2>&1
         sudo docker stats --no-stream > "$D/stats.txt"
         sudo docker network inspect ai-net --format '{{range .Containers}}{{println .Name}}{{end}}' > "$D/ai-net.txt"
         cat /sys/module/zfs/parameters/zfs_arc_max > "$D/arc-max.txt"
@@ -91,6 +92,7 @@ can contain request details: review them before you share them, as described in
 3. Record name resolution and the certificate of the gateway:
 
         getent hosts chat.lab.example.com llm.lab.example.com models.lab.example.com mcp.lab.example.com search.lab.example.com > ~/diag-dns.txt
+        resolvectl dns >> ~/diag-dns.txt 2>&1
         echo | openssl s_client -connect llm.lab.example.com:443 -servername llm.lab.example.com 2>/dev/null | openssl x509 -noout -subject -issuer -enddate >> ~/diag-dns.txt
 
 4. Record the client versions and the MCP connections:
@@ -163,11 +165,12 @@ Table: Model loading and memory
 | `coder` does not load; the `llama-swap` log shows an out-of-memory or allocation error | The weights, the 64K KV cache and the MTP draft do not fit, or another process holds VRAM | See [The model runs out of GPU memory at load](#the-model-runs-out-of-gpu-memory-at-load) |
 | `coder-moe` does not load with an out-of-memory error | Too many expert layers stay on the GPU | Raise `--n-cpu-moe` by 2 (from 16 to 18): on the server with the override copy that the Results of [Tune and record the fast profile](#tune-and-record-the-fast-profile) describe, and for good in `stack/inference/llama-swap/config.yaml` through a pull request. With 14, the model overflowed VRAM in the published measurement |
 | `llama-swap` does not start; its log reports a configuration error | `LLAMA_SWAP_API_KEY` is not set (the configuration refers to it), or `config.yaml` has a YAML error | Check `/mnt/tank/ai/secrets/inference.env`, and that the TrueNAS clone has no local changes (`git status --porcelain`) |
-| The log says the model file cannot be opened | The file is missing from `/mnt/tank/ai/models/gguf/` or its name differs | Compare `ls -l /mnt/tank/ai/models/gguf/` with the `-m` lines of the configuration; download the file as in [Download a model file](#download-a-model-file) |
+| The log says the model file cannot be opened | The file is missing from `/mnt/tank/ai/models/gguf/` or its name differs | Compare `ls -l /mnt/tank/ai/models/gguf/` with the `-m` and `--mmproj` lines of the configuration; download the file as in [Download a model file](#download-a-model-file) |
+| `coder` or `coder-moe` never becomes ready after a release update, and the log shows `failed to load multimodal model` | The model's vision projector file is missing or damaged: the release that added it was applied before the download | Download the projectors as in [Download the new model files of a release](#download-the-new-model-files-of-a-release), then redeploy `ai-inference` |
 | A model never becomes ready, and requests fail after about ten minutes | Loading took longer than `healthCheckTimeout` (600 seconds), or `llama-server` stopped during start-up | Read the `llama-swap` log for the `llama-server` error. A first load from a cold disk cache is the slowest |
 | The first request after a restart takes a minute or more | `llama-swap` loads `coder` from disk at start | Wait. The `/running` command of [Monitor the model server](#monitor-the-model-server) shows `ready` when the model is loaded |
 | A request for `local-coder-moe` takes tens of seconds, and the next request of another client is slow too | The two GPU models share the `llm` group: each switch unloads one and loads the other | Switch profiles for a whole working session, not per request |
-| `llama-swap` restarts under load, and `sudo docker inspect --format '{{.State.OOMKilled}}' llama-swap` prints `true` | The container reached its 32 GiB memory limit. The peak of about 18 GiB for `coder-moe` is an estimate | Lower `--cache-ram` of the model, or raise the limit in `stack/inference/compose.yaml` within the system RAM budget, through a pull request |
+| `llama-swap` restarts under load, and `sudo docker inspect --format '{{.State.OOMKilled}}' llama-swap` prints `true` | The container reached its 32 GiB memory limit. The peak of about 18 to 22 GiB for `coder-moe`, with its vision projector, is an estimate | Lower `--cache-ram` of the model, or raise the limit in `stack/inference/compose.yaml` within the system RAM budget, through a pull request |
 
 Table: Generation speed
 
@@ -276,6 +279,64 @@ Table: MCP hub problems
 | The `fetch` tool refuses an address | It refuses private, loopback and link-local addresses and honours `robots.txt` | None; this is by design |
 | Installing `ai-web` fails at `mcp-hub` | The image `ghcr.io/corytron/local-agent-stack-mcp-hub` could not be pulled, and building it from `stack/web/mcp-hub/` on TrueNAS failed (that build was not tested on TrueNAS) | Read `/var/log/app_lifecycle.log` for the pull or build error, then follow [Build or pull the MCP hub image](#build-or-pull-the-mcp-hub-image) |
 
+### Image and memory issues
+
+The chat models read images through their vision projectors, which run on the server's CPU
+([Check the vision projector](#check-the-vision-projector) tests them). The speed and RAM figures
+below are estimates; none was measured on the reference server. The Open WebUI labels were read
+from the source of version 0.13.3, not in a running instance.
+
+Table: Image problems
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Open WebUI shows "Selected model(s) do not support image inputs" when you attach an image | The model's capability **Vision** is off in Open WebUI | In **Admin Panel** > **Settings** > **Models**, select the model, select **Capabilities** > **Vision** ("Model accepts image inputs") and save. For every model at once, use **Model Defaults** > **Model Capabilities** on the same page; a model's own setting wins |
+| A request with an image fails with `image input is not supported - hint: if this is unexpected, you may need to provide the mmproj` | The model runs without its vision projector: the configuration in use has no `--mmproj` line, for example an override copy made from a release before 1.2, such as the `coder` fallback of Chapter 4 | Check the model as in [Check the vision projector](#check-the-vision-projector). Refresh the override copy from the current release (step 8 of [Update the clones](#update-the-clones)) and redeploy `ai-inference` |
+| `coder` or `coder-moe` never becomes ready, and the `llama-swap` log shows `failed to load multimodal model` | The projector file is missing or damaged | Check the files with `sha256sum -c` and download a missing or failed one again with `dl coder-mmproj` or `dl coder-moe-mmproj` ([Verify the model files](#verify-the-model-files), step 4), then redeploy `ai-inference` |
+| An answer about an image takes tens of seconds to start | The projector encodes each image on the CPU: about 11 seconds on `coder` (estimate), more for a large image, which can take up to 4,096 tokens. `coder-moe` encodes with 8 threads instead of 16, so about twice as long | Send smaller images, or a screenshot of the relevant part. In Open WebUI, **Admin Panel** > **Settings** > **Documents** > **Image Compression Width** and **Image Compression Height** shrink images in the browser before the upload. A lower `--image-max-tokens` in `stack/inference/llama-swap/config.yaml`, through a pull request, caps the tokens per image at some loss of detail |
+| Generation of `coder`, embeddings or reranking became slower after the update to release 1.2 | `coder` runs with `-t 16` CPU threads, for the image encoder (it ran with `-t 4`). Idle OpenMP threads of llama.cpp wait actively before they sleep, so they take CPU time while the model generates; the effect was not measured | Measure with `tools/bench.sh --mode server` ([Measure the model with bench.sh](#measure-the-model-with-benchsh)) and watch `top` during a long answer. If 16 threads cost speed, change `coder` back to `-t 4` (images about four times slower, estimate) or add `OMP_WAIT_POLICY=PASSIVE` to `coder`'s environment, through a pull request, and report the measurement in an issue |
+| `coder` misreads the text in an image again and again: the answer of [Check the vision projector](#check-the-vision-projector) is close to `MAPLE 74` but not exact, or `format-011` fails in every run | Not verified for this release: that the Q8_0 projector reads as well with the 3.5-bit GSQ-RCO quantization of the model as with the original. IST-DASLab, which made the model file, publishes its own projector, `mmproj-Qwen3.8-27B-BF16.gguf` (0.93 GB) in `ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF`, which its model card says was verified with those quantizations | Report it to the project as an issue, with the answers and the results file of [Run the vision evaluation](#run-the-vision-evaluation). The BF16 projector is the project's fallback; a release that switches to it pins it in `stack/inference/models.tsv` and `models.sha256`, and you download it as in [Download the new model files of a release](#download-the-new-model-files-of-a-release) |
+| The `llama-swap` log warns that Qwen-VL models require at minimum 1024 image tokens to function correctly on grounding tasks | The projector file sets no minimum image size | None; the warning is expected. The stack does not use grounding (boxes around objects in an image) |
+| OpenCode tells the model that it cannot read an attached image | The model's `capabilities.input` in `opencode.jsonc` lacks `"image"`, for example in an edited copy | Keep `"input": ["text", "image"]` for `local-coder`, `local-fast` and `local-coder-moe`, as the release ships them |
+| A PDF that Claude Code or OpenCode sends never reaches the model | `llama-server` reads no PDF: it drops an Anthropic `document` block without an error, and OpenCode puts a note in place of a PDF, because the release declares no `"pdf"` input | Turn the pages into images or text first, or add the PDF to a knowledge base (Chapter 6), where `docling` extracts its text |
+
+Table: Open WebUI memory problems
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Open WebUI does not recall in a new chat what a user asked it to remember | Memory is off at one of its levels: the user's own switch, the group permission, the model's capability or the server setting. Every level is on by default | Check, in this order: the user's **Settings** > **Personalization** > **Memory**; the group's permission **Memories** under **Admin Panel** > **Users** > **Groups**; **Capabilities** > **Memory** of the model under **Admin Panel** > **Settings** > **Models**; **Memories** and **Memory System Context** under **Admin Panel** > **Settings** > **General** |
+| The model never saves a memory by itself | The model gets the memory tools only while its Function Calling mode is Native, Open WebUI's default; in Legacy mode, memories are only added to the prompt. A local model can also leave a tool uncalled | Ask for it explicitly ("remember that ..."), or add the memory by hand under **Settings** > **Personalization** > **Memory** > **Add Memory** |
+| Open WebUI saves no memory on its own, without being asked | The background review is off (`ENABLE_MEMORY_BACKGROUND_REVIEW=false`), and Open WebUI 0.13.3 has no Admin Panel switch for it | None; it would send one more request with thinking to the chat's model every tenth turn |
+| Chats leave less room in the 64K window, or the model picks tools less well, since memory is on | The eight memory tools are part of every request while memory is on | A user who does not want them turns off their own **Memory** switch; for one model, turn off its **Memory** capability |
+| A file dropped into a chat does not appear in the knowledge base | A file dropped into a chat stays with that chat | None; this is by design. Put documents for every chat into the `rag-docs` share or **Workspace** > **Knowledge** |
+
+### Port inventory issues
+
+`tools/port-inventory.sh` reads the server's listening sockets, the ports that containers publish
+and the ports of the TrueNAS web interface, and changes nothing
+([Run the port inventory](#run-the-port-inventory)). The section
+**Ports the stack needs on this server** holds one verdict for each of `80/tcp`, `443/tcp` and
+`443/udp`. When a port is used by something other than the edge app, or cannot be checked, the
+last line reads `Result: <n> of 3 ports the stack needs is in use by something else or could not
+be checked (exit 1).` (`are` for more than one port), and the exit code is `1`. The tables above
+the verdicts show the process, container and TrueNAS app behind each port.
+
+Table: Port inventory verdicts
+
+| Verdict | Meaning | What to do |
+|---|---|---|
+| `free` | Nothing listens on the port, and no container publishes it | Nothing; the edge app can use it |
+| `ours: container caddy (app ai-edge)` | The stack's edge app holds the port | Nothing; this is the state after Chapter 5 |
+| `used by the TrueNAS web interface` | The web interface uses port 80 or 443. The **Notes** section repeats where to change it | Give it other ports as in [Change the web interface ports](#change-the-web-interface-ports), then run the inventory again. Then use the new HTTPS port in `deploy.py`'s `uri` ([Create the connection settings](#create-the-connection-settings)) |
+| `used by container <name> (app <app>)` | Another TrueNAS app publishes the port | Stop that app in **Apps** > **Installed**, or give it other ports in its settings, then run the inventory again |
+| `used by container <name> (not a TrueNAS app)` | A container that was started outside the TrueNAS apps, for example with `docker run`, publishes the port | Stop it with `sudo docker stop <name>` and remove it, or start it again with another port |
+| `used by <process>`, for example `used by lighttpd` | A program on the server itself listens on the port | Stop that program, or the TrueNAS service it belongs to in **System** > **Services**, or move it to another port; then run the inventory again |
+| `used by a kernel socket (no process)` | A kernel service listens on the port, so `ss` names no process | Find the TrueNAS service that uses the port in **System** > **Services** and change its port |
+| `used by docker-proxy (a port published by a container)` | Docker publishes the port, but the container could not be named, because `docker ps` could not be read | Run the inventory again with `sudo`, without `--no-sudo` |
+| `used by a process whose name needs sudo` | The script ran without `sudo`, so `ss` does not name other users' processes; the **Notes** section says why | Run the inventory again, and give the `truenas_admin` password when `sudo` asks for it |
+| `unknown (ss could not be run)` | `ss` is missing or failed, so a free port cannot be told from a used one | Read the reason under **Listening sockets (ss -Hltunp)** in the output |
+| `used by ...; also container caddy (app ai-edge)` | Something else holds the port next to the edge app | Act on the part after `used by`, as in the rows above |
+
 ### Edge app issues
 
 [Certificate issuance errors](#certificate-issuance-errors) lists the messages of the Caddy log
@@ -287,7 +348,8 @@ Table: Certificate problems
 |---|---|---|
 | `caddy` stops with `File to import not found: dns-<name>` | `DNS_PROVIDER` is not one of `cloudflare`, `route53`, `digitalocean`, `porkbun`, `namecheap`, `duckdns`, `desec` and `ovh` | Correct `DNS_PROVIDER` in `edge.env` and redeploy `ai-edge` |
 | `caddy` does not start and reports the Cloudflare token | `DNS_PROVIDER_TOKEN` still holds the placeholder; the module checks the token's shape | Put the real token into `edge.env` |
-| Issuance fails with `expected 1 zone, got 0` or `timed out waiting for record to fully propagate` | Local DNS answers for your domain and hides the public zone (split-horizon DNS) | See [Certificates are not issued](#certificates-are-not-issued) |
+| Issuance fails with `expected 1 zone, got 0` or `timed out waiting for record to fully propagate` | Local DNS answers for your domain and hides the public zone (split-horizon DNS), or the router redirects the server's DNS queries to itself: on a UniFi gateway, a Content Filter or Ad Blocking policy that covers the TrueNAS server | See [Certificates are not issued](#certificates-are-not-issued) |
+| `sudo docker exec caddy nslookup chat.lab.example.com 1.1.1.1` shows `192.0.2.10` instead of `NXDOMAIN` | The gateway answers the DNS queries that the server sends to public resolvers, Caddy's included: a UniFi Content Filter or Ad Blocking policy covers the TrueNAS server. Renewals fail with `timed out waiting for record to fully propagate`, without any other sign until the certificate expires | Take the server out of every such policy, as in [Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection), then run the command again |
 | Issuance fails with an authentication or permission error from the DNS provider | The token lacks a permission or the zone | See [Certificates are not issued](#certificates-are-not-issued) |
 | Browsers report an untrusted certificate whose issuer contains "STAGING" | `ACME_CA` still points to Let's Encrypt's staging service | Remove the `ACME_CA` line from `edge.env` and redeploy `ai-edge`; Caddy then obtains a production certificate |
 | Issuance fails with a rate-limit error | Too many failed attempts against the production service | Set the staging `ACME_CA` until issuance works, then remove it |
@@ -299,10 +361,14 @@ Table: Name resolution and connection problems
 
 | Symptom | Cause | Resolution |
 |---|---|---|
-| A lab name does not resolve on a client (`getent hosts chat.lab.example.com` prints nothing) | The local DNS server has no A record for it | Add A records for `chat`, `llm`, `models`, `mcp` and `search` under your domain, all pointing to `192.0.2.10` |
-| A lab name resolves to another address | The client uses a resolver without the local records | Point the client at your local DNS server |
+| A lab name does not resolve on any client, and `dig +short @192.0.2.1 chat.lab.example.com A` prints nothing | The local DNS server has no record for it | Add a record for each of `chat`, `llm`, `models`, `mcp` and `search` under your domain, pointing to `192.0.2.10`: on a UniFi gateway, one **Host (A)** record per name, because UniFi does not accept `*.lab.example.com` ([Add the host names to local DNS](#add-the-host-names-to-local-dns)) |
+| `dig +short @192.0.2.1 chat.lab.example.com A` prints `192.0.2.10`, but `getent hosts chat.lab.example.com` prints nothing or another address | The client asks another DNS server: one entered on its network or adapter, a VPN's own DNS server, or an IPv6 DNS server that the network hands out | List the client's DNS servers and flush its cache as in [Check name resolution from each client](#check-name-resolution-from-each-client); on UniFi, return the network's **DNS Server** to its default ([Check the DNS server of each network](#check-the-dns-server-of-each-network)). A client that must keep another DNS server uses the hosts file ([Other DNS servers and the hosts file](#other-dns-servers-and-the-hosts-file)) |
+| Command-line tools reach the lab names, but a browser reports that the site cannot be found | The browser sends its DNS queries over HTTPS to a public service without falling back to the system resolver: Chrome or Edge with a chosen provider, or Firefox in a mode without fallback. The public zone has no lab records | [Check the secure DNS setting of each browser](#check-the-secure-dns-setting-of-each-browser): the current service provider in Chrome and Edge, or `lab.example.com` under **Manage exceptions** in Firefox |
+| A browser or a public resolver gets a public address for a lab name | A wildcard record of the public zone, such as `*.example.com`, answers for names below the lab domain | Remove the wildcard, or add a marker TXT record at the lab domain, as in [Check the public zone](#check-the-public-zone) |
+| The lab names resolve only some of the time | Reported, not verified: **Encrypted DNS** on the UniFi gateway, or a public failover DNS server under **DNS Assistance** of a WiFi network | Test with **Encrypted DNS** off (**Settings** > **CyberSecure**), and leave **DNS Assistance** at its default, without public failover servers |
+| A client on another network (VLAN) resolves the lab names but cannot connect: the browser times out, and `curl -sS https://chat.lab.example.com` reports a timeout rather than a closed connection | The gateway's firewall blocks traffic from that network to the server: with the Zone-Based Firewall of UniFi Network, the zones of the two networks may not allow it. Resolving a name does not mean reaching the server | Allow the client's network to reach `192.0.2.10` on port 443 (TCP, and UDP for HTTP/3) in the gateway's firewall, and check that the network is inside `EDGE_ALLOWED_CIDRS` ([LAN-only access guard](#lan-only-access-guard)) |
 | The connection is closed without any HTTP answer | The client's address is outside `EDGE_ALLOWED_CIDRS` (by default the private ranges), or the name is not one of the five lab names | Set `EDGE_ALLOWED_CIDRS` in `edge.env` to your LAN, for example `192.0.2.0/24`, and redeploy `ai-edge`; use the five names only |
-| `ai-edge` does not start because ports 80 or 443 are in use | The TrueNAS web interface still uses them | Move it as in [Change the web interface ports](#change-the-web-interface-ports) |
+| `ai-edge` does not start because ports 80 or 443 are in use | The TrueNAS web interface, another app or a program on the server holds the port | Run the port inventory ([Run the port inventory](#run-the-port-inventory)) and act on each `used by` line, as in [Port inventory issues](#port-inventory-issues) |
 | Long answers stop after five minutes in Claude Code | Claude Code gives up after 300 seconds without data | LiteLLM's keep-alive comments every 30 seconds prevent this; check that `sse_keepalive_ping_interval_seconds: 30` is in `stack/inference/litellm/config.yaml` of the running release |
 
 ### Workstation issues
@@ -355,7 +421,8 @@ Table: deploy.py problems
 |---|---|---|
 | `truenas_api_client is not installed in this Python` | `deploy.py` runs with another Python than the virtual environment | Run it with `~/.local/share/local-agent-stack/deploy-venv/bin/python` |
 | `... truenas.toml does not exist: write it as tools/deploy.py's docstring shows (mode 0600)` | The connection settings are missing | Create them as in [Create the connection settings](#create-the-connection-settings) |
-| `uri must start with wss://` | The address uses `ws://` or `https://` | Use `wss://192.0.2.10:8443/api/current`; TrueNAS revokes a key sent over plain HTTP or `ws://` |
+| `uri must start with wss://` | The address uses `ws://` or `https://` | Use `wss://192.0.2.10:<ui-https-port>/api/current`, for example `wss://192.0.2.10:444/api/current`; TrueNAS revokes a key sent over plain HTTP or `ws://` |
+| `cannot connect to the NAS:` followed by `Connection refused` and `(uri ...: its port must be the TrueNAS web interface's HTTPS port, System > General Settings > GUI)` | The port in `uri` is not the HTTPS port of the TrueNAS web interface: `uri` was copied from an example, or the web interface's port changed | Read **HTTPS port (ui_httpsport)** from the port inventory ([Run the port inventory](#run-the-port-inventory)) and set `uri` in `~/.config/local-agent-stack/truenas.toml` to `wss://192.0.2.10:<ui-https-port>/api/current`. After a port change, save the certificate again, as in [Create the connection settings](#create-the-connection-settings) |
 | `API key file ... is readable by others` or `belongs to another user` | The key file's mode or owner | `chmod 600` the file; keep it in your own home directory |
 | `login as deploy-read failed` | The key is wrong or was revoked; TrueNAS revokes a key that was sent unencrypted | Create a new key, as in [Create the API keys and store them on the workstation](#create-the-api-keys-and-store-them-on-the-workstation) |
 | `cannot connect to the NAS:` followed by a certificate error | `truenas-ca.pem` is not the certificate the web interface presents, or the certificate does not name the address in `uri` | Repeat [Create the connection settings](#create-the-connection-settings). If the certificate names only a host name, set `uri` to that name and make it resolve to `192.0.2.10`; or run `deploy.py --local` on TrueNAS, which needs no certificate |
@@ -391,7 +458,8 @@ Table: Evaluation problems
 | `tools` cases fail with `the text holds a tool call` | The model wrote the call into its text | See [Tool calls fail or loop](#tool-calls-fail-or-loop) |
 | The `tok/s` row fails, but `bench.sh` shows the usual speeds | Another client used the GPU during the run, or a model swap was measured | Run the evaluation again while no agent or Open WebUI user works |
 | `verify --current` prints `FAIL no results file in evals/results/ for configuration <hash>` | No evaluation was run since the configuration changed, or the clone is not at the configuration that the server runs | Check out the tag or branch that the server runs, then run the evaluation ([Check the configuration checksum](#check-the-configuration-checksum)) |
-| `eval.py suites` prints `FAIL` for a suite | A file under `evals/` was changed in the clone | Restore it with `git -C ~/local-agent-stack checkout -- evals/suites evals/sets.toml evals/rag-docs` |
+| `eval.py suites` prints `FAIL` for a suite | A file under `evals/` was changed in the clone | Restore it with `git -C ~/local-agent-stack checkout -- evals/suites evals/sets.toml evals/rag-docs evals/images` |
+| `format-011` fails or ends with `error` in the `vision` set | The model misread the image, or `coder` runs without its vision projector | See the `format-011` rows of [Act on failed evaluation cases](#act-on-failed-evaluation-cases) |
 | `--rag-source openwebui` aborts with `HTTP 401 from Open WebUI` or `HTTP 403 from Open WebUI` | `EVAL_KB_KEY` is wrong, or the `kb-reader` user cannot read the knowledge base | Repeat step 3 of [Evaluate retrieval through Open WebUI](#evaluate-retrieval-through-open-webui) |
 | `tools-005` and `tools-006` fail with `expected 2 call(s) ..., got 1`, while the other `tools` cases pass | The model made one call where two were expected, or LiteLLM does not pass `parallel_tool_calls` on to llama-server (assumed, not verified) | If `tools-015`, the parallel case of the Anthropic route, passes, report the two failures to the project as an issue. Otherwise see step 5 of [Tool calls fail or loop](#tool-calls-fail-or-loop) |
 | Cases end with `error` and `HTTP 400:` followed by a message that names `seed` or `parallel_tool_calls` | The gateway refused a field that `eval.py` sends | Run again without `--seed`. If the message names `parallel_tool_calls`, report it to the project as an issue with the message |
@@ -587,7 +655,7 @@ Table: Open WebUI settings by source
 
 | Read at every start (the environment wins) | Seeded on the first start (the database wins afterwards) |
 |---|---|
-| `WEBUI_SECRET_KEY`, `DATABASE_URL`, `VECTOR_DB`, `PGVECTOR_INDEX_METHOD`, `ENABLE_PERSISTENT_CONFIG`, `CORS_ALLOW_ORIGIN`, `WEBUI_SESSION_COOKIE_SECURE`, `OFFLINE_MODE`, `ENABLE_VERSION_UPDATE_CHECK`, `SCARF_NO_ANALYTICS`, `DO_NOT_TRACK`, `ANONYMIZED_TELEMETRY`, `ENABLE_LOCAL_WEB_FETCH` | `WEBUI_URL`, `ENABLE_SIGNUP`, `DEFAULT_USER_ROLE`, `ENABLE_COMMUNITY_SHARING`, `ENABLE_API_KEYS`, `ENABLE_OLLAMA_API`, `ENABLE_OPENAI_API`, `OPENAI_API_BASE_URLS`, `OPENAI_API_KEYS`, `DEFAULT_MODELS`, `TASK_MODEL_EXTERNAL`, every `RAG_*` and `CHUNK_*` variable, `ENABLE_RAG_HYBRID_SEARCH`, `ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER`, `CONTENT_EXTRACTION_ENGINE`, `DOCLING_SERVER_URL`, `DOCLING_API_KEY`, `ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE`, `SEARXNG_QUERY_URL`, `WEB_SEARCH_RESULT_COUNT` |
+| `WEBUI_SECRET_KEY`, `DATABASE_URL`, `VECTOR_DB`, `PGVECTOR_INDEX_METHOD`, `ENABLE_PERSISTENT_CONFIG`, `CORS_ALLOW_ORIGIN`, `WEBUI_SESSION_COOKIE_SECURE`, `OFFLINE_MODE`, `ENABLE_VERSION_UPDATE_CHECK`, `SCARF_NO_ANALYTICS`, `DO_NOT_TRACK`, `ANONYMIZED_TELEMETRY`, `ENABLE_LOCAL_WEB_FETCH` | `WEBUI_URL`, `ENABLE_SIGNUP`, `DEFAULT_USER_ROLE`, `ENABLE_COMMUNITY_SHARING`, `ENABLE_API_KEYS`, `ENABLE_OLLAMA_API`, `ENABLE_OPENAI_API`, `OPENAI_API_BASE_URLS`, `OPENAI_API_KEYS`, `DEFAULT_MODELS`, `TASK_MODEL_EXTERNAL`, every `RAG_*` and `CHUNK_*` variable, `ENABLE_RAG_HYBRID_SEARCH`, `ENABLE_MARKDOWN_HEADER_TEXT_SPLITTER`, `CONTENT_EXTRACTION_ENGINE`, `DOCLING_SERVER_URL`, `DOCLING_API_KEY`, `ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE`, `SEARXNG_QUERY_URL`, `WEB_SEARCH_RESULT_COUNT`, `ENABLE_MEMORIES`, `ENABLE_MEMORY_SYSTEM_CONTEXT`, `ENABLE_MEMORY_BACKGROUND_REVIEW` (no Admin Panel switch, so its first-start value stays) |
 
 #### Steps
 
@@ -704,7 +772,9 @@ The hub accepts the client's token, and its three servers answer through Caddy.
 Caddy proves control of your domain by creating a TXT record through the DNS provider's API, then
 waits until the record is visible. Issuance fails when the token cannot write the record, or when
 the resolvers Caddy asks cannot see it. Local DNS that serves its own zone for your domain (a
-split-horizon setup in a router, Pi-hole, dnsmasq or Unbound) hides the public zone.
+split-horizon setup in a router, Pi-hole, dnsmasq or Unbound) hides the public zone, and a router
+that redirects the server's DNS queries to itself, such as a UniFi gateway whose Content Filter
+covers the server, answers in place of the public resolvers.
 
 #### Steps
 
@@ -719,6 +789,14 @@ split-horizon setup in a router, Pi-hole, dnsmasq or Unbound) hides the public z
 
     The value must name public resolvers, by default `1.1.1.1 1.0.0.1`. Never set it to your local
     DNS server. These resolvers affect only certificate issuance and renewal.
+
+    Then check that the local network does not answer in their place:
+
+        sudo docker exec caddy nslookup chat.lab.example.com 1.1.1.1
+
+    The output reports `NXDOMAIN`. If it shows `192.0.2.10`, the gateway intercepts the server's
+    DNS queries; on a UniFi gateway, take the server out of every Content Filter and Ad Blocking
+    policy, as in [Keep the server out of DNS redirection](#keep-the-server-out-of-dns-redirection).
 
 3. For an authentication or permission error with Cloudflare, create a new token: a custom API
    token with the permissions **Zone / Zone / Read** and **Zone / DNS / Edit**, and **Zone

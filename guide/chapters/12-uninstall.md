@@ -25,17 +25,23 @@ Table: Data of the stack
 | Dataset | Contents | Keep it when |
 |---|---|---|
 | `tank/ai/rag-docs` | The documents in the `rag-docs` share | The documents are yours and exist nowhere else |
-| `tank/ai/appdata/pgvector` | Open WebUI's users, chats, knowledge bases and vectors | You may reinstall the stack and want the chats and indexes back |
+| `tank/ai/appdata/pgvector` | Open WebUI's users, chats, memories, knowledge bases and vectors | You may reinstall the stack and want the chats and indexes back |
 | `tank/ai/appdata/litellm-db` | LiteLLM's virtual keys, budgets and usage logs | You may reinstall and keep the keys |
 | `tank/ai/appdata/open-webui`, `oikb`, `caddy` | Uploaded files, the sync history, certificates and the ACME account | Together with `pgvector` and `litellm-db` |
 | The folders `llama-swap`, `benchmarks` and `pg-dumps` in `tank/ai/appdata` | The override file and configuration copy of the `coder` fallback (the internal CA's files are in `caddy`), the benchmark baselines of Chapter 9, and the database dumps | You want the measurements or the dumps |
 | `tank/ai/secrets` | The four environment files `inference.env`, `rag.env`, `web.env` and `edge.env` | With the application data: the databases only open with their original passwords and keys |
-| `tank/ai/models` | The model files, about 36 GB | You will reinstall soon and want to skip the downloads |
+| `tank/ai/models` | The four model files and the two vision projector files, about 37 GB | You will reinstall soon and want to skip the downloads |
 | `tank/ai/stacks` | The clone of this repository, and `desired.toml` if you set up the drift cron job | Never needed; the release is on GitHub |
 
 To reinstall later on kept datasets, follow the deployment chapters again with the same secrets
 files. Never generate new secrets for kept data: `LITELLM_SALT_KEY`, `WEBUI_SECRET_KEY` and the
-database passwords must match the data.
+database passwords must match the data. Run the port inventory of Chapter 3 again before you install
+`ai-edge` again ([Run the port inventory](#run-the-port-inventory)): another app or service may have
+taken ports 80 or 443 in the meantime.
+
+The vision projectors of `coder` and `coder-moe` are model files in `tank/ai/models` and go with
+that dataset. `tools/port-inventory.sh` runs from the clone and only reads: it writes no file and
+changes no setting, so it leaves nothing to remove.
 
 ### Take a final backup
 
@@ -325,23 +331,41 @@ No API key of the stack exists any more on the server or the workstation.
 2. In the DNS zone of your domain at the provider, check for leftover TXT records named
    `_acme-challenge` and delete them. Caddy normally removes them after each challenge.
 
-3. In your local DNS server or router, delete the A records of `chat`, `llm`, `models`, `mcp` and
-   `search` under your domain.
+3. If you added a marker TXT record at the lab domain because the zone has a wildcard
+   ([Check the public zone](#check-the-public-zone)), delete it on the same records page.
 
-4. Verify on the workstation:
+4. In your local DNS server or router, delete the records of `chat`, `llm`, `models`, `mcp` and
+   `search` under your domain. On a UniFi gateway, go to **Settings** > **Policy Table** in the
+   UniFi Network application and delete the five DNS policies of type **Host (A)**, or, for the
+   variant with aliases, the five **Alias (CNAME)** policies and the **Host (A)** policy of
+   `edge.lab.example.com`.
+
+5. On a UniFi gateway, also delete the **Alias (CNAME)** policy of `use-application-dns.net`, if you
+   added it ([Turn off Firefox's automatic DNS over HTTPS](#turn-off-firefoxs-automatic-dns-over-https)):
+   without it, Firefox may turn on DNS over HTTPS by itself again, which no longer matters for the
+   stack. The fixed IP address of the TrueNAS server and the **Source** of your Content Filter
+   policies can stay as they are.
+
+6. If a browser has `lab.example.com` under **Manage exceptions** of its DNS over HTTPS settings,
+   remove the entry.
+
+7. Verify on the workstation:
 
         getent hosts chat.lab.example.com
+        dig +short @192.0.2.1 chat.lab.example.com A
 
-    The command prints nothing.
+    Both commands print nothing; `192.0.2.1` is the address of your gateway or local DNS server.
 
 #### Results
 
-The DNS provider token no longer works, and the lab host names no longer resolve.
+The DNS provider token no longer works, the public zone holds no record of the stack, and the lab
+host names no longer resolve.
 
 !!! note
-    The Cloudflare dashboard labels were not verified for this guide. Certificates that Caddy
-    obtained stay valid until they expire; with the private keys gone from the `caddy` dataset,
-    nobody can use them.
+    The Cloudflare dashboard labels were not verified for this guide, and the UniFi path is assumed
+    for UniFi Network 10.6 and 11.0, as in Chapter 5; the label of the delete action on a DNS policy
+    was not verified. Certificates that Caddy obtained stay valid until they expire; with the private
+    keys gone from the `caddy` dataset, nobody can use them.
 
 ### Remove SSH keys
 
@@ -435,18 +459,32 @@ The Apps service runs without the NVIDIA driver.
 
 #### About this task
 
-This task is optional. Ports 80 and 443 are free again now that `caddy` is gone.
+This task is optional, and only for a server whose web interface you moved off ports 80 and 443
+for the stack in [Change the web interface ports](#change-the-web-interface-ports). If the web
+interface already used other ports before the stack, such as 444 in this guide's examples, leave
+them. Ports 80 and 443 are free again now that `caddy` is gone.
 
 #### Steps
 
-1. Go to **System** > **General Settings**, and on the **GUI** card click **Settings**.
+1. Check that nothing else took ports 80 and 443:
 
-2. Set **Web Interface HTTP Port** to `80` and **Web Interface HTTPS Port** to `443`, and click
+        sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh
+
+    The three lines of **Ports the stack needs on this server** read `free`. If you already
+    destroyed `tank/ai/stacks`, which holds the script, run the following command instead:
+
+        sudo ss -Hltn '( sport = :80 or sport = :443 )'
+
+    It prints nothing when no program listens on TCP port 80 or 443.
+
+2. Go to **System** > **General Settings**, and on the **GUI** card click **Settings**.
+
+3. Set **Web Interface HTTP Port** to `80` and **Web Interface HTTPS Port** to `443`, and click
    **Save**.
 
-3. In the **Restart Web Service** dialog, select **Confirm** and click **Continue**.
+4. In the **Restart Web Service** dialog, select **Confirm** and click **Continue**.
 
-4. Open `https://192.0.2.10` and update your bookmarks.
+5. Open `https://192.0.2.10` and update your bookmarks.
 
     The TrueNAS sign-in page opens.
 
@@ -584,7 +622,7 @@ OpenCode's links to the clone, the launchers, the check tools and their links, s
 your shell. It loads `client.env` into every shell and puts the OpenCode and launcher directories
 on `PATH`. The block reads:
 
-{{ include clients/install.sh lines=344-354 }}
+{{ include clients/install.sh lines=346-356 }}
 
 #### Steps
 

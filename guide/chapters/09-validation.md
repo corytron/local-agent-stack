@@ -745,7 +745,7 @@ Table: Validation tools
 | `tools/smoke.py` | Every endpoint, end to end, from the workstation ([Run the smoke tests](#run-the-smoke-tests)) |
 | `tools/bench.sh` | Fit in VRAM, GPU memory, prompt and generation speed ([Record a benchmark baseline](#record-a-benchmark-baseline)) |
 | Tool-calling and retrieval tests | Structured tool calls on both API formats; retrieval of a planted document (procedures in this chapter) |
-| `tools/eval.py` and `evals/` | Model quality on fixed suites: tool calling, output format, small coding tasks, answers from documents; the regression gate |
+| `tools/eval.py` and `evals/` | Model quality on fixed suites: tool calling, output format, small coding tasks, answers from documents and, optionally, reading the text in an image; the regression gate |
 | `tools/tests/` | Unit tests of the repository's tools, run by `tools/check.sh` and CI; they use no model |
 
 None of the CI jobs runs a model: CI has no GPU. Evaluations run from the workstation, by hand.
@@ -757,15 +757,20 @@ Table: Evaluation suites
 | Suite | Cases | What a case checks |
 |---|---|---|
 | `tools` | 20 | A structured tool call with the right name and arguments: single calls, parallel calls, no call when none is needed, nested arguments, and calls that follow a tool result; 13 on the OpenAI route (`/v1/chat/completions`), 7 on the Anthropic route (`/v1/messages`) |
-| `format` | 10 | Exact output: JSON with no code fence, exact text, a number of lines, JSON that fits a schema |
+| `format` | 11 | Exact output: JSON with no code fence, exact text, a number of lines, JSON that fits a schema; one optional case, `format-011`, sends an image and asks for the text in it |
 | `coding` | 8 | A small Python function, run against hidden unit tests on the workstation |
 | `rag` | 6 | Answers from four sample documents placed in the request, with the source file named; one question the documents cannot answer |
 
-Two sets select the cases: `smoke`, a fixed subset of 15 cases from every suite, and `full`, all
-44 cases. Each case has a fixed ID, such as `tools-005`, that never changes. The suites are the
-files `evals/suites/<suite>.jsonl`, the sets are defined in `evals/sets.toml`, and the sample
-documents of the `rag` suite are `evals/rag-docs/eval-*.md`; Appendix E prints the set and gate
-files and the sample documents.
+Three sets select the cases: `smoke`, a fixed subset of 15 cases from every suite; `full`, every
+case except the optional ones, 44 cases; and `vision`, the one optional case `format-011`. A case
+listed under `optional` in `evals/sets.toml` runs only in a set that names it, so `format-011`
+stays out of `smoke`, `full` and their regression gate until it has passed on the reference server
+([Run the vision evaluation](#run-the-vision-evaluation)). Each case has a fixed ID, such as
+`tools-005`, that never changes. The suites are the files `evals/suites/<suite>.jsonl`, the sets
+are defined in `evals/sets.toml`, the sample documents of the `rag` suite are
+`evals/rag-docs/eval-*.md`, and the image of `format-011` is `evals/images/maple-74.png`, a PNG of
+640 by 160 pixels that shows the text `MAPLE 74`. Appendix E prints the set and gate files and the
+sample documents.
 
 How `eval.py` runs:
 
@@ -816,7 +821,7 @@ Table: Options of eval.py run
 
 | Option | Meaning |
 |---|---|
-| `--suite <set>` | The set to run, `smoke` or `full` (required) |
+| `--suite <set>` | The set to run, `smoke`, `full` or `vision` (required) |
 | `--model <name>` | The model of the OpenAI-route cases; default `local-coder` |
 | `--anthropic-model <name>` | The model of the Anthropic-route cases; default `local-sonnet` for `local-coder`, `local-haiku` for `local-fast`, otherwise the `--model` name |
 | `--case <id>` | Run only this case; repeat it for several. The run is partial and its file goes to `build/evals/` |
@@ -861,8 +866,12 @@ or the llama.cpp image, after [Run the smoke tests](#run-the-smoke-tests) has pa
 
         python3 tools/eval.py suites
 
-    Every suite line starts with `ok`, and the last lines read `set smoke: 15 cases` and
-    `set full: 44 cases`.
+    Every suite line starts with `ok`; the `format` line reads
+    `ok format (v1, format, 11 cases): every reference passes`. The last three lines read:
+
+        set smoke: 15 cases
+        set full: 44 cases
+        set vision: 1 cases
 
 3. Run the smoke set with the agent model:
 
@@ -898,6 +907,84 @@ or the llama.cpp image, after [Run the smoke tests](#run-the-smoke-tests) has pa
 The smoke results are stored. A failed case shows `fail` or `error` and its reason; see
 [Act on failed evaluation cases](#act-on-failed-evaluation-cases).
 
+### Run the vision evaluation
+
+#### Prerequisites
+
+- The two vision projector files are in `/mnt/tank/ai/models/gguf/` and pass their checksums, and
+  `ai-inference` runs this release's `stack/inference/llama-swap/config.yaml`
+  ([Check the vision projector](#check-the-vision-projector)).
+- [Run the smoke evaluation](#run-the-smoke-evaluation) has passed.
+
+#### About this task
+
+The `vision` set runs the one optional case, `format-011`. It sends `evals/images/maple-74.png` as
+an `image_url` part with a base64 data URL to `local-coder` on the OpenAI route, through LiteLLM,
+and passes when the whole answer is the text in the image, `MAPLE 74` (the check is the regular
+expression `MAPLE\s+74`, case-insensitive). It tests the whole image path: LiteLLM passes the image
+on, and `coder` encodes it with its vision projector on the CPU.
+
+!!! note
+    This case has not run on the reference server. Whether Qwen3.8-27B with the Q8_0 projector
+    reads the image's small pixel font back exactly is not verified, and neither are the
+    projector's speed (about 11 seconds per image on a CPU, measured on another machine) and its
+    RAM. That is why `format-011` is optional: a failure here never fails the `full` set or its
+    gate. Report the outcome to the project as an issue, with the results file, whether it passes
+    or not; once it has passed on the server, a release moves it into `full`. Do not edit
+    `evals/sets.toml` in your clone to do that yourself: it changes the configuration checksum, and
+    your results no longer match the release's.
+
+#### Steps
+
+1. On TrueNAS, in **System** > **Shell**, check that `coder` loaded its vision projector:
+
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/upstream/coder/props' | grep -o '"vision":[a-z]*'
+
+    The output is `"vision":true`. The request loads `coder` if it is not loaded. `"vision":false`
+    or no output means that `coder` runs without its projector; see
+    [Image and memory issues](#image-and-memory-issues).
+
+2. On `c4dev`, change to the clone:
+
+        cd ~/local-agent-stack
+
+3. Run the vision set:
+
+        python3 tools/eval.py run --suite vision
+
+    The output has this shape:
+
+        eval: set vision, 1 cases, model local-coder, config <hash>, coding sandbox audit-hook
+        warm-up: local-coder (openai) answered in <s> s
+        [1/1] format-011   pass       <s> s   <n> tok   <n> tok/s  every check passed
+        suite      cases  pass     rate         95% CI    tok/s   latency
+        format         1     1   100.0%        21-100%      <n>     <s> s
+        overall        1     1   100.0%        21-100%      <n>     <s> s
+        results: /home/<user>/local-agent-stack/evals/results/<UTC time>-local-coder-vision.json
+
+    The case's time includes the encoding of the image on the CPU and the model's thinking.
+
+4. Confirm the exit code:
+
+        echo $?
+
+    The output is `0`. The exit code is `0` whenever the results file was written, so read the
+    `pass` column of step 3 for the outcome.
+
+5. Optionally, check the projector of the fast profile with `local-coder-moe`. The first request
+   swaps the GPU model, so run it while no agent works, and switch back afterwards as in
+   [Return to the default profile](#return-to-the-default-profile):
+
+        python3 tools/eval.py run --suite vision --model local-coder-moe
+
+#### Results
+
+The results file of the `vision` set is in `evals/results/`, and the case shows `pass`: images
+reach the model through the gateway, and the model reads them. The file is not a baseline; the
+`compare` gate of the `full` set never includes `format-011`. If the case shows `fail` or `error`,
+find its reason in [Act on failed evaluation cases](#act-on-failed-evaluation-cases).
+
 ### Record an evaluation baseline
 
 #### Prerequisites
@@ -929,9 +1016,10 @@ a change.
 
         python3 tools/eval.py verify --current
 
-    Each line starts with `ok` and names a results file of this configuration: the full run, and
-    the smoke run of the previous task. `--current` requires the results files to carry the
-    configuration checksum of the files in the clone.
+    Each line starts with `ok` and names a results file of this configuration: the full run, the
+    smoke run of [Run the smoke evaluation](#run-the-smoke-evaluation) and, if you made it, the
+    vision run. `--current` requires the results files to carry the configuration checksum of the
+    files in the clone.
 
 3. Keep the full run's file as the baseline:
 
@@ -1038,8 +1126,9 @@ To allow a suite one case of noise, add a section such as `[gate.suites.coding]`
 Every results file carries the SHA-256 checksum of the files that decide its outcome:
 `stack/inference/llama-swap/config.yaml`, `stack/inference/litellm/config.yaml`,
 `stack/inference/compose.yaml`, `stack/inference/models.sha256`, `evals/sets.toml`, the suite
-files and the sample documents. A change to any of them gives a new checksum. `evals/gate.toml` is
-not part of it: a threshold changes the verdict, not the results.
+files, the sample documents and the images under `evals/images/` (`*.png`). A change to any of
+them gives a new checksum. `evals/gate.toml` is not part of it: a threshold changes the verdict, not
+the results.
 
 #### Steps
 
@@ -1129,6 +1218,10 @@ Table: Failed evaluation cases
 | `not JSON` | The answer had a code fence or extra text | A format regression if it repeats |
 | `eval.py: LOCAL_LLM_KEY is not set` or `LAB_DOMAIN is not set` | `client.env` lacks the value | Complete `client.env` (Chapter 7) |
 | `verify` prints `FAIL` and `made with configuration ..., the working tree is ...` | The results file belongs to another configuration than the clone | Check out the tag or branch that the results file was made with, or run the evaluation again |
+| `format-011` fails with `does not match MAPLE\s+74` | The model misread the text in the image, or added words to its answer | Run `--suite vision` again; answers vary between runs. If it fails again, report it as an issue with the results file. The case is optional and never fails the `full` gate |
+| `format-011` ends with `error` and an `HTTP` status whose message contains `image input is not supported` | `coder` runs without its vision projector: the configuration in use has no `--mmproj` line, for example an override copy made from an older release | [Image and memory issues](#image-and-memory-issues) |
+| `run aborted, no results written: warm-up of local-coder (openai) failed: HTTP ...` right after a release update | `coder` does not start, for example because its projector file is missing | Read the `llama-swap` log; [Image and memory issues](#image-and-memory-issues) |
+| `eval.py: no set vision in evals/sets.toml` | The clone is at a release older than 1.2 | Check out the release that the server runs |
 
 To repeat one case, add `--case <id>` (repeatable). To keep the raw answers for inspection, add
 `--save-responses <dir>` with a directory outside the clone, such as `/tmp/eval-responses`; those

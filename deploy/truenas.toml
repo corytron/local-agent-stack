@@ -3,7 +3,10 @@
 #   validate (offline), render, plan, apply, drift, status.
 # A change here is a reviewed pull request; tools/deploy.py apply then makes the NAS match it.
 # Placeholders only: the pool is `tank`; the NAS address and the API keys live outside the
-# repository, in ~/.config/local-agent-stack/truenas.toml on the workstation.
+# repository, in ~/.config/local-agent-stack/truenas.toml on the workstation. Its uri, for example
+# wss://192.0.2.10:444/api/current, carries the TrueNAS web interface's HTTPS port (System >
+# General Settings > GUI > Settings > Web Interface HTTPS Port; 444 is only the guide's example),
+# and deploy.py connects to it as written (tools/deploy.py's docstring).
 
 schema = 1
 

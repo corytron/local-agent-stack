@@ -11,9 +11,11 @@ with the Python standard library from the workstation against the gateway.
 
 | Path | Contents |
 |---|---|
-| `sets.toml` | The suite order and the run sets: `smoke` (15 pinned case IDs) and `full` (every case) |
+| `sets.toml` | The suite order, the optional cases, and the run sets: `smoke` (15 pinned case IDs), `full` (every case but the optional ones) and `vision` (the optional image case) |
 | `suites/<name>.jsonl` | One suite: a header line, then one case per line |
 | `rag-docs/*.md` | The fictional documents of the `rag` suite (the reader may copy them to the `rag-docs` share) |
+| `images/*.png` | Images the cases send (`maple-74.png`, 640x160, the text "MAPLE 74") |
+| `images/make_images.py` | Draws those images with the standard library only (`--check` compares the committed files) |
 | `gate.toml` | The thresholds of `tools/eval.py compare` |
 | `results/` | Results files, `<UTC>-<model>-<set>.json`, committed |
 | `baselines/` | Optional: copies of accepted results, one per model profile (`local-coder-full.json`) |
@@ -23,7 +25,7 @@ Partial runs (`--case`) are written to `build/evals/` (gitignored) and never pas
 ## Commands
 
 ```
-python3 tools/eval.py run --suite smoke|full [--model local-coder] [--out FILE] [--baseline FILE]
+python3 tools/eval.py run --suite smoke|full|vision [--model local-coder] [--out FILE] [--baseline FILE]
 python3 tools/eval.py compare BASELINE RESULT [--gate evals/gate.toml]
 python3 tools/eval.py verify [--current] [RESULT ...]
 python3 tools/eval.py config-hash [--files]
@@ -50,6 +52,14 @@ merged into the request body, such as `"parallel_tool_calls": true`).
 | `coding` | `prompt`, `entry_point`, `tests` (Python statements run after the solution, in its namespace), `reference` (code), optional `timeout` | The hidden tests run without an exception in the sandbox |
 | `rag` | `question`, `sources` (expected file names; `[]` when the documents do not hold the answer), `checks`, `reference` (text) | Every check passes; the suite's checks also require the cited file name |
 
+In `tools` and `format` cases a message's `content` may be a list of parts in the case's API format,
+plus one part of the harness's own: `{"type": "image_file", "path": "images/<name>.png"}` names a
+PNG in `evals/images/`. `build_request` replaces it with the API's image part: on the OpenAI route
+`{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`, on the Anthropic route
+`{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}`.
+`eval.py suites` refuses a path outside `evals/images/`, a missing file, a file that is not a PNG
+and unknown keys.
+
 Argument matchers and the `json_schema` check use a JSON Schema subset: `type` (an integer-valued
 float counts as an integer, a boolean never as a number), `const`, `enum`, `pattern` (a Python
 `re.search`), `minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`,
@@ -68,11 +78,19 @@ pattern that every stripped line must fully match).
   suite a new `version`; results of an older version then fail `verify`, and `compare` notes the
   version change.
 - Keep `sets.toml`'s smoke list a fixed subset that touches every suite and both APIs.
+- `optional` in `sets.toml` lists cases that `cases = "all"` leaves out; they run only in a set
+  that pins them. `format-011` (image input, OpenAI route) is optional until it has passed on the
+  server with the vision projector loaded (`docs/v1.2-design.md` §3): run it with
+  `--suite vision`. To make it part of `full`, remove it from `optional` and record new results.
+- Images are drawn by `images/make_images.py` (add the file name and text to its `IMAGES`, run
+  it, commit the PNG); `tools/tests/test_eval.py` checks that every committed PNG has exactly the
+  pixels the script draws.
 - `python3 tools/eval.py suites` must pass: every reference answer passes its own checks, every
   coding reference passes its hidden tests, and a stub that returns `None` fails them (so the
   tests check something). The unit tests run it too.
-- Any change to `sets.toml`, `suites/` or `rag-docs/` changes the configuration hash, so existing
-  results no longer match `verify --current`. Record new results in the same pull request.
+- Any change to `sets.toml`, `suites/`, `rag-docs/` or `images/*.png` changes the configuration
+  hash, so existing results no longer match `verify --current`. Record new results in the same
+  pull request.
 - The RAG documents must stay fictional, with placeholders only (`192.0.2.x`, `example.com`).
 
 ## Results files
@@ -98,7 +116,7 @@ for answers of at least 32 tokens; shorter answers measure overhead, not decodin
 The sha256 of a `sha256sum`-style manifest (`<sha256>  <path>` per line, sorted by path) of
 `stack/inference/llama-swap/config.yaml`, `stack/inference/litellm/config.yaml`,
 `stack/inference/compose.yaml` (the image builds), `stack/inference/models.sha256` (the model
-files), `evals/sets.toml`, `evals/suites/*.jsonl` and `evals/rag-docs/*.md`. The compose file
+files), `evals/sets.toml`, `evals/suites/*.jsonl`, `evals/rag-docs/*.md` and `evals/images/*.png`. The compose file
 and the model checksums are there besides the two configs because a new llama.cpp build or model
 file changes results as much as a flag does. `gate.toml` is left out on purpose: a threshold
 changes the verdict, not the results. The same value by hand:
@@ -106,7 +124,7 @@ changes the verdict, not the results. The same value by hand:
 ```
 sha256sum stack/inference/llama-swap/config.yaml stack/inference/litellm/config.yaml \
   stack/inference/compose.yaml stack/inference/models.sha256 evals/sets.toml \
-  evals/suites/*.jsonl evals/rag-docs/*.md | LC_ALL=C sort -k2 | sha256sum
+  evals/suites/*.jsonl evals/rag-docs/*.md evals/images/*.png | LC_ALL=C sort -k2 | sha256sum
 ```
 
 ## Design notes
@@ -145,6 +163,10 @@ sha256sum stack/inference/llama-swap/config.yaml stack/inference/litellm/config.
 - Verified here: the model names and routes (`stack/inference/litellm/config.yaml`), the headers
   `tools/smoke.py` uses on both routes, the sandbox behaviour (unit tests: network, subprocess,
   outside writes, early exit, timeout), and the hash reproduction above.
+- Verified in the source (not run): LiteLLM 1.108.8 passes an `image_url` part with a data URL
+  through to llama-server unchanged on the `openai/` route, and llama-server b12407 decodes PNG
+  through stb_image once `coder` has its projector (`stack/inference/README.md`, "Images").
 - Assumed: that LiteLLM forwards `seed` and `parallel_tool_calls` on the `openai/` route and
   passes llama-server's `timings` through (only recorded when present); the Open WebUI retrieval
-  details above. No run against the real stack has been made yet.
+  details above; that Qwen3.8-27B reads the 5x7 pixel font of `maple-74.png` back exactly
+  (`format-011` stays optional until it has). No run against the real stack has been made yet.

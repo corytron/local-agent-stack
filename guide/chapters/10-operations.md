@@ -17,6 +17,7 @@ Table: Values used in this chapter
 | Value | Meaning |
 |---|---|
 | `192.0.2.10` | LAN address of the TrueNAS server |
+| `<ui-https-port>` | The HTTPS port of the TrueNAS web interface, which also serves the TrueNAS API; `444` in this guide's examples. The port inventory of Chapter 3 prints it as **HTTPS port (ui_httpsport)** ([Run the port inventory](#run-the-port-inventory)) |
 | `lab.example.com` | Your lab domain (`LAB_DOMAIN`) |
 | `~/local-agent-stack` | The clone of this repository on the workstation (Chapter 3) |
 | `/mnt/tank/ai/stacks/local-agent-stack` | The clone of this repository on TrueNAS (Chapter 3) |
@@ -62,6 +63,7 @@ Table: How release changes take effect
 | A configuration file that the compose file mounts: `stack/inference/llama-swap/config.yaml`, `stack/inference/litellm/config.yaml`, `stack/rag/oikb/oikb.yaml`, the files under `stack/web/searxng/`, `stack/edge/Caddyfile` | New service configuration | `deploy.py apply` updates the app; these files are part of the app's content hash |
 | `stack/edge/Dockerfile` | A new Caddy image | With the published image, the release also pins the new image in `stack/edge/compose.yaml`, and `apply` updates the app. With the image built on the server, build it again and redeploy `ai-edge` by hand ([Apply the release](#apply-the-release)) |
 | The MCP hub files under `stack/web/mcp-hub/` | A new hub image | With the published image, the release also pins the new image in `stack/web/compose.yaml`, and `apply` updates the app. With the image built on the server, build it again and redeploy `ai-web` by hand ([Apply the release](#apply-the-release)); `deploy.py` does not hash build files |
+| `stack/inference/models.tsv` and `stack/inference/models.sha256` | New or changed model files, such as the vision projectors that release 1.2 added | Download the new files on TrueNAS before `apply` ([Download the new model files of a release](#download-the-new-model-files-of-a-release)): `llama-server` does not start a model whose file is missing |
 | `stack/<stack>/<stack>.env.example` | New or changed variables | Add the variables to your copy `~/.config/local-agent-stack/secrets/<stack>.env` and to `/mnt/tank/ai/secrets/<stack>.env`; `deploy.py apply` then updates the app, because its environment file changed |
 | Seed values of Open WebUI in `stack/web/compose.yaml` | Nothing on an existing installation | Open WebUI keeps these settings in its database after its first start; make the change in the Admin Panel when the release notes say so. `apply` still recreates the `ai-web` containers, because the file changed |
 | `clients/` | Workstation configuration | The links that `clients/install.sh` created point into the workstation clone, so they follow its checkout; run `clients/install.sh` again for a new OpenCode or ssh-mcp version |
@@ -117,7 +119,8 @@ variables.
     is `ai-inference`, `stack/rag` is `ai-rag`, `stack/web` is `ai-web` and `stack/edge` is
     `ai-edge`. A changed file under `stack/web/mcp-hub/` means a new MCP hub image, and a changed
     `stack/edge/Dockerfile` a new Caddy image: the release pins each published image in its compose
-    file, and an image that you built on the server must be built again.
+    file, and an image that you built on the server must be built again. A changed
+    `stack/inference/models.tsv` means new model files to download before you apply the release.
 
 6. Show the changes to the variables of the apps:
 
@@ -127,14 +130,16 @@ variables.
 
 #### Results
 
-You know what the release changes, which apps it touches and which variables you must add. Keep the
-list for [Updating to a new release](#updating-to-a-new-release).
+You know what the release changes, which apps it touches, which variables you must add and whether
+it needs new model files. Keep the list for [Updating to a new release](#updating-to-a-new-release).
 
 ## Setting up deploy.py
 
 `tools/deploy.py` compares the TrueNAS server with a desired state and makes the server match it.
 It runs on the workstation and talks to the TrueNAS API (JSON-RPC over a WebSocket at
-`wss://192.0.2.10:8443/api/current`). Set it up once, before the first release update.
+`wss://192.0.2.10:<ui-https-port>/api/current`, for example `wss://192.0.2.10:444/api/current`).
+The TrueNAS web interface serves the API, so the port is the web interface's HTTPS port, never 443,
+which Caddy holds. Set it up once, before the first release update.
 
 ### How deploy.py works
 
@@ -362,18 +367,25 @@ over `wss://` and verifies the certificate; TrueNAS revokes an API key that is e
 HTTP or `ws://`. The web interface uses its own self-signed certificate by default, so you save that
 certificate as `truenas-ca.pem` and compare its fingerprint with the one your browser shows.
 
+The API is served by the web interface, on its HTTPS port. Replace `<ui-https-port>` in the steps
+with that port: the value **HTTPS port (ui_httpsport)** that the port inventory printed in
+[Run the port inventory](#run-the-port-inventory), which is also **Web Interface HTTPS Port** on the
+**GUI** card of **System** > **General Settings**. This guide's examples use `444`. `deploy.py`
+assumes no port; it connects to the address in `uri` as written.
+
 #### Steps
 
 1. Save the certificate that the TrueNAS web interface presents:
 
-        echo | openssl s_client -connect 192.0.2.10:8443 2>/dev/null | openssl x509 > ~/.config/local-agent-stack/truenas-ca.pem
+        echo | openssl s_client -connect 192.0.2.10:<ui-https-port> 2>/dev/null | openssl x509 > ~/.config/local-agent-stack/truenas-ca.pem
 
 2. Display its names and fingerprint:
 
         openssl x509 -in ~/.config/local-agent-stack/truenas-ca.pem -noout -subject -ext subjectAltName -fingerprint -sha256
 
-3. Open `https://192.0.2.10:8443` in a browser, open the certificate viewer from the address bar,
-   and compare the SHA-256 fingerprint with the output of step 2.
+3. Open `https://192.0.2.10:<ui-https-port>` in a browser (`https://192.0.2.10:444` in the
+   examples), open the certificate viewer from the address bar, and compare the SHA-256
+   fingerprint with the output of step 2.
 
     The two fingerprints are identical. If they differ, do not continue: something between the
     workstation and the server presents another certificate.
@@ -381,7 +393,7 @@ certificate as `truenas-ca.pem` and compare its fingerprint with the one your br
 4. Write the settings file:
 
         (umask 077; cat > ~/.config/local-agent-stack/truenas.toml <<'EOF'
-        uri = "wss://192.0.2.10:8443/api/current"
+        uri = "wss://192.0.2.10:<ui-https-port>/api/current"
         read_user = "deploy-read"
         read_key_file = "truenas-read.key"
         apply_user = "deploy-apply"
@@ -390,7 +402,8 @@ certificate as `truenas-ca.pem` and compare its fingerprint with the one your br
         EOF
         )
 
-    The key and certificate file names are relative to the folder of the settings file.
+    The key and certificate file names are relative to the folder of the settings file. With the
+    examples' port, the first line reads `uri = "wss://192.0.2.10:444/api/current"`.
 
 5. Verify the files and their modes:
 
@@ -754,8 +767,8 @@ Every app's YAML records the hashes of its files and its environment file again,
 ## Updating to a new release
 
 A release update moves both clones to the new tag, adds new variables to the environment files,
-lets `deploy.py apply` update the apps whose files, environment files or images changed, and
-verifies the result. Plan for a few minutes of interruption per app;
+downloads new model files, lets `deploy.py apply` update the apps whose files, environment files or
+images changed, and verifies the result. Plan for a few minutes of interruption per app;
 [What a redeploy restarts](#what-a-redeploy-restarts) lists the effect of each app.
 
 Before the first update, record the content hashes as in
@@ -871,6 +884,13 @@ Both clones are at `<new-tag>`, your desired-state file names it, and the overri
 the new release. The apps still run the old release until
 [Apply the release](#apply-the-release).
 
+#### Next steps
+
+Add the new variables, then download the new model files
+([Download the new model files of a release](#download-the-new-model-files-of-a-release)). From
+release 1.0 or 1.1 to 1.2, these are the two vision projectors. Download them before
+[Apply the release](#apply-the-release), or `coder` does not start.
+
 ### Add new variables to the secrets files
 
 #### About this task
@@ -924,9 +944,91 @@ the server's file.
 
 The environment files hold every variable of the new release. `deploy.py plan` shows
 `its env file differs from the one hashed at the last apply` for each app whose file changed, and
-the next task applies it.
+[Apply the release](#apply-the-release) applies it.
+
+### Download the new model files of a release
+
+#### Prerequisites
+
+- The TrueNAS clone is at `<new-tag>` ([Update the clones](#update-the-clones)).
+
+#### About this task
+
+A release that adds or changes lines in `stack/inference/models.tsv` needs those files on the server
+before `apply` restarts `ai-inference`: `llama-server` does not start a model whose file is missing,
+and for a missing vision projector its log reports `failed to load multimodal model`. The download
+uses the `dl` function of Chapter 4, which reads `models.tsv` from the TrueNAS clone, now at the new
+tag. Release 1.2 adds the two vision projectors, `coder-mmproj` and `coder-moe-mmproj`, 1.24 GB
+(1.16 GiB) together, which `coder` and `coder-moe` load with `--mmproj` from that release on. The
+model files that the server already holds stay as they are. Skip this task when the release does
+not change `models.tsv`.
+
+#### Steps
+
+1. In **System** > **Shell** on TrueNAS, list the lines that the release adds to the model list:
+
+        git -C /mnt/tank/ai/stacks/local-agent-stack diff <old-tag> <new-tag> -- stack/inference/models.tsv
+
+    Each line that starts with `+` and an id, such as `+coder-mmproj`, names a file to download. An
+    empty output means that the release needs no new model file; skip the rest of this task.
+
+2. Check the free space of the models dataset:
+
+        df -h /mnt/tank/ai/models
+
+    **Avail** must exceed the size of the new files. The two projectors of release 1.2 are
+    629,247,008 and 614,194,304 bytes.
+
+3. Run steps 1 to 3 of [Start the model downloads](#start-the-model-downloads), which refresh the
+   `sudo` credentials, set `IMG` and `MODELS`, and define `dl`.
+
+4. Start one download per new id. For release 1.2:
+
+        dl coder-mmproj
+        dl coder-moe-mmproj
+
+    Each command prints the ID of a new container.
+
+5. Wait until the downloads have stopped:
+
+        sudo docker wait dl-coder-mmproj dl-coder-moe-mmproj
+
+    The output is one `0` per container.
+
+6. Remove the download containers:
+
+        sudo docker rm dl-coder-mmproj dl-coder-moe-mmproj
+
+7. Check every model file against the release's checksums:
+
+        cd /mnt/tank/ai/models/gguf && sha256sum -c /mnt/tank/ai/stacks/local-agent-stack/stack/inference/models.sha256
+        cd
+
+    Every line ends with `: OK`; for release 1.2 there are six lines. Reading about 37 GB takes a few
+    minutes. If a line reads `FAILED`, delete that file and download it again as step 4 of
+    [Verify the model files](#verify-the-model-files) describes.
+
+#### Results
+
+Every model file that the new release names is in `/mnt/tank/ai/models/gguf/` with its published
+checksum, so `ai-inference` starts with the new configuration in
+[Apply the release](#apply-the-release). After that apply, check the projectors of release 1.2 with
+[Check the vision projector](#check-the-vision-projector) (Chapter 4).
+
+If `ai-inference` was redeployed with the new configuration before the download finished, `coder`
+does not become ready and the `llama-swap` log shows `failed to load multimodal model`. Finish this
+task, then redeploy the app as in
+[Redeploy ai-inference after a change](#redeploy-ai-inference-after-a-change).
 
 ### Apply the release
+
+#### Prerequisites
+
+- The model files of the new release are on the server
+  ([Download the new model files of a release](#download-the-new-model-files-of-a-release)). For an
+  update from release 1.0 or 1.1 to 1.2, these are the two vision projectors: release 1.2 starts
+  `coder` and `coder-moe` with `--mmproj`, and without the files `llama-server` stops with
+  `failed to load multimodal model`, so the models never become ready.
 
 #### About this task
 
@@ -1055,7 +1157,28 @@ policy carries the release's new settings.
 
     The last line starts with `smoke: 8 passed, 0 failed`.
 
-3. Do any Admin Panel change that the release notes ask for.
+3. On TrueNAS, check that the edge app holds the ports the stack needs and nothing else does:
+
+        sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh
+
+    The section **Ports the stack needs on this server** reads:
+
+        Ports the stack needs on this server (Caddy, app ai-edge)
+          80/tcp    ours: container caddy (app ai-edge)
+          443/tcp   ours: container caddy (app ai-edge)
+          443/udp   ours: container caddy (app ai-edge)
+
+    The last line reads `Result: every port the stack needs is free or already used by the stack
+    (exit 0).` `sudo` asks for the `truenas_admin` password once; the script only reads. From the
+    workstation, the same check runs with
+    `ssh -t truenas_admin@192.0.2.10 sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh`.
+    For any `used by` line, see [Port inventory issues](#port-inventory-issues).
+
+4. If the release added model files or changed `stack/inference/llama-swap/config.yaml`, check
+   the projector on the server ([Check the vision projector](#check-the-vision-projector)) and run
+   the vision evaluation ([Run the vision evaluation](#run-the-vision-evaluation)).
+
+5. Do any Admin Panel change that the release notes ask for.
 
 #### Results
 
@@ -1088,7 +1211,9 @@ roll back the database datasets to the snapshot of
    `<old-tag>`.
 
 2. If you added variables to a secrets file, you can leave them in place; the old release ignores
-   them.
+   them. The same holds for model files that the new release added, such as the vision
+   projectors of release 1.2: delete them later as in [Remove a model](#remove-a-model), step 3,
+   if you do not install that release again.
 
 3. If the database datasets must go back, stop the apps that use them in **Apps** > **Installed**:
    `ai-inference` for `tank/ai/appdata/litellm-db`, and `ai-web` and `ai-rag` for
@@ -1409,6 +1534,12 @@ reports, count everything on the card, the CUDA context included. Compare a meas
 card's total, not with 15.5 GiB. Appendix B lists the models that suit this server, the ones to
 avoid on two memory channels, and their sizes.
 
+A vision-language model, such as both chat models of the stack, reads images only with its vision
+projector, a separate GGUF file. The stack keeps each projector in system RAM and runs it on the
+CPU, so it costs no VRAM: about 1 to 1.5 GiB of RAM (estimate) while its model is loaded, about
+0.6 GiB of weights plus a compute buffer that the `llama-swap` log prints at load as
+`compute buffer size`. Image encoding uses the model's `-t` CPU threads.
+
 Keep these rules for any new model:
 
 - Run it with `--jinja`, so that llama.cpp parses its tool calls.
@@ -1417,6 +1548,16 @@ Keep these rules for any new model:
   the template file in the repository and test it like a new model.
 - Declare the real context everywhere: llama-swap `-c`, LiteLLM `max_input_tokens`, OpenCode
   `limit.context`, and Claude Code `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
+- Give a vision-language model its own projector file, converted from the same base model:
+  llama.cpp refuses a projector whose projection size differs from the model's embedding length,
+  so the `coder` projector does not load with `coder-moe`. Load it with
+  `--mmproj ${gguf}/<projector file> --no-mmproj-offload`, and declare image input in the clients:
+  `supports_vision: true` in the LiteLLM name's `model_info`, and `"image"` in the OpenCode
+  model's `capabilities.input`. A model without a projector answers every image with
+  `image input is not supported`; leave both declarations out for it.
+- List every file in `stack/inference/models.tsv` (id, Hugging Face repository, revision, file)
+  and its checksum in `stack/inference/models.sha256`, so that the `dl` function of Chapter 4 and
+  `sha256sum -c` cover it.
 
 ### Download a model file
 
@@ -1425,7 +1566,9 @@ Keep these rules for any new model:
 Model files live in `/mnt/tank/ai/models/gguf/` on TrueNAS. The `llama-swap` container mounts the
 dataset read-only, so the download runs in a throwaway container from the same image, which has
 `curl`, with the directory mounted writable. The repositories of the stack's models are public and
-need no Hugging Face account.
+need no Hugging Face account. Download a model's vision projector the same way, as a second file.
+Once the file's line is in `stack/inference/models.tsv` of the clone, the `dl` function of
+[Start the model downloads](#start-the-model-downloads) downloads it by its id instead.
 
 #### Steps
 
@@ -1546,23 +1689,23 @@ branch.
 
 1. In `stack/inference/llama-swap/config.yaml`, add an entry under `models:`. Use the `coder-moe`
    entry as the pattern: a new id, `${server}` followed by the model file under `${gguf}` and the
-   flags you measured, and `ttl: 0`:
+   flags you measured, the `--mmproj` line for a model with a vision projector, and `ttl: 0`:
 
-    {{ include stack/inference/llama-swap/config.yaml lines=125-140 }}
+    {{ include stack/inference/llama-swap/config.yaml lines=176-191 }}
 
 2. Add the id to a routing group. A GPU model joins the `llm` group, which keeps one GPU model
    loaded at a time; a CPU-only model with `--device none` and `CUDA_VISIBLE_DEVICES=-1` joins the
    persistent `rag` group:
 
-    {{ include stack/inference/llama-swap/config.yaml lines=178-194 }}
+    {{ include stack/inference/llama-swap/config.yaml lines=229-245 }}
 
 3. In `stack/inference/litellm/config.yaml`, add a client-facing name under `model_list`. An
    OpenAI-format name routes to `openai/<id>` at `http://llama-swap:8080/v1`; an Anthropic-format
    name for Claude Code routes to `anthropic/<id>` at `http://llama-swap:8080`. Set
    `max_input_tokens` to the context and, for a GPU model, `cost_per_second` to `0.0001`, which turns
-   key budgets into GPU-time quotas:
+   key budgets into GPU-time quotas. For a model that reads images, add `supports_vision: true`:
 
-    {{ include stack/inference/litellm/config.yaml lines=81-88 }}
+    {{ include stack/inference/litellm/config.yaml lines=107-115 }}
 
     To replace the model behind an existing name, change only the `model:` line of that name.
 
@@ -1597,7 +1740,9 @@ reaches the server until you deploy the branch in
    added to the key's `models` list.
 
 3. For OpenCode, add the name to the `local` provider in `clients/opencode/opencode.jsonc` with its
-   real `limit.context` and `limit.output`, in the same branch.
+   real `limit.context` and `limit.output`, in the same branch. For a model with a vision projector,
+   set `capabilities.input` to `["text", "image"]`, as for `local-coder`; for any other model, to
+   `["text"]`, so that OpenCode does not send it images.
 
 4. Verify a key's names as in [Verify a LiteLLM key](#verify-a-litellm-key): the list includes the
    new name.
@@ -1605,7 +1750,7 @@ reaches the server until you deploy the branch in
 #### Results
 
 Every client that should use the model has a key that allows its name, and OpenCode declares it
-with its real limits.
+with its real limits and inputs.
 
 ### Pass the evaluation gate
 
@@ -1658,6 +1803,12 @@ session, run against the branch deployed on the server. It is the regression che
     `--anthropic-model <name>` for its Anthropic-format name, if it has one) and compare with the
     baseline of the model it replaces; `compare` notes the different model. For a failed case, see
     [Act on failed evaluation cases](#act-on-failed-evaluation-cases).
+
+    If the change touches a vision projector or the flags of a chat model, also run the optional
+    image case, which the `full` set leaves out
+    ([Run the vision evaluation](#run-the-vision-evaluation)):
+
+        python3 tools/eval.py run --suite vision
 
 5. Run a real agent task with tool calls for about 30 minutes, then search the `llama-swap` log for
    full prompt re-processing:
@@ -1724,10 +1875,12 @@ document.
 #### Steps
 
 1. In a branch, delete the model's entry and its group membership from the llama-swap file, its
-   names from the LiteLLM file and the OpenCode entry, and release the change.
+   names from the LiteLLM file and the OpenCode entry, and the lines of its file and of its vision
+   projector from `stack/inference/models.tsv` and `models.sha256`, and release the change.
 2. Remove the name from the virtual keys that allow it, as in
    [Make the model available to clients](#make-the-model-available-to-clients).
-3. After the release that removes it is deployed, delete the file on TrueNAS:
+3. After the release that removes it is deployed, delete the file on TrueNAS, and its projector
+   file if it has one:
 
         sudo rm /mnt/tank/ai/models/gguf/<file>
 
@@ -1735,7 +1888,7 @@ document.
 
 #### Results
 
-No configuration, key or client names the model, and its file is gone from the models dataset.
+No configuration, key or client names the model, and its files are gone from the models dataset.
 
 ## Monitoring the stack
 
@@ -1759,7 +1912,9 @@ container health checks.
         sudo docker stats --no-stream
 
     `llama-swap` has a limit of 32 GiB, `litellm` 6 GiB, `litellm-db` 2 GiB and `docling` 8 GiB. A
-    process that exceeds its container's limit is killed, and the container restarts.
+    process that exceeds its container's limit is killed, and the container restarts. With
+    `coder-moe` loaded, `llama-swap` peaks at about 18 to 22 GiB (estimate: the experts, the prompt
+    cache, the vision projector and the two CPU models); with `coder`, it uses less.
 
 3. From the workstation, check the server with `deploy.py status` and run `python3 tools/smoke.py`.
 
@@ -1842,10 +1997,22 @@ address must join `ai-net`; the stack does not include one.
 
     The lines include the requests in progress and the token counters of `llama-server`.
 
+4. Check that `coder` reads images, and read its vision projector's lines in the log:
+
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/upstream/coder/props' | grep -o '"vision":[a-z]*'
+        sudo docker logs llama-swap 2>&1 | grep -E 'loaded multimodal model|compute buffer size' | tail -n 4
+
+    The first command prints `"vision":true`; it loads `coder` if another model is loaded. The
+    second shows `loaded multimodal model, '/models/gguf/mmproj-Qwen3.8-27B-Q8_0.gguf'` and the
+    compute buffers in MiB, the projector's share of the RAM. A warning at load that "Qwen-VL models
+    require at minimum 1024 image tokens to function correctly on grounding tasks" is expected: the
+    stack does not use grounding (bounding boxes).
+
 #### Results
 
-You know which models are loaded, that the CPU models use the AMX kernels, and the load of the
-`coder` process.
+You know which models are loaded, that the CPU models use the AMX kernels, the load of the `coder`
+process, and that it reads images.
 
 !!! note
     `llama-swap` also has a web UI at `https://models.lab.example.com`, which requires its API key.
@@ -2064,13 +2231,24 @@ The server runs the new version, and `deploy.py` accepts it.
 
     Every container of the stack is `Up` and, except `gpu-exporter`, `(healthy)`.
 
-7. From the workstation, run `python3 tools/smoke.py`. The last line starts with
+7. Check that the edge app still holds ports 80 and 443, and that the web interface kept its own
+   ports:
+
+        sh /mnt/tank/ai/stacks/local-agent-stack/tools/port-inventory.sh
+
+    The three lines of **Ports the stack needs on this server** read
+    `ours: container caddy (app ai-edge)`, **HTTPS port (ui_httpsport)** is your
+    `<ui-https-port>`, and the last line reads `Result: every port the stack needs is free or
+    already used by the stack (exit 0).` For any `used by` line, see
+    [Port inventory issues](#port-inventory-issues).
+
+8. From the workstation, run `python3 tools/smoke.py`. The last line starts with
    `smoke: 8 passed, 0 failed`.
 
 #### Results
 
-The driver, the Apps service, the ARC cap, persistence mode, the shared network and every
-container came through the update, and the stack answers end to end.
+The driver, the Apps service, the ARC cap, persistence mode, the shared network, the ports and
+every container came through the update, and the stack answers end to end.
 
 ### Moving to TrueNAS 27
 

@@ -752,10 +752,12 @@ regression gate between a baseline and a new result.
 Run them for every pull request that changes what the configuration hash of a results file
 covers: `stack/inference/llama-swap/config.yaml`, `stack/inference/litellm/config.yaml`,
 `stack/inference/compose.yaml`, `stack/inference/models.sha256`, `evals/sets.toml`, the suites
-under `evals/suites/` or the documents under `evals/rag-docs/`. Do not run them while agents
-work: an evaluation needs the GPU server to itself
-([Concurrency on one 16 GB GPU](#concurrency-on-one-16-gb-gpu)). Chapter 9 describes the suites,
-the run, the results files and the gate
+under `evals/suites/`, the documents under `evals/rag-docs/` or the images under
+`evals/images/` (`*.png`). For a change to the vision projectors or to the `coder` flags, also run
+the optional `vision` set ([Run the vision evaluation](#run-the-vision-evaluation)), which the
+`full` set leaves out. Do not run them while agents work: an evaluation needs the GPU server to
+itself ([Concurrency on one 16 GB GPU](#concurrency-on-one-16-gb-gpu)). Chapter 9 describes the
+suites, the run, the results files and the gate
 ([Evaluations and the regression gate](#evaluations-and-the-regression-gate)).
 
 ### Protect the main branch with a ruleset

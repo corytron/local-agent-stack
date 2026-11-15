@@ -120,6 +120,28 @@ services:
       WEB_SEARCH_ENGINE: searxng
       SEARXNG_QUERY_URL: http://searxng:8080/search?q=<query>
       WEB_SEARCH_RESULT_COUNT: "5"
+      # Memory (docs/v1.2-design.md §3; backend/open_webui/config.py, utils/middleware.py,
+      # utils/tools.py, utils/memory.py at v0.13.3). The three values are Open WebUI's defaults,
+      # stated here. Memories on (Admin Panel > Settings > General > Memories): each user's own
+      # notes, kept in the database and given to the model at every turn ("Memory System
+      # Context"). A user sees them under Settings > Personalization > Memory, a switch that
+      # follows this setting until the user changes it; the group permission Memories
+      # (USER_PERMISSIONS_FEATURES_MEMORIES) is on by default. Memories are written by the user
+      # (Add Memory) or by the model, which gets memory tools while a model's Function Calling is
+      # Native (Open WebUI's default).
+      ENABLE_MEMORIES: "true"
+      ENABLE_MEMORY_SYSTEM_CONTEXT: "true"
+      # Off: no automatic review of the conversation. On, every 10th user turn would send one more
+      # completion to the chat's own model (local-coder: GPU time with thinking) to decide what to
+      # save. 0.13.3 has no Admin Panel switch for it: this first-start value decides it.
+      ENABLE_MEMORY_BACKGROUND_REVIEW: "false"
+      # Chat attachments need no setting: a file dropped into a chat stays with that chat. Images
+      # are stored without text extraction and go to the model as image_url parts (Open WebUI
+      # turns them into base64 data URLs before the request, convert_url_images_to_base64);
+      # other files are extracted by docling into their own file-<id> collection. Nothing joins a
+      # knowledge base unless it is uploaded to one (Workspace > Knowledge; routers/files.py links
+      # a file only for a knowledge_id). Images are offered to every model whose Capabilities
+      # keep Vision on, the default for a model without saved settings (README.md, "Images").
     volumes:
       # Dataset tank/ai/appdata/open-webui: uploaded files and caches (the database is pgvector).
       - ${AI_ROOT:-/mnt/tank/ai}/appdata/open-webui:/app/backend/data

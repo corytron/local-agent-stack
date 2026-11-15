@@ -26,26 +26,43 @@ Table: Values used in this chapter
 
 ## Download the model files
 
-The stack serves four GGUF model files, 35.76 GB (33.3 GiB) in total, from public Hugging Face
-repositories. No Hugging Face account is needed. The files go to `/mnt/tank/ai/models/gguf`, on the
-`tank/ai/models` dataset that Chapter 3 created with a 1M record size and `primarycache=metadata`.
+The stack serves six GGUF files, 37.00 GB (34.5 GiB) in total, from public Hugging Face
+repositories: the four model files and the vision projectors of the two chat models, which let
+`coder` and `coder-moe` read images. No Hugging Face account is needed. The files go to
+`/mnt/tank/ai/models/gguf`, on the `tank/ai/models` dataset that Chapter 3 created with a 1M record
+size and `primarycache=metadata`.
 
-The release lists the files in `stack/inference/models.tsv`: for each llama-swap id, the Hugging
-Face repository, a fixed revision (commit) of that repository, checked on 15 November 2026, and the
-file name, separated by tabs. Because each download names its revision, the file sizes below and
-the SHA-256 checksums in `stack/inference/models.sha256` stay valid even if a repository changes
-later. The download commands in this topic read the file from the clone on TrueNAS:
+The release lists the files in `stack/inference/models.tsv`: for each file an id, the Hugging Face
+repository, a fixed revision (commit) of that repository, checked on 15 November 2026, and the file
+name, separated by tabs. The id of a model file is its llama-swap id; the id of a projector is the
+model's id followed by `-mmproj`. Because each download names its revision, the file sizes below
+and the SHA-256 checksums in `stack/inference/models.sha256` stay valid even if a repository
+changes later. The download commands in this topic read the file from the clone on TrueNAS:
 
 {{ include stack/inference/models.tsv }}
 
 Table: Model files to download
 
-| File | Size in bytes | llama-swap id |
+| File | Size in bytes | Id in models.tsv |
 |---|---|---|
 | `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` | 12120016960 (12.12 GB) | `coder` |
+| `mmproj-Qwen3.8-27B-Q8_0.gguf` | 629247008 (0.63 GB) | `coder-mmproj` |
 | `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` | 22360456160 (22.36 GB) | `coder-moe` |
+| `mmproj-Qwen3.6-35B-A3B-Q8_0.gguf` | 614194304 (0.61 GB) | `coder-moe-mmproj` |
 | `Qwen3-Embedding-0.6B-Q8_0.gguf` | 639150592 (0.64 GB) | `embed` |
 | `qwen3-reranker-0.6b-q8_0.gguf` | 639153184 (0.64 GB) | `rerank` |
+
+The two `mmproj-*` files are the multimodal projectors, the part of a vision-language model that
+turns an image into tokens. Each chat model needs its own: llama.cpp refuses a projector whose
+output size differs from the model's, and the two models differ (5,120 for `coder`, 2,048 for
+`coder-moe`). They are the Q8_0 conversions published by ggml-org, together 1.24 GB (1.16 GiB).
+
+!!! note
+    This topic is for a new installation. An installation of release 1.0 or 1.1 has only the four
+    model files; it gets the two projectors during the release update, before the new
+    configuration is applied
+    ([Download the new model files of a release](#download-the-new-model-files-of-a-release),
+    Chapter 10). `llama-server` does not start a model whose projector file is missing.
 
 ### Check the free space for the models
 
@@ -64,11 +81,11 @@ Table: Model files to download
 
         df -h /mnt/tank/ai/models
 
-    The **Avail** column shows at least `34G`. The four files need 33.3 GiB.
+    The **Avail** column shows at least `35G`. The six files need 34.5 GiB.
 
 #### Results
 
-The directory `/mnt/tank/ai/models/gguf` exists, and the dataset has room for the four files. If
+The directory `/mnt/tank/ai/models/gguf` exists, and the dataset has room for the six files. If
 **Avail** is lower, free space in the pool before you start the downloads.
 
 ### Start the model downloads
@@ -83,9 +100,9 @@ The directory `/mnt/tank/ai/models/gguf` exists, and the dataset has room for th
 Each file is downloaded by `curl` in a throwaway container of the llama-swap image, the same image
 that the `ai-inference` app runs. Nothing is installed on TrueNAS, the first download pulls the
 image that the app needs anyway, and the downloads continue in the background if you close the
-shell. The four containers, `dl-coder`, `dl-coder-moe`, `dl-embed` and `dl-rerank`, run at the same
-time; each one downloads one file and stops. `-C -` makes `curl` continue a partial file instead of
-starting again.
+shell. The six containers, `dl-coder`, `dl-coder-mmproj`, `dl-coder-moe`, `dl-coder-moe-mmproj`,
+`dl-embed` and `dl-rerank`, run at the same time; each one downloads one file and stops. `-C -`
+makes `curl` continue a partial file instead of starting again.
 
 The commands take the image from `stack/inference/compose.yaml` and the repository, revision and
 file name of each model from `stack/inference/models.tsv`, both in the clone, so they download
@@ -123,10 +140,12 @@ exactly what the release names.
     downloads that file from that revision. The variables and the function last until the shell
     closes. In a new shell, run steps 1 to 3 again.
 
-4. Start the four downloads:
+4. Start the six downloads:
 
         dl coder
+        dl coder-mmproj
         dl coder-moe
+        dl coder-moe-mmproj
         dl embed
         dl rerank
 
@@ -139,10 +158,10 @@ exactly what the release names.
 
 6. Wait until every download has stopped:
 
-        sudo docker wait dl-coder dl-coder-moe dl-embed dl-rerank
+        sudo docker wait dl-coder dl-coder-mmproj dl-coder-moe dl-coder-moe-mmproj dl-embed dl-rerank
 
     The command returns when the last container stops, and prints one exit code per container.
-    Four lines of `0` mean that every download completed.
+    Six lines of `0` mean that every download completed.
 
 7. If a line is not `0`, display the error of that container, for example `dl-coder-moe`:
 
@@ -156,12 +175,12 @@ exactly what the release names.
 
 8. Remove the download containers:
 
-        sudo docker rm dl-coder dl-coder-moe dl-embed dl-rerank
+        sudo docker rm dl-coder dl-coder-mmproj dl-coder-moe dl-coder-moe-mmproj dl-embed dl-rerank
 
 #### Results
 
-The four model files are in `/mnt/tank/ai/models/gguf`, and the llama-swap image is in the local
-image store.
+The four model files and the two projectors are in `/mnt/tank/ai/models/gguf`, and the llama-swap
+image is in the local image store.
 
 ### Verify the model files
 
@@ -171,7 +190,7 @@ image store.
 
         ls -l /mnt/tank/ai/models/gguf
 
-    The four files have exactly the sizes in the table above.
+    The six files have exactly the sizes in the table above.
 
 2. Change to the model directory:
 
@@ -183,11 +202,11 @@ image store.
 
     {{ include stack/inference/models.sha256 }}
 
-    Check the four files against it. Reading 35.8 GB takes a few minutes:
+    Check the six files against it. Reading 37.0 GB takes a few minutes:
 
         sha256sum -c /mnt/tank/ai/stacks/local-agent-stack/stack/inference/models.sha256
 
-    The output has four lines, each a file name followed by `: OK`.
+    The output has six lines, each a file name followed by `: OK`.
 
 4. If a line reads `FAILED`, delete that file, for example
    `sudo rm /mnt/tank/ai/models/gguf/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`, and download it again with
@@ -257,7 +276,7 @@ from this example file in
 
 ### llama-swap global settings
 
-{{ include stack/inference/llama-swap/config.yaml lines=13-50 }}
+{{ include stack/inference/llama-swap/config.yaml lines=43-80 }}
 
 Table: llama-swap global settings
 
@@ -275,9 +294,10 @@ Table: llama-swap global settings
 
 ### The coder model entry
 
-`coder` is the primary agent model, Qwen3.8-27B, entirely on the GPU with a 64K context.
+`coder` is the primary agent model, Qwen3.8-27B, entirely on the GPU with a 64K context. Its vision
+projector runs on the CPU, so the model reads images without giving up VRAM.
 
-{{ include stack/inference/llama-swap/config.yaml lines=75-109 }}
+{{ include stack/inference/llama-swap/config.yaml lines=122-156 }}
 
 Table: Flags of the coder model
 
@@ -287,19 +307,22 @@ Table: Flags of the coder model
 | `-c 65536 -np 1` | One slot with the full 64K context. Concurrent requests queue; an idle slot's prompt moves to the prompt cache in host RAM instead of being computed again |
 | `-ctk q8_0 -ctv q8_0` | KV cache at 8 bits. Do not lower it to `q4_0`: llama.cpp warns that it can substantially degrade tool calling |
 | `-b 2048 -ub 512` | llama.cpp's default batch sizes, written out; the benchmark in this chapter tries larger `-ub` values against the VRAM |
-| `-t 4` | Generation runs on the GPU and needs few CPU threads |
+| `-t 16` | CPU threads of the process. Generation runs on the GPU and needs few of them, but the vision projector encodes each image on the CPU with exactly this many threads, so it gets the 16 physical cores; the hyper-threads stay free for the other apps. The cost: idle threads wait actively for a while before they sleep, so 16 threads take more CPU time than 4 while the model writes an answer. [Choose the CPU threads of coder](#choose-the-cpu-threads-of-coder) measures it |
 | `-ot token_embd.weight=CPU` | Keeps the token embeddings, a lookup table of about 0.6 GiB, in system RAM to make room in VRAM |
 | `--cache-ram 6144` | Up to 6 GiB of host RAM for the prompt cache |
 | `--jinja --reasoning-format deepseek --reasoning-effort medium` | The model's chat template, thinking returned in a separate reasoning field, medium effort |
 | `--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0` | The model card's sampling for thinking mode; a request may override them |
 | `--spec-type draft-mtp --spec-draft-n-max 3` | Speculative decoding with the multi-token prediction (MTP) head inside the `-mtp` file, three draft tokens |
-| `--no-mmproj` | No vision projector; it would cost 0.6 to 0.9 GiB of VRAM |
+| `--mmproj ${gguf}/mmproj-Qwen3.8-27B-Q8_0.gguf` | Loads the model's vision projector, so the model accepts images |
+| `--no-mmproj-offload` | Keeps the projector in system RAM and runs it on the CPU. On the GPU it would take 0.6 to 0.9 GiB of VRAM that the 64K context needs |
 
 The entry sets no `--cache-reuse`: that option works by shifting the KV cache, which the model's
-Gated DeltaNet layers cannot do. The `filters` block makes `coder-fast` an alias of `coder`: a
-request for `coder-fast` is served by the same process, with thinking off and the model card's
-non-thinking sampling written into the request. This is the fast and small-model role, with no
-second model in VRAM. `presence_penalty` takes effect only on the OpenAI route.
+Gated DeltaNet layers cannot do. Loading a projector also turns off context shift and
+`--cache-reuse`, neither of which the stack uses. The `filters` block makes `coder-fast` an alias
+of `coder`: a request for `coder-fast` is served by the same process, with thinking off and the
+model card's non-thinking sampling written into the request. This is the fast and small-model role,
+with no second model in VRAM, and it reads images too, because it is the same process.
+`presence_penalty` takes effect only on the OpenAI route.
 
 !!! note
     Two properties of this entry are not verified on hardware. First, the VRAM saved by
@@ -309,11 +332,19 @@ second model in VRAM. `presence_penalty` takes effect only on the OpenAI route.
     head from this file. Check both with
     [Test that the coder model fits](#test-that-the-coder-model-fits) before you rely on the stack.
 
+!!! note
+    The vision projector was not run on the reference server for this release. Its system memory
+    (about 1 to 1.5 GiB) and its speed (about 11 seconds per image) are estimates, images together
+    with MTP speculative decoding and the 64K context are not tested, and it is not verified that
+    the Q8_0 projector reads text in images as well with this quantization of the model as with
+    the original. [Check the vision projector](#check-the-vision-projector) is the first test on
+    your system.
+
 ### The coder-moe model entry
 
 `coder-moe` is the fast profile, Qwen3.6-35B-A3B, with the experts of 16 layers in system RAM.
 
-{{ include stack/inference/llama-swap/config.yaml lines=125-140 }}
+{{ include stack/inference/llama-swap/config.yaml lines=176-191 }}
 
 - `--n-cpu-moe 16` keeps the experts of the first 16 layers, about 8 GB, in system RAM. With 14,
   the measured run overflowed the VRAM.
@@ -325,11 +356,15 @@ second model in VRAM. `presence_penalty` takes effect only on the OpenAI route.
   PCIe for each batch.
 - The entry sets no sampling defaults and no MTP: the model card gives no defaults for this model,
   and speculative decoding was a net loss for it in published tests.
+- `--mmproj ... --no-mmproj-offload` loads this model's own vision projector into system RAM, about
+  0.6 GiB next to the experts; the projector of `coder` does not fit this model. It encodes images
+  with the 8 threads of `-t 8`, so an image takes about twice as long as on `coder` (estimate); the
+  thread count stays at 8 for the speed of the experts.
 - Loading `coder-moe` unloads `coder`, and the other way round.
 
 ### The embedding and reranking model entries
 
-{{ include stack/inference/llama-swap/config.yaml lines=150-176 }}
+{{ include stack/inference/llama-swap/config.yaml lines=201-227 }}
 
 - `--device none` runs both models on the CPU. The image selects its `sapphirerapids` CPU backend,
   with AVX-512 and AMX, at run time.
@@ -348,7 +383,7 @@ second model in VRAM. `presence_penalty` takes effect only on the OpenAI route.
 
 ### Swap groups and preloading
 
-{{ include stack/inference/llama-swap/config.yaml lines=178-200 }}
+{{ include stack/inference/llama-swap/config.yaml lines=229-251 }}
 
 The `llm` group holds the two GPU models and swaps them: requesting one unloads the other. The
 `rag` group is persistent: the embedding and reranking models stay loaded whatever happens in the
@@ -371,7 +406,7 @@ Table: LiteLLM model names
 | `local-embed` | `embed` | OpenAI embeddings | Open WebUI retrieval |
 | `local-rerank` | `rerank` | Rerank | Open WebUI retrieval |
 
-{{ include stack/inference/litellm/config.yaml lines=29-105 }}
+{{ include stack/inference/litellm/config.yaml lines=50-132 }}
 
 - **Anthropic route** (`anthropic/<id>`). LiteLLM appends `/v1/messages` to `api_base`, so Claude
   Code's requests reach llama-server's own Anthropic endpoint with no format conversion in LiteLLM.
@@ -385,10 +420,42 @@ Table: LiteLLM model names
 - `cost_per_second: 0.0001` is a notional price per second of request time on the GPU models. At
   that price, a key budget of 50 allows 500,000 seconds, so budgets act as GPU-time quotas. The CPU
   models carry no price. Usage logs record tokens and duration for every request either way.
+- `supports_vision: true` on the six chat names declares that they accept images; `/model/info`
+  and `/model_group/info` report it. LiteLLM does not act on it for these routes: it passes images
+  through unchanged either way, as described in [Images on the chat models](#images-on-the-chat-models).
+
+### Images on the chat models
+
+Every chat name accepts images: the names backed by `coder` (`local-coder`, `local-fast`,
+`local-opus`, `local-sonnet`, `local-haiku`) and `local-coder-moe`. The embedding and reranking
+models do not.
+
+- **What clients send.** On `/v1/chat/completions`, `image_url` parts in a user message, usually
+  with a `data:` URL that carries the image in base64. On `/v1/messages`, `image` blocks, also
+  inside tool results. LiteLLM forwards both unchanged; on the OpenAI route it moves images that a
+  `tool` message carries into a user message right after the tool results. `llama-server` decodes
+  PNG, JPEG, GIF, BMP and WebP. Given a web address instead of image data, it downloads the image
+  itself (at most 10 MB, within 10 seconds) and refuses addresses that are not public.
+- **Where it runs.** The projector encodes each image on the CPU, then the model on the GPU reads
+  the resulting tokens with the rest of the prompt. Expect about 11 seconds per image on `coder`
+  (measured on another machine; an estimate here), more for a large image, against about 0.3
+  seconds on a GPU. The projector is read from disk with its model, so a swap back to `coder`
+  reads 0.63 GB more than the model file alone.
+- **What it costs in context.** One image token covers 32 x 32 pixels, and an image takes at most
+  4,096 tokens by default. A 1920 x 1080 screenshot is about 2,000 tokens of the 64K window.
+- **No size limit in the gateway.** LiteLLM sets no request size limit, and llama-swap accepts
+  requests of up to 250 MB.
+- **PDF files are not images.** `llama-server` rejects a `file` part on `/v1/chat/completions` with
+  the error `unsupported content[].type`, and silently drops a PDF `document` block on
+  `/v1/messages`, so the model never sees the PDF. PDFs reach the models as text, through the
+  knowledge bases of Chapter 6.
+- **Without a projector**, for example in a copy of the configuration without the `--mmproj` line,
+  `llama-server` answers any image with
+  `image input is not supported - hint: if this is unexpected, you may need to provide the mmproj`.
 
 ### LiteLLM gateway settings
 
-{{ include stack/inference/litellm/config.yaml lines=107-138 }}
+{{ include stack/inference/litellm/config.yaml lines=134-165 }}
 
 Table: LiteLLM gateway settings
 
@@ -712,7 +779,8 @@ database connected.
 
     `memory.total` is about 16,376 MiB, and `memory.used` is roughly 14,000 to 15,500 MiB while
     `coder` is loaded. A value at the card's total means that the model barely fits or does not fit;
-    continue with [Test that the coder model fits](#test-that-the-coder-model-fits).
+    continue with [Test that the coder model fits](#test-that-the-coder-model-fits). The vision
+    projector is in system RAM and adds nothing to this figure.
 
 2. List the processes that use the GPU:
 
@@ -875,7 +943,117 @@ with the master key, through the same names that clients will use.
 #### Results
 
 Every model answers through llama-swap and through LiteLLM, in both API formats. Keep the shell
-open with `MK` set for the next topic.
+open with `MK` set for the next task and the next topic.
+
+### Check the vision projector
+
+#### Prerequisites
+
+- A TrueNAS shell in which `MK` holds the LiteLLM master key, as after
+  [Send test requests through ai-net](#send-test-requests-through-ai-net). In a new shell, run
+  steps 1 and 3 of that task first.
+
+#### About this task
+
+This task confirms that `coder` loaded its vision projector on the CPU, and sends the test image
+of the release, `evals/images/maple-74.png` in the clone, through LiteLLM in both API formats. The
+image is 640 x 160 pixels and shows the text `MAPLE 74` in black capital letters on white. The
+requests use `local-fast` and `local-haiku`, the `coder` process with thinking off, so the answer
+is the text alone. Chapter 9 sends the same image as the optional evaluation case `format-011`
+([Evaluations and the regression gate](#evaluations-and-the-regression-gate)).
+
+#### Steps
+
+1. Ask `llama-server` which inputs `coder` accepts:
+
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/upstream/coder/props' |
+          grep -o '"vision":[a-z]*'
+
+    The output is `"vision":true`. The request loads `coder` if it is not loaded. `"vision":false`
+    means that the model runs without a projector: check the `--mmproj` line of the running
+    process as in step 2 of
+    [Redeploy ai-inference after a change](#redeploy-ai-inference-after-a-change).
+
+2. Display the projector's lines in the log:
+
+        sudo docker logs llama-swap 2>&1 |
+          grep -E 'loaded multimodal model|mtmd_context.*compute buffer size|image tokens' | tail -n 3
+
+    The output has three lines from the last load of `coder`:
+
+    - a warning that Qwen-VL models require at minimum 1024 image tokens to function correctly
+      on grounding tasks. It is expected: grounding (boxes around objects in an image) is not
+      used here, and the option it suggests, `--image-min-tokens 1024`, would enlarge every small
+      image at a cost in CPU time;
+    - the projector's `CPU compute buffer size`, in MiB, which adds to the 0.6 GiB of its weights
+      in system RAM;
+    - `loaded multimodal model, '/models/gguf/mmproj-Qwen3.8-27B-Q8_0.gguf'`.
+
+    If the log shows `failed to load multimodal model` instead, the projector file is missing or
+    damaged: check it with [Verify the model files](#verify-the-model-files).
+
+3. Store the test image in a shell variable, encoded in base64:
+
+        IMG64=$(base64 -w 0 /mnt/tank/ai/stacks/local-agent-stack/evals/images/maple-74.png)
+        echo "${#IMG64}"
+
+    The output is the length of the encoded image, about 1,700 characters.
+
+4. Send the image in the OpenAI format to `local-fast`, and time the request:
+
+        time printf 'Authorization: Bearer %s\n' "$MK" |
+          sudo docker exec -i llama-swap curl -sS -H @- -H 'Content-Type: application/json' \
+            -d '{"model": "local-fast", "max_tokens": 32, "messages": [{"role": "user", "content": [
+                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,'"$IMG64"'"}},
+                 {"type": "text", "text": "Reply with the text in the image and nothing else."}]}]}' \
+            http://litellm:4000/v1/chat/completions |
+          python3 -c "import json, sys; d = json.load(sys.stdin); \
+            print(d['choices'][0]['message']['content'] if 'choices' in d else d)"
+
+    The output is `MAPLE 74`, followed by the time the command took. It is longer than for the text
+    request of step 5 of [Send test requests through ai-net](#send-test-requests-through-ai-net),
+    because the CPU encodes the image first. This image is small; a large photo or screenshot
+    takes several times as long.
+
+5. Send the image in the Anthropic format, as Claude Code does, to `local-haiku`:
+
+        printf 'Authorization: Bearer %s\n' "$MK" |
+          sudo docker exec -i llama-swap curl -sS -H @- -H 'Content-Type: application/json' \
+            -H 'anthropic-version: 2023-06-01' \
+            -d '{"model": "local-haiku", "max_tokens": 32, "messages": [{"role": "user", "content": [
+                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "'"$IMG64"'"}},
+                 {"type": "text", "text": "Reply with the text in the image and nothing else."}]}]}' \
+            http://litellm:4000/v1/messages |
+          python3 -c "import json, sys; d = json.load(sys.stdin); \
+            print(''.join(b.get('text', '') for b in d.get('content', []) \
+            if b.get('type') == 'text') or d)"
+
+    The output is `MAPLE 74`.
+
+6. Confirm in the log that the model read the image tokens:
+
+        sudo docker logs --since 10m llama-swap 2>&1 | grep 'image decoded'
+
+    Each of the two images shows an `image decoded (batch 1/1) in <n> ms` line, written when the
+    model on the GPU has read the tokens that the projector produced.
+
+7. Clear the image variable:
+
+        unset IMG64
+
+#### Results
+
+`coder` runs with its vision projector on the CPU and reads an image sent in either API format.
+The projector uses no GPU memory. `coder-moe` loads its own projector the same
+way; [Switch to the fast profile](#switch-to-the-fast-profile) checks it while that model is
+loaded.
+
+If the answer in step 4 or 5 is close to `MAPLE 74` but not exact, for example with one letter
+wrong, the projector loaded but reads poorly with this model. Report it to the project as an
+issue, with the answer and the time of step 4; the project's fallback is the model maker's own
+BF16 projector ([Image and memory issues](#image-and-memory-issues)). If the request fails with `image input is not
+supported`, the model was started without `--mmproj`.
 
 ## Create the LiteLLM keys for the workstations
 
@@ -1357,7 +1535,8 @@ sets the default of `--models-dir`.
 This task starts `llama-server` with the production flags of `coder`, MTP included, at 48K and 64K
 context and two `-ub` values, and reports whether each combination starts and how much GPU memory
 it uses. Each row loads the 12 GB model once and processes a prompt of about 75% of the context, so
-allow several minutes per row.
+allow several minutes per row. The test leaves out the vision projector, which stays in system RAM
+and takes no VRAM.
 
 #### Steps
 
@@ -1455,6 +1634,7 @@ Table: Expected results on the reference system
 | `coder` GPU memory at 64K | About 14.3 GiB of model, KV cache and buffers | Estimate, plus or minus 0.5 GiB |
 | `coder-moe` generation | 65 to 80 tokens/s | 80 measured on an RTX 4080 SUPER with two DDR5-4800 channels |
 | `coder-moe` prompt processing | About 1,800 to 2,000 tokens/s | Measured on the same system |
+| Image on the CPU projector | About 11 seconds per image | Measured on another machine; an estimate here |
 
 Table: What to do with the fit test results
 
@@ -1589,6 +1769,126 @@ Without a desired-state file, edit the app instead, replace **Custom Config** wi
 click **Save**. In both cases, the copy and the override file under
 `/mnt/tank/ai/appdata/llama-swap` are no longer used; delete them with
 `sudo rm /mnt/tank/ai/appdata/llama-swap/config.yaml /mnt/tank/ai/appdata/llama-swap/fallback.override.yaml`.
+
+### Choose the CPU threads of coder
+
+#### Prerequisites
+
+- [Check the vision projector](#check-the-vision-projector) passed.
+- No client is using the stack: steps 2 and 3 unload the GPU model.
+
+#### About this task
+
+`coder` runs with `-t 16`. Generation runs on the GPU and needs few CPU threads, but the vision
+projector encodes images on the CPU with exactly the process's thread count, and `llama-server`
+has no separate thread setting for it. With 4 threads, the earlier setting, an image takes about
+four times as long (estimate). The cost of 16 threads is CPU time while the model writes an
+answer: the image's llama.cpp is built with OpenMP, whose idle threads wait actively (spin) for a
+while before they sleep, so 16 threads take more CPU time from the embedding and reranking models
+and from the document parser than 4 do. Whether 16 threads also change the generation speed is
+not measured. This task measures both, and you decide which setting to keep.
+
+Table: Thread settings of coder
+
+| Setting | Images | CPU time while the model generates |
+|---|---|---|
+| `-t 16` (the release) | Fastest | Highest: idle threads spin before they sleep |
+| `-t 4` | About four times slower (estimate) | Low |
+| `-t 16` and `OMP_WAIT_POLICY=PASSIVE` in the entry's `env` | Not measured; idle threads sleep at once, which can add a delay each time they wake | Low (assumed) |
+
+#### Steps
+
+1. Change to the clone and refresh the `sudo` credentials:
+
+        cd /mnt/tank/ai/stacks/local-agent-stack
+        sudo -v
+
+2. Measure generation with 4 threads, with the other production flags of `coder`:
+
+        sudo bash tools/bench.sh --mode server \
+          -m Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf -c 65536 -u 512 \
+          -- -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -ot token_embd.weight=CPU --spec-type draft-mtp -t 4
+
+    The table has one row. Note its **generation t/s**.
+
+3. Repeat the measurement with 16 threads:
+
+        sudo bash tools/bench.sh --mode server \
+          -m Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf -c 65536 -u 512 \
+          -- -ngl 99 -fa on -ctk q8_0 -ctv q8_0 -ot token_embd.weight=CPU --spec-type draft-mtp -t 16
+
+    Compare its **generation t/s** with the row of step 2.
+
+4. Load the production model again, as in step 6 of
+   [Test that the coder model fits](#test-that-the-coder-model-fits).
+
+5. Measure the CPU use of the production `coder` process while it writes a long answer. In the
+   TrueNAS shell, start a request in the background:
+
+        sudo -v
+        echo '{"model": "coder-fast", "max_tokens": 1024, "messages": [{"role": "user",
+          "content": "Write a Python module that parses a CSV file of orders and prints totals per customer."}]}' |
+          sudo docker exec -i llama-swap sh -c 'body=$(cat)
+            printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+            curl -sS -o /dev/null -d "$body" -H @- -H "Content-Type: application/json" \
+              http://127.0.0.1:8080/v1/chat/completions' &
+
+6. While the answer is generated, display the busiest processes twice, five seconds apart:
+
+        top -b -n 2 -d 5 -o %CPU | grep llama-server | tail -n 3
+
+    The three lines come from the second display: `coder`, `embed` and `rerank`. The line with the
+    highest **%CPU** is `coder`; 100% is one fully busy core, so 16 spinning threads show up to
+    about 1,600%.
+
+7. Wait for the background request to finish:
+
+        wait
+
+#### Results
+
+You know whether 16 threads cost generation speed and how much CPU `coder` takes while it writes.
+
+Table: What to do with the thread measurement
+
+| Result | Action |
+|---|---|
+| **generation t/s** about the same in steps 2 and 3, and the CPU use of step 6 does not slow Open WebUI's document uploads or searches | Keep `-t 16` |
+| **generation t/s** lower with 16 threads | Use `-t 4` and accept slower images |
+| Same speed, but the CPU use of step 6 slows the other apps | Try `-t 16` with `OMP_WAIT_POLICY=PASSIVE`, and repeat steps 5 and 6 and [Check the vision projector](#check-the-vision-projector) |
+
+To change the setting on your server, write a copy of the configuration and its override file as
+in [Apply a fallback when coder does not fit](#apply-a-fallback-when-coder-does-not-fit), with
+these `sed` expressions instead of those of its step 2 (or in addition to them, if you already run
+a fallback). For `-t 4`:
+
+```
+sudo sed -e '/^  coder:$/,/^    ttl: 0$/s/^      -t 16$/      -t 4/' \
+  /mnt/tank/ai/stacks/local-agent-stack/stack/inference/llama-swap/config.yaml |
+  sudo tee /mnt/tank/ai/appdata/llama-swap/config.yaml > /dev/null
+```
+
+For `OMP_WAIT_POLICY=PASSIVE`, which adds an `env` list to the `coder` entry:
+
+```
+sudo sed -e '/^  coder:$/,/^    ttl: 0$/s/^    cmd: |$/    env:\n      - "OMP_WAIT_POLICY=PASSIVE"\n    cmd: |/' \
+  /mnt/tank/ai/stacks/local-agent-stack/stack/inference/llama-swap/config.yaml |
+  sudo tee /mnt/tank/ai/appdata/llama-swap/config.yaml > /dev/null
+```
+
+Check the copy:
+
+```
+sudo grep -n -E '^ +-t [0-9]+$|"OMP_WAIT_POLICY' /mnt/tank/ai/appdata/llama-swap/config.yaml
+```
+
+The output is the `-t` line of `coder` with the thread count you chose, and for the second variant
+also the line `- "OMP_WAIT_POLICY=PASSIVE"` above it. Then continue with steps 4 to 10 of the
+fallback task, and repeat [Check the vision projector](#check-the-vision-projector). As with a
+fallback, the copy does not follow the release: write it again with the same expressions after
+every release update. To make the change part of the stack, propose it to
+`stack/inference/llama-swap/config.yaml` through the workflow of Chapter 8, with your
+measurements.
 
 ## Tool calls on the local models
 
@@ -1881,7 +2181,8 @@ Table: Default and fast profiles compared
 |---|---|---|
 | Model and placement | Qwen3.8-27B, entirely on the GPU | Qwen3.6-35B-A3B, experts of 16 layers in system RAM |
 | VRAM in use on the card | About 14.3 GiB of model, KV cache and buffers (estimate), plus the CUDA context | About 15.7 GiB in total, CUDA context included (measured on an RTX 4080 SUPER) |
-| System RAM | Prompt cache up to 6 GiB | About 8 GB of experts plus the prompt cache up to 6 GiB |
+| System RAM | Vision projector about 1 to 1.5 GiB (estimate), prompt cache up to 6 GiB | About 8 GB of experts, vision projector about 1 to 1.5 GiB (estimate), prompt cache up to 6 GiB |
+| Images | Projector on the CPU with 16 threads, about 11 s per image (estimate) | Own projector on the CPU with 8 threads, about twice as long (estimate) |
 | Generation | 40 to 45 tokens/s, 50 to 65 with MTP (estimates) | 65 to 80 tokens/s (80 measured elsewhere) |
 | Prompt processing | About 900 to 1,500 tokens/s (estimate) | About 1,800 to 2,000 tokens/s (measured elsewhere) |
 | Agentic strength | Terminal-Bench 2.1: 73.0 (vendor figure) | Terminal-Bench 2.1: 44.38, SWE-bench Verified: 70.12 (NVIDIA's re-run); community reports of losing the plan on long runs |
@@ -1903,15 +2204,18 @@ The profiles share one GPU, and only one of the two models is loaded at a time:
 - **Background requests swap too.** OpenCode names its sessions with `local-fast`, Claude Code sends
   its background requests to `local-haiku`, and Open WebUI's default model is `local-coder`. Any of
   them, from any client, swaps `coder` back in while you work with the fast profile.
-- **System RAM is tighter.** With `coder-moe` loaded, the estimated free system memory drops from
-  about 20 GiB to about 12 GiB (Chapter 2). The embedding and reranking models stay loaded either
-  way.
+- **System RAM is tighter.** With `coder-moe` loaded, about 8 GiB more system memory is in use
+  for its experts, and the estimated free memory is at its lowest
+  ([System RAM budget](#system-ram-budget), Chapter 2). The vision projector of the loaded model
+  takes about 1 to 1.5 GiB in either profile (estimate); the two projectors are never loaded
+  together. The embedding and reranking models stay loaded either way.
 
 !!! note
-    The 32 GiB memory limit of the `llama-swap` container is sized from an estimate: `coder-moe`
-    peaks at about 18 GiB (8 GB of experts, up to 6 GiB of prompt cache, and the CPU models). Check
-    the real peak with `docker stats` while the fast profile is under load, as in the task below. If
-    the usage approaches the limit, the kernel stops the model process inside the container.
+    The 32 GiB memory limit of the `llama-swap` container is sized from an estimate: with
+    `coder-moe`, the container peaks at about 18 to 22 GiB (8 GB of experts, up to 6 GiB of prompt
+    cache and the host buffers, the vision projector, and the CPU models). Check the real peak with
+    `docker stats` while the fast profile is under load, as in the task below. If the usage
+    approaches the limit, the kernel stops the model process inside the container.
 
 ### Switch to the fast profile
 
@@ -1962,10 +2266,20 @@ This task switches from the TrueNAS shell, to see the swap and its cost. From Ch
 
     **MEM USAGE / LIMIT** shows the container's usage against its 32 GiB limit.
 
+6. Check that `coder-moe` loaded its own vision projector:
+
+        sudo docker exec llama-swap sh -c 'printf "Authorization: Bearer %s\n" "$LLAMA_SWAP_API_KEY" |
+          curl -fsS -H @- http://127.0.0.1:8080/upstream/coder-moe/props' |
+          grep -o '"vision":[a-z]*'
+        sudo docker logs llama-swap 2>&1 | grep 'loaded multimodal model' | tail -n 1
+
+    The output is `"vision":true`, then a line that ends in
+    `loaded multimodal model, '/models/gguf/mmproj-Qwen3.6-35B-A3B-Q8_0.gguf'`.
+
 #### Results
 
-The fast profile is loaded. The `-t` and `--n-cpu-moe` values of `coder-moe` are starting points;
-Chapter 9 measures them on your system in
+The fast profile is loaded, with its vision projector. The `-t` and `--n-cpu-moe` values of
+`coder-moe` are starting points; Chapter 9 measures them on your system in
 [Tune and record the fast profile](#tune-and-record-the-fast-profile).
 
 ### Return to the default profile

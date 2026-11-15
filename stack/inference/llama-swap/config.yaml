@@ -4,11 +4,41 @@
 # a-models = docs/research/a-models.md, b-inference = docs/research/b-inference.md.
 #
 # Model ids (clients never use them directly; LiteLLM maps its local-* names onto them):
-#   coder      Qwen3.8-27B, GPU, 64K    group llm (swap: one GPU model at a time)
-#   coder-fast alias of coder with thinking off (filters.setParamsByID below; no second process)
-#   coder-moe  Qwen3.6-35B-A3B, GPU + experts in RAM, 64K   group llm
+#   coder      Qwen3.8-27B, GPU, 64K, images (projector on the CPU)   group llm (swap: one GPU
+#              model at a time)
+#   coder-fast alias of coder with thinking off (filters.setParamsByID below; no second process,
+#              so it reads images too)
+#   coder-moe  Qwen3.6-35B-A3B, GPU + experts in RAM, 64K, images (projector on the CPU)
+#              group llm
 #   embed      Qwen3-Embedding-0.6B, CPU only               group rag (persistent)
 #   rerank     Qwen3-Reranker-0.6B, CPU only                group rag (persistent)
+#
+# Images (docs/v1.2-design.md §3). Both chat models are natively vision-language (a-models §7);
+# each loads its multimodal projector ("mmproj") with --mmproj and keeps it in system RAM with
+# --no-mmproj-offload, so it costs no VRAM and the 64K context stays. Both flags and the default
+# (offload on) are in tools/server/README.md and common/arg.cpp at b12407. The projector:
+#   - runs on the CPU device only (tools/mtmd/mtmd.cpp: plain CPU buffer type, no AMX repack);
+#   - uses the process's -t thread count (tools/server/server-context.cpp:
+#     mparams.n_threads = cpuparams.n_threads); llama-server has no separate thread option for it;
+#   - follows -fa (mparams.flash_attn_type), so flash attention keeps the attention buffers of a
+#     large image small;
+#   - accepts up to 4096 image tokens per image by default for this projector type
+#     (qwen3vl_merger, mtmd-model.cpp set_limit_image_tokens(8, 4096)); --image-max-tokens N caps
+#     it if large images are too slow or too long for the 64K window.
+# Projector files: the ggml-org Q8_0 conversions (stack/inference/models.tsv, ids coder-mmproj and
+# coder-moe-mmproj; a-models §7 names the coder one). Q8_0 is the smallest file (0.63 GB against
+# 0.93 GB for BF16); on this CPU tinyBLAS runs Q8_0 with AVX-512 VNNI int8 dot products and BF16
+# with AVX-512 BF16 dot products, F16 only through F32 arithmetic
+# (ggml/src/ggml-cpu/llamafile/sgemm.cpp at b12407). Which of Q8_0 and BF16 encodes faster here is
+# not measured. Header metadata read from the files at their pinned revisions: clip.projector_type
+# qwen3vl_merger, patch 16, spatial merge 2, projection_dim 5120 (coder) and 2048 (coder-moe),
+# the embedding_length of each model file, which llama.cpp requires (tools/mtmd/mtmd.cpp refuses
+# a mismatch). IST-DASLab's own mmproj-Qwen3.8-27B-BF16.gguf, which its card says was converted
+# from the base checkpoint and verified with the GSQ-RCO quantizations, has the same clip.*
+# metadata as ggml-org's BF16 conversion. UNVERIFIED: that the Q8_0 projector reads text as well
+# with the GSQ-RCO model (format-011 in evals/ checks it; the BF16 file is the fallback).
+# Speed: ~11 s per image on the CPU (a-models §7, measured on another machine; an estimate here),
+# growing with the image size.
 
 # Seconds a model may take to become healthy; a 12 GB GGUF read from ZFS on a cold cache needs
 # more than the default 120 (b-inference §3.4).
@@ -60,7 +90,18 @@ models:
   # the host-RAM prompt cache (--cache-ram, MiB; b-inference §2). No --cache-reuse: it works by KV
   # shifting, which the hybrid DeltaNet layers cannot do (a-models §9).
   # -b/-ub: llama.cpp defaults written out; tools/bench.sh --mode server sweeps -ub against VRAM.
-  # -t 4: generation runs on the GPU; few CPU threads are needed (b-inference §3.4).
+  # -t 16: generation runs on the GPU and needs few CPU threads (b-inference §3.4 chose 4), but the
+  # vision projector below runs on the CPU with exactly this many threads, and encoding an image
+  # is compute-bound, so it gets the 16 physical cores (the SMT siblings stay free for the other
+  # apps, b-inference §3.4). The image's llama.cpp is built with OpenMP (GGML_OPENMP defaults to ON
+  # and .devops/cuda.Dockerfile installs libgomp at b12407), whose idle worker threads busy-wait
+  # 300,000 spins before they sleep (GCC libgomp manual, GOMP_SPINCOUNT; OMP_WAIT_POLICY=PASSIVE
+  # in the model's env turns that off), so 16 threads use more CPU time than 4 while a model
+  # generates.
+  # UNVERIFIED: that 16 threads cost no decode speed against 4 (the CPU part of a decode step is
+  # only the token-embedding lookup) and how much CPU the waiting threads take from the RAG models
+  # and docling; if tools/bench.sh --mode server shows a loss, go back to -t 4 and accept slower
+  # images (about four times the encode time, estimate).
   # Reasoning and sampling defaults are the model card's thinking settings, effort medium
   # (a-models §2); requests may override them.
   # --spec-type draft-mtp: speculative decoding with the MTP head inside the -mtp GGUF. Verified in
@@ -71,10 +112,16 @@ models:
   # UNVERIFIED: that the MTP head inside this IST-DASLab file loads in b12407 (a-models §2 says the
   # -mtp files carry it) and that weights, 64K KV and the MTP context fit in 16 GB together
   # (estimate). Check with tools/bench.sh --mode server before relying on it.
-  # --no-mmproj: no vision projector (a-models §7: it costs 0.6-0.9 GiB of VRAM).
+  # --mmproj ... --no-mmproj-offload: the vision projector in system RAM (see "Images" at the top):
+  # about 0.6 GiB of weights plus its compute buffer, which the log prints at load
+  # ("compute buffer size"). On the GPU it would take 0.6-0.9 GiB of VRAM that the 64K context
+  # needs (a-models §7). Loading it also turns off context shift and --cache-reuse (server log
+  # warnings; neither is used here). b12407 sets up MTP speculative decoding the same way with or
+  # without a projector (server-context.cpp). UNVERIFIED: images with MTP drafting and the 64K
+  # context on this server; the projector's RAM (estimate).
   coder:
     name: "Qwen3.8-27B IQ3_S + MTP (GPU, 64K)"
-    description: "Primary agent model, thinking on (effort medium)"
+    description: "Primary agent model, thinking on (effort medium); images via the CPU projector"
     cmd: |
       ${server}
       -m ${gguf}/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
@@ -82,13 +129,13 @@ models:
       -c 65536 -np 1
       -ctk q8_0 -ctv q8_0
       -b 2048 -ub 512
-      -t 4
+      -t 16
       -ot token_embd.weight=CPU
       --cache-ram 6144
       --jinja --reasoning-format deepseek --reasoning-effort medium
       --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0
       --spec-type draft-mtp --spec-draft-n-max 3
-      --no-mmproj
+      --mmproj ${gguf}/mmproj-Qwen3.8-27B-Q8_0.gguf --no-mmproj-offload
     ttl: 0
     filters:
       # A request for "coder-fast" is served by this same process with these fields written into
@@ -122,9 +169,13 @@ models:
   # PCIe (a-models §1 "PCIe").
   # No sampling or reasoning-effort defaults: a-models gives none for this model; clients set them.
   # No MTP: speculative decoding was net-negative for this A3B model in a-models §3.
+  # --mmproj ... --no-mmproj-offload: this model's own projector (projection size 2048, which
+  # matches its hidden size; the coder projector would not load here) in system RAM, about
+  # 0.6 GiB more next to the experts. It encodes with -t 8 threads, so an image takes about twice
+  # as long as on coder (estimate); -t stays at 8 for the experts' decode speed.
   coder-moe:
     name: "Qwen3.6-35B-A3B Q4_K_XL (GPU + experts in RAM, 64K)"
-    description: "Fast profile; swaps out coder"
+    description: "Fast profile; swaps out coder; images via the CPU projector"
     cmd: |
       ${server}
       -m ${gguf}/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
@@ -136,7 +187,7 @@ models:
       -lm none
       --cache-ram 6144
       --jinja --reasoning-format deepseek
-      --no-mmproj
+      --mmproj ${gguf}/mmproj-Qwen3.6-35B-A3B-Q8_0.gguf --no-mmproj-offload
     ttl: 0
 
   # ---- RAG models: CPU only, no VRAM (docs/stack-design.md §1; b-inference §2, a-models §6) ----

@@ -18,8 +18,8 @@ Table: Model profiles
 
 | Profile | GPU model and context | Memory | Decode, tokens/s | Use for |
 |---|---|---|---|---|
-| Default | Qwen3.8-27B GSQ-RCO IQ3_S with MTP head, 64K, q8_0 KV cache; RAG models on the CPU | About 14.3 GiB VRAM for the model's allocations, plus the CUDA context (est.) | 40 to 45; 50 to 65 with MTP (est.) | Agent work and chat |
-| Fast | Qwen3.6-35B-A3B UD-Q4_K_XL, experts of 16 layers in RAM, 64K | About 15.7 GiB VRAM for the whole process, CUDA context included (measured) and 8 GB RAM | 65 to 80 (80 measured) | Interactive edits and short tasks |
+| Default | Qwen3.8-27B GSQ-RCO IQ3_S with MTP head, 64K, q8_0 KV cache; vision projector and RAG models on the CPU | About 14.3 GiB VRAM for the model's allocations, plus the CUDA context (est.); the projector about 1 to 1.5 GiB RAM (est.) | 40 to 45; 50 to 65 with MTP (est.) | Agent work and chat, images included |
+| Fast | Qwen3.6-35B-A3B UD-Q4_K_XL, experts of 16 layers in RAM, 64K; its own vision projector on the CPU | About 15.7 GiB VRAM for the whole process, CUDA context included (measured), 8 GB RAM for the experts and about 1 to 1.5 GiB for the projector (est.) | 65 to 80 (80 measured) | Interactive edits and short tasks |
 | RAG on GPU | A smaller primary configuration at 32K; embedding and reranker on the GPU | About 2.8 GiB VRAM for the RAG models (est.) | Depends on the primary | RAG-heavy chat in Open WebUI |
 
 ### Default profile with Qwen3.8-27B on the GPU
@@ -62,6 +62,16 @@ the CPU (`-ot token_embd.weight=CPU`). It runs one 64K slot (`-np 1`) with a 6 G
 cache (`--cache-ram 6144`). Prompt processing runs at about 900 to 1,500 tokens per second (est.),
 so a cold 30,000-token first turn takes 20 to 35 seconds; later turns reuse the prompt cache.
 
+The model is natively a vision-language model, and the profile loads its vision projector,
+`mmproj-Qwen3.8-27B-Q8_0.gguf` (`ggml-org/Qwen3.8-27B-GGUF`, 0.63 GB), with
+`--mmproj ... --no-mmproj-offload`: the projector stays in system RAM and encodes each image on the
+CPU. On the GPU it would take 0.6 to 0.9 GiB of VRAM and force the context down to about 32K to
+48K tokens; on the CPU it costs no VRAM, so the budget above and the 64K context stay, at about
+11 seconds per image (measured on another machine; est. here) instead of about 0.3 seconds. The
+projector encodes with the process's CPU threads, which is why `coder` runs `-t 16` although its
+generation on the GPU needs few threads
+([Choose the CPU threads of coder](#choose-the-cpu-threads-of-coder)).
+
 The embedding and reranker models (`Qwen3-Embedding-0.6B` and `Qwen3-Reranker-0.6B`, both Q8_0)
 run on the CPU with `--device none` in llama-swap's persistent `rag` group. They use no VRAM and
 about 1.3 GiB of RAM each (est.). The CPU's AVX-512 and AMX kernels apply to this dense work.
@@ -102,6 +112,11 @@ as `local-coder-moe`.
   threads. Sweep `-t` from 4 to 16 and `--n-cpu-moe` from 14 to 20 with the benchmark in
   Chapter 9 ([Tune and record the fast profile](#tune-and-record-the-fast-profile)), and keep the
   fastest setting that fits.
+- **Images.** The profile loads the model's own vision projector,
+  `mmproj-Qwen3.6-35B-A3B-Q8_0.gguf` (`ggml-org/Qwen3.6-35B-A3B-GGUF`, 0.61 GB), in system RAM
+  next to the experts; the projector of `coder` does not fit this model. It encodes with the
+  threads of `-t`, so with `-t 8` an image takes about twice as long as on `coder` (est.), and a
+  higher `-t` from the sweep also makes images faster.
 
 !!! caution
     llama-swap keeps one GPU model loaded at a time. While any client uses `local-coder-moe`, a
